@@ -1,0 +1,228 @@
+#!/usr/bin/env node
+
+const fs = require("fs");
+const path = require("path");
+const { obfuscate } = require("../src/index");
+
+function printHelp() {
+  const text = `
+Usage:
+  js-obf <input.js | -> [options]
+
+Options:
+  -o, --output <file>        Output file
+  --preset <high|balanced|low>  Preset strength (default: high)
+  --no-rename                Disable identifier renaming
+  --no-strings               Disable string encoding
+  --no-cff                   Disable control flow flattening
+  --no-dead                  Disable dead code injection
+  --vm                       Enable VM virtualization (see README limits)
+  --vm-include <a,b,c>        Only virtualize specified function names
+  --vm-opcode-shuffle        Enable VM opcode shuffle (default: on)
+  --no-vm-opcode-shuffle     Disable VM opcode shuffle
+  --vm-fake-opcodes <0-1>    Fake opcode insertion probability (default: 0.15)
+  --vm-bytecode              Encrypt VM bytecode at runtime (default: on)
+  --no-vm-bytecode           Disable VM bytecode encryption
+  --vm-consts                Encrypt VM const pool at runtime (default: on)
+  --no-vm-consts             Disable VM const pool encryption
+  --vm-downlevel             Allow VM to downlevel let/const to var
+  --anti-hook                Enable anti-hook runtime guard
+  --anti-hook-lock           Freeze built-in prototypes after guard
+  --seed <value>              RNG seed
+  --ecma <version>           Terser output ECMAScript version (default: 2015)
+  --sourcemap                Emit source map
+  --compact                  Compact output
+  -h, --help                 Show help
+`;
+  process.stdout.write(text);
+}
+
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  const options = {
+    preset: "high",
+  };
+  const positional = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "-h" || arg === "--help") {
+      options.help = true;
+      continue;
+    }
+    if (arg === "-o" || arg === "--output") {
+      options.output = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--preset") {
+      options.preset = args[i + 1] || "high";
+      i += 1;
+      continue;
+    }
+    if (arg === "--seed") {
+      options.seed = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--ecma") {
+      options.ecma = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--sourcemap") {
+      options.sourcemap = true;
+      continue;
+    }
+    if (arg === "--compact") {
+      options.compact = true;
+      continue;
+    }
+    if (arg === "--vm") {
+      options.vm = true;
+      continue;
+    }
+    if (arg === "--vm-include") {
+      options.vmInclude = (args[i + 1] || "").split(",").filter(Boolean);
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-opcode-shuffle") {
+      options.vmOpcodeShuffle = true;
+      continue;
+    }
+    if (arg === "--no-vm-opcode-shuffle") {
+      options.vmOpcodeShuffle = false;
+      continue;
+    }
+    if (arg === "--vm-fake-opcodes") {
+      options.vmFakeOpcodes = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-bytecode") {
+      options.vmBytecode = true;
+      continue;
+    }
+    if (arg === "--no-vm-bytecode") {
+      options.vmBytecode = false;
+      continue;
+    }
+    if (arg === "--vm-consts") {
+      options.vmConsts = true;
+      continue;
+    }
+    if (arg === "--no-vm-consts") {
+      options.vmConsts = false;
+      continue;
+    }
+    if (arg === "--vm-downlevel") {
+      options.vmDownlevel = true;
+      continue;
+    }
+    if (arg === "--no-rename") {
+      options.rename = false;
+      continue;
+    }
+    if (arg === "--no-strings") {
+      options.strings = false;
+      continue;
+    }
+    if (arg === "--no-cff") {
+      options.cff = false;
+      continue;
+    }
+    if (arg === "--no-dead") {
+      options.dead = false;
+      continue;
+    }
+    if (arg === "--anti-hook") {
+      options.antiHook = true;
+      continue;
+    }
+    if (arg === "--anti-hook-lock") {
+      options.antiHook = true;
+      options.antiHookLock = true;
+      continue;
+    }
+    positional.push(arg);
+  }
+
+  return { options, positional };
+}
+
+function readInput(file) {
+  if (!file || file === "-") {
+    return fs.readFileSync(0, "utf8");
+  }
+  return fs.readFileSync(file, "utf8");
+}
+
+function writeOutput(file, code) {
+  if (!file) {
+    process.stdout.write(code);
+    return;
+  }
+  fs.writeFileSync(file, code, "utf8");
+}
+
+async function main() {
+  const { options, positional } = parseArgs(process.argv);
+  if (options.help || positional.length === 0) {
+    printHelp();
+    process.exit(options.help ? 0 : 1);
+  }
+
+  const inputPath = positional[0];
+  const source = readInput(inputPath);
+  const outputPath = options.output
+    ? options.output
+    : inputPath === "-"
+      ? null
+      : path.join(
+          path.dirname(inputPath),
+          `${path.basename(inputPath, path.extname(inputPath))}.obf.js`
+        );
+
+  const result = await obfuscate(source, {
+    preset: options.preset,
+    rename: options.rename,
+    strings: options.strings,
+    cff: options.cff,
+    dead: options.dead,
+    antiHook: options.antiHook
+      ? {
+          enabled: true,
+          lock: Boolean(options.antiHookLock),
+        }
+      : undefined,
+    vm: {
+      enabled: Boolean(options.vm),
+      include: options.vmInclude,
+      opcodeShuffle: options.vmOpcodeShuffle,
+      fakeOpcodes: options.vmFakeOpcodes,
+      bytecodeEncrypt: options.vmBytecode,
+      constsEncrypt: options.vmConsts,
+      downlevel: options.vmDownlevel,
+    },
+    seed: options.seed,
+    ecma: options.ecma,
+    sourceMap: options.sourcemap,
+    compact: options.compact,
+    filename: inputPath === "-" ? "stdin.js" : inputPath,
+  });
+
+  let outputCode = result.code;
+  if (result.map && outputPath) {
+    const mapPath = `${outputPath}.map`;
+    fs.writeFileSync(mapPath, JSON.stringify(result.map), "utf8");
+    outputCode += `\n//# sourceMappingURL=${path.basename(mapPath)}\n`;
+  }
+
+  writeOutput(outputPath, outputCode);
+}
+
+main().catch((err) => {
+  process.stderr.write(`${err && err.stack ? err.stack : err}\n`);
+  process.exit(1);
+});
