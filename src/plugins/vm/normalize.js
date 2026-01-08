@@ -100,9 +100,15 @@ function expandPattern(pattern, valueExpr, ctx, declarators) {
   if (pattern.type === "ObjectPattern") {
     const temp = t.identifier(ctx.nameGen.next());
     declarators.push(t.variableDeclarator(temp, valueExpr));
+    const excludedKeys = [];
+    let restElement = null;
     for (const prop of pattern.properties) {
       if (prop.type === "RestElement") {
-        return false;
+        if (restElement) {
+          return false;
+        }
+        restElement = prop;
+        continue;
       }
       if (prop.computed) {
         return false;
@@ -111,8 +117,10 @@ function expandPattern(pattern, valueExpr, ctx, declarators) {
       let access = null;
       if (key.type === "Identifier") {
         access = t.memberExpression(temp, t.identifier(key.name));
+        excludedKeys.push(key.name);
       } else if (key.type === "StringLiteral" || key.type === "NumericLiteral") {
         access = t.memberExpression(temp, t.stringLiteral(String(key.value)), true);
+        excludedKeys.push(String(key.value));
       } else {
         return false;
       }
@@ -120,9 +128,86 @@ function expandPattern(pattern, valueExpr, ctx, declarators) {
         return false;
       }
     }
+    if (restElement) {
+      if (restElement.argument.type !== "Identifier") {
+        return false;
+      }
+      const restExpr = buildObjectRestExpression(ctx, temp, excludedKeys);
+      declarators.push(
+        t.variableDeclarator(restElement.argument, restExpr)
+      );
+    }
     return true;
   }
   return false;
+}
+
+function buildObjectRestExpression(ctx, sourceId, excludedKeys) {
+  const { t } = ctx;
+  const srcId = t.identifier("source");
+  const excludedId = t.identifier("excluded");
+  const targetId = t.identifier("target");
+  const keysId = t.identifier("keys");
+  const iId = t.identifier("i");
+  const keyId = t.identifier("key");
+
+  const targetDecl = t.variableDeclaration("var", [
+    t.variableDeclarator(targetId, t.objectExpression([])),
+  ]);
+  const keysDecl = t.variableDeclaration("var", [
+    t.variableDeclarator(
+      keysId,
+      t.callExpression(
+        t.memberExpression(t.identifier("Object"), t.identifier("keys")),
+        [srcId]
+      )
+    ),
+  ]);
+  const init = t.variableDeclaration("var", [
+    t.variableDeclarator(iId, t.numericLiteral(0)),
+  ]);
+  const test = t.binaryExpression(
+    "<",
+    iId,
+    t.memberExpression(keysId, t.identifier("length"))
+  );
+  const update = t.updateExpression("++", iId);
+  const keyDecl = t.variableDeclaration("var", [
+    t.variableDeclarator(keyId, t.memberExpression(keysId, iId, true)),
+  ]);
+  const skipIfExcluded = t.ifStatement(
+    t.binaryExpression(
+      ">=",
+      t.callExpression(
+        t.memberExpression(excludedId, t.identifier("indexOf")),
+        [keyId]
+      ),
+      t.numericLiteral(0)
+    ),
+    t.continueStatement()
+  );
+  const assign = t.expressionStatement(
+    t.assignmentExpression(
+      "=",
+      t.memberExpression(targetId, keyId, true),
+      t.memberExpression(srcId, keyId, true)
+    )
+  );
+  const loop = t.forStatement(
+    init,
+    test,
+    update,
+    t.blockStatement([keyDecl, skipIfExcluded, assign])
+  );
+  const funcExpr = t.functionExpression(
+    null,
+    [srcId, excludedId],
+    t.blockStatement([targetDecl, keysDecl, loop, t.returnStatement(targetId)])
+  );
+  const excludedExpr = t.arrayExpression(
+    excludedKeys.map((key) => t.stringLiteral(key))
+  );
+  return t.callExpression(funcExpr, [sourceId, excludedExpr]);
 }
 
 function rewriteParams(fnPath, ctx) {
@@ -607,10 +692,6 @@ function canVirtualize(fnPath, ctx) {
         path.stop();
       }
     },
-    SpreadElement(path) {
-      ok = false;
-      path.stop();
-    },
     AssignmentExpression(path) {
       if (path.node.left.type === "ObjectPattern" || path.node.left.type === "ArrayPattern") {
         ok = false;
@@ -621,7 +702,12 @@ function canVirtualize(fnPath, ctx) {
     },
     ObjectPattern(path) {
       for (const prop of path.node.properties) {
-        if (prop.type === "RestElement" || prop.computed) {
+        if (prop.computed) {
+          ok = false;
+          path.stop();
+          break;
+        }
+        if (prop.type === "RestElement" && prop.argument.type !== "Identifier") {
           ok = false;
           path.stop();
           break;

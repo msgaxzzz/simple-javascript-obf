@@ -68,11 +68,10 @@ VM supports most common syntax while keeping performance and memory overhead rea
 - `async/await` (only inside `async` functions)
 - Variables: `var` (`let/const` are skipped by default; use `--vm-downlevel` to force)
 - Parameters: defaults, rest params, parameter destructuring (object/array)
-- Expressions: literals, member access, optional chaining/nullish coalescing, function calls, object/array literals, `new`, template strings, etc.
+- Expressions: literals, member access, optional chaining/nullish coalescing, function calls, object/array literals (including spread), `new`, template strings, etc.
 
 ### VM limitations
 - Generator function bodies are not virtualized (functions containing `yield` are skipped, but you can declare generators inside normal functions)
-- `spread` (call/array/object) and object rest destructuring not supported
 - Destructuring assignment expressions are not supported (only parameter/variable declaration destructuring)
 - Complex or unsupported nodes are skipped for that function
 - VM uses the `Function` constructor to create closures; CSP-restricted environments may not run

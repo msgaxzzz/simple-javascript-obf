@@ -297,6 +297,127 @@ function emitNullishCheck(tempIdx, compiler, nullishLabel) {
   compiler.emitJump(OPCODES.JMP_IF_TRUE, nullishLabel);
 }
 
+function buildSpreadArrayExpression(elements, ctx) {
+  const { t } = ctx;
+  const parts = [];
+  let current = [];
+  let hasSpread = false;
+
+  const flush = () => {
+    if (!current.length) return;
+    parts.push(t.arrayExpression(current));
+    current = [];
+  };
+
+  for (const elem of elements) {
+    if (elem && elem.type === "SpreadElement") {
+      hasSpread = true;
+      flush();
+      parts.push(
+        t.callExpression(
+          t.memberExpression(t.identifier("Array"), t.identifier("from")),
+          [elem.argument]
+        )
+      );
+      continue;
+    }
+    current.push(elem || null);
+  }
+
+  flush();
+
+  if (!hasSpread) {
+    return null;
+  }
+  if (parts.length === 0) {
+    return t.arrayExpression([]);
+  }
+  if (parts.length === 1) {
+    return parts[0];
+  }
+  return t.callExpression(
+    t.memberExpression(t.arrayExpression([]), t.identifier("concat")),
+    parts
+  );
+}
+
+function buildObjectSpreadExpression(properties, ctx) {
+  const { t } = ctx;
+  const parts = [];
+  let current = [];
+  let hasSpread = false;
+
+  const flush = () => {
+    if (!current.length) return;
+    parts.push(t.objectExpression(current));
+    current = [];
+  };
+
+  for (const prop of properties) {
+    if (prop && prop.type === "SpreadElement") {
+      hasSpread = true;
+      flush();
+      parts.push(prop.argument);
+      continue;
+    }
+    current.push(prop);
+  }
+
+  flush();
+
+  if (!hasSpread) {
+    return null;
+  }
+
+  return t.callExpression(
+    t.memberExpression(t.identifier("Object"), t.identifier("assign")),
+    [t.objectExpression([]), ...parts]
+  );
+}
+
+function emitSpreadCall(expr, argArrayExpr, compiler, state) {
+  const callee = expr.callee;
+  const applyIdx = compiler.addConst("apply");
+  const undefinedIdx = compiler.addConst(undefined);
+
+  if (callee.type === "MemberExpression") {
+    const objTemp = compiler.createTempName();
+    const objIdx = compiler.addConst(objTemp);
+
+    if (!compileExpression(callee.object, compiler, state)) return false;
+    compiler.emit(OPCODES.SET_VAR, objIdx);
+    compiler.emit(OPCODES.POP);
+
+    compiler.emit(OPCODES.GET_VAR, objIdx);
+    if (callee.computed) {
+      if (!compileExpression(callee.property, compiler, state)) return false;
+    } else {
+      compiler.emit(
+        OPCODES.PUSH_CONST,
+        compiler.addConst(callee.property.name)
+      );
+    }
+    compiler.emit(OPCODES.GET_PROP);
+    const fnIdx = storeStackToTemp(compiler);
+
+    compiler.emit(OPCODES.GET_VAR, fnIdx);
+    compiler.emit(OPCODES.PUSH_CONST, applyIdx);
+    compiler.emit(OPCODES.GET_VAR, objIdx);
+    if (!compileExpression(argArrayExpr, compiler, state)) return false;
+    compiler.emit(OPCODES.CALL_METHOD, 2);
+    return true;
+  }
+
+  if (!compileExpression(callee, compiler, state)) return false;
+  const fnIdx = storeStackToTemp(compiler);
+  compiler.emit(OPCODES.GET_VAR, fnIdx);
+  compiler.emit(OPCODES.PUSH_CONST, applyIdx);
+  compiler.emit(OPCODES.PUSH_CONST, undefinedIdx);
+  if (!compileExpression(argArrayExpr, compiler, state)) return false;
+  compiler.emit(OPCODES.CALL_METHOD, 2);
+  return true;
+}
+
 function compileOptionalMember(expr, compiler, state, nullishLabel) {
   if (!compileOptionalExpression(expr.object, compiler, state, nullishLabel)) {
     return false;
@@ -317,7 +438,12 @@ function compileOptionalMember(expr, compiler, state, nullishLabel) {
 }
 
 function compileOptionalCall(expr, compiler, state, nullishLabel) {
+  const { ctx } = state;
   const callee = expr.callee;
+  const spreadArgs = buildSpreadArrayExpression(expr.arguments, ctx);
+  const useSpread = Boolean(spreadArgs);
+  const applyIdx = useSpread ? compiler.addConst("apply") : null;
+  const undefinedIdx = useSpread ? compiler.addConst(undefined) : null;
   if (
     callee.type === "OptionalMemberExpression" ||
     callee.type === "MemberExpression"
@@ -344,13 +470,21 @@ function compileOptionalCall(expr, compiler, state, nullishLabel) {
       compiler.emit(OPCODES.GET_PROP);
       const fnIdx = storeStackToTemp(compiler);
       emitNullishCheck(fnIdx, compiler, nullishLabel);
-      compiler.emit(OPCODES.GET_VAR, objIdx);
-      compiler.emit(OPCODES.GET_VAR, fnIdx);
-      for (const arg of expr.arguments) {
-        if (arg.type === "SpreadElement") return false;
-        if (!compileExpression(arg, compiler, state)) return false;
+      if (useSpread) {
+        compiler.emit(OPCODES.GET_VAR, fnIdx);
+        compiler.emit(OPCODES.PUSH_CONST, applyIdx);
+        compiler.emit(OPCODES.GET_VAR, objIdx);
+        if (!compileExpression(spreadArgs, compiler, state)) return false;
+        compiler.emit(OPCODES.CALL_METHOD, 2);
+      } else {
+        compiler.emit(OPCODES.GET_VAR, objIdx);
+        compiler.emit(OPCODES.GET_VAR, fnIdx);
+        for (const arg of expr.arguments) {
+          if (arg.type === "SpreadElement") return false;
+          if (!compileExpression(arg, compiler, state)) return false;
+        }
+        compiler.emit(OPCODES.CALL_THIS, expr.arguments.length);
       }
-      compiler.emit(OPCODES.CALL_THIS, expr.arguments.length);
       return true;
     }
     compiler.emit(OPCODES.GET_VAR, objIdx);
@@ -360,11 +494,21 @@ function compileOptionalCall(expr, compiler, state, nullishLabel) {
       const idx = compiler.addConst(callee.property.name);
       compiler.emit(OPCODES.PUSH_CONST, idx);
     }
-    for (const arg of expr.arguments) {
-      if (arg.type === "SpreadElement") return false;
-      if (!compileExpression(arg, compiler, state)) return false;
+    if (useSpread) {
+      compiler.emit(OPCODES.GET_PROP);
+      const fnIdx = storeStackToTemp(compiler);
+      compiler.emit(OPCODES.GET_VAR, fnIdx);
+      compiler.emit(OPCODES.PUSH_CONST, applyIdx);
+      compiler.emit(OPCODES.GET_VAR, objIdx);
+      if (!compileExpression(spreadArgs, compiler, state)) return false;
+      compiler.emit(OPCODES.CALL_METHOD, 2);
+    } else {
+      for (const arg of expr.arguments) {
+        if (arg.type === "SpreadElement") return false;
+        if (!compileExpression(arg, compiler, state)) return false;
+      }
+      compiler.emit(OPCODES.CALL_METHOD, expr.arguments.length);
     }
-    compiler.emit(OPCODES.CALL_METHOD, expr.arguments.length);
     return true;
   }
 
@@ -373,12 +517,20 @@ function compileOptionalCall(expr, compiler, state, nullishLabel) {
   if (expr.optional) {
     emitNullishCheck(fnIdx, compiler, nullishLabel);
   }
-  compiler.emit(OPCODES.GET_VAR, fnIdx);
-  for (const arg of expr.arguments) {
-    if (arg.type === "SpreadElement") return false;
-    if (!compileExpression(arg, compiler, state)) return false;
+  if (useSpread) {
+    compiler.emit(OPCODES.GET_VAR, fnIdx);
+    compiler.emit(OPCODES.PUSH_CONST, applyIdx);
+    compiler.emit(OPCODES.PUSH_CONST, undefinedIdx);
+    if (!compileExpression(spreadArgs, compiler, state)) return false;
+    compiler.emit(OPCODES.CALL_METHOD, 2);
+  } else {
+    compiler.emit(OPCODES.GET_VAR, fnIdx);
+    for (const arg of expr.arguments) {
+      if (arg.type === "SpreadElement") return false;
+      if (!compileExpression(arg, compiler, state)) return false;
+    }
+    compiler.emit(OPCODES.CALL, expr.arguments.length);
   }
-  compiler.emit(OPCODES.CALL, expr.arguments.length);
   return true;
 }
 
@@ -625,6 +777,10 @@ function compileExpression(expr, compiler, state) {
       return true;
     }
     case "CallExpression": {
+      const spreadArgs = buildSpreadArrayExpression(expr.arguments, ctx);
+      if (spreadArgs) {
+        return emitSpreadCall(expr, spreadArgs, compiler, state);
+      }
       const callee = expr.callee;
       if (callee.type === "MemberExpression") {
         if (!compileExpression(callee.object, compiler, state)) return false;
@@ -649,6 +805,14 @@ function compileExpression(expr, compiler, state) {
       return true;
     }
     case "NewExpression": {
+      const spreadArgs = buildSpreadArrayExpression(expr.arguments, ctx);
+      if (spreadArgs) {
+        const reflectCall = t.callExpression(
+          t.memberExpression(t.identifier("Reflect"), t.identifier("construct")),
+          [expr.callee, spreadArgs]
+        );
+        return compileExpression(reflectCall, compiler, state);
+      }
       if (!compileExpression(expr.callee, compiler, state)) return false;
       for (const arg of expr.arguments) {
         if (arg.type === "SpreadElement") return false;
@@ -658,6 +822,10 @@ function compileExpression(expr, compiler, state) {
       return true;
     }
     case "ObjectExpression": {
+      const spreadExpr = buildObjectSpreadExpression(expr.properties, ctx);
+      if (spreadExpr) {
+        return compileExpression(spreadExpr, compiler, state);
+      }
       for (const prop of expr.properties) {
         if (prop.type === "SpreadElement") {
           return false;
@@ -717,6 +885,10 @@ function compileExpression(expr, compiler, state) {
       return true;
     }
     case "ArrayExpression": {
+      const spreadExpr = buildSpreadArrayExpression(expr.elements, ctx);
+      if (spreadExpr) {
+        return compileExpression(spreadExpr, compiler, state);
+      }
       compiler.emit(OPCODES.MAKE_ARR);
       for (let i = 0; i < expr.elements.length; i += 1) {
         const elem = expr.elements[i];
