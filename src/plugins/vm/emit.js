@@ -470,6 +470,49 @@ function buildSuperConstructorCallExpression(callExpr, state) {
   );
 }
 
+function buildReflectMemberExpression(name, state) {
+  const { t } = state.ctx;
+  return t.memberExpression(t.identifier("Reflect"), t.identifier(name));
+}
+
+function emitSuperBaseAndProp(memberExpr, compiler, state) {
+  const baseExpr = buildSuperBaseExpression(state);
+  if (!baseExpr) {
+    return null;
+  }
+  const { t } = state.ctx;
+  const propExpr = memberExpr.computed
+    ? memberExpr.property
+    : t.stringLiteral(memberExpr.property.name);
+  if (!compileExpression(baseExpr, compiler, state)) return null;
+  const baseIdx = storeStackToTemp(compiler);
+  if (!compileExpression(propExpr, compiler, state)) return null;
+  const propIdx = storeStackToTemp(compiler);
+  return { baseIdx, propIdx };
+}
+
+function emitSuperGet(baseIdx, propIdx, compiler, state) {
+  const reflectGet = buildReflectMemberExpression("get", state);
+  if (!compileExpression(reflectGet, compiler, state)) return false;
+  compiler.emit(OPCODES.GET_VAR, baseIdx);
+  compiler.emit(OPCODES.GET_VAR, propIdx);
+  compiler.emit(OPCODES.PUSH_THIS);
+  compiler.emit(OPCODES.CALL, 3);
+  return true;
+}
+
+function emitSuperSet(baseIdx, propIdx, valueIdx, compiler, state) {
+  const reflectSet = buildReflectMemberExpression("set", state);
+  if (!compileExpression(reflectSet, compiler, state)) return false;
+  compiler.emit(OPCODES.GET_VAR, baseIdx);
+  compiler.emit(OPCODES.GET_VAR, propIdx);
+  compiler.emit(OPCODES.GET_VAR, valueIdx);
+  compiler.emit(OPCODES.PUSH_THIS);
+  compiler.emit(OPCODES.CALL, 4);
+  compiler.emit(OPCODES.POP);
+  return true;
+}
+
 function emitSpreadCall(expr, argArrayExpr, compiler, state) {
   const callee = expr.callee;
   const applyIdx = compiler.addConst("apply");
@@ -820,6 +863,32 @@ function compileExpression(expr, compiler, state) {
         return true;
       }
       if (expr.left.type === "MemberExpression") {
+        if (expr.left.object.type === "Super") {
+          const refs = emitSuperBaseAndProp(expr.left, compiler, state);
+          if (!refs) return false;
+          const { baseIdx, propIdx } = refs;
+          if (expr.operator === "=") {
+            if (!compileExpression(expr.right, compiler, state)) return false;
+            const valueIdx = storeStackToTemp(compiler);
+            if (!emitSuperSet(baseIdx, propIdx, valueIdx, compiler, state)) {
+              return false;
+            }
+            compiler.emit(OPCODES.GET_VAR, valueIdx);
+            return true;
+          }
+          const op = expr.operator.slice(0, -1);
+          const opIndex = BIN_OPS.indexOf(op);
+          if (opIndex === -1) return false;
+          if (!emitSuperGet(baseIdx, propIdx, compiler, state)) return false;
+          if (!compileExpression(expr.right, compiler, state)) return false;
+          compiler.emit(OPCODES.BIN_OP, opIndex);
+          const resultIdx = storeStackToTemp(compiler);
+          if (!emitSuperSet(baseIdx, propIdx, resultIdx, compiler, state)) {
+            return false;
+          }
+          compiler.emit(OPCODES.GET_VAR, resultIdx);
+          return true;
+        }
         return emitMemberAssignment(expr, compiler, state);
       }
       return false;
@@ -851,6 +920,25 @@ function compileExpression(expr, compiler, state) {
         return true;
       }
       if (expr.argument.type === "MemberExpression") {
+        if (expr.argument.object.type === "Super") {
+          const refs = emitSuperBaseAndProp(expr.argument, compiler, state);
+          if (!refs) return false;
+          const { baseIdx, propIdx } = refs;
+          if (!emitSuperGet(baseIdx, propIdx, compiler, state)) return false;
+          const oldIdx = storeStackToTemp(compiler);
+          compiler.emit(OPCODES.GET_VAR, oldIdx);
+          compiler.emit(OPCODES.PUSH_CONST, compiler.addConst(delta));
+          compiler.emit(OPCODES.BIN_OP, BIN_OPS.indexOf("+"));
+          const newIdx = storeStackToTemp(compiler);
+          if (!emitSuperSet(baseIdx, propIdx, newIdx, compiler, state)) {
+            return false;
+          }
+          compiler.emit(
+            OPCODES.GET_VAR,
+            isPrefix ? newIdx : oldIdx
+          );
+          return true;
+        }
         return emitMemberUpdate(expr, compiler, state);
       }
       return false;
