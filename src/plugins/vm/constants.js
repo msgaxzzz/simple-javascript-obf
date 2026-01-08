@@ -35,6 +35,7 @@ const OPCODE_NAMES = [
   "GET_PROP",
   "SET_PROP",
   "CALL_METHOD",
+  "CALL_THIS",
   "PUSH_THIS",
   "GET_GLOBAL",
   "SET_GLOBAL",

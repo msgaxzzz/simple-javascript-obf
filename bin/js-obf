@@ -29,7 +29,7 @@ Options:
   --anti-hook                Enable anti-hook runtime guard
   --anti-hook-lock           Freeze built-in prototypes after guard
   --seed <value>              RNG seed
-  --ecma <version>           Terser output ECMAScript version (default: 2015)
+  --ecma <version>           Terser output ECMAScript version (default: 2020)
   --sourcemap                Emit source map
   --compact                  Compact output
   -h, --help                 Show help

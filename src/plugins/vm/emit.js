@@ -282,6 +282,130 @@ function emitWithUpdate(expr, compiler, state) {
   return true;
 }
 
+function storeStackToTemp(compiler) {
+  const tempName = compiler.createTempName();
+  const tempIdx = compiler.addConst(tempName);
+  compiler.emit(OPCODES.SET_VAR, tempIdx);
+  compiler.emit(OPCODES.POP);
+  return tempIdx;
+}
+
+function emitNullishCheck(tempIdx, compiler, nullishLabel) {
+  compiler.emit(OPCODES.GET_VAR, tempIdx);
+  compiler.emit(OPCODES.PUSH_CONST, compiler.addConst(null));
+  compiler.emit(OPCODES.BIN_OP, BIN_OPS.indexOf("=="));
+  compiler.emitJump(OPCODES.JMP_IF_TRUE, nullishLabel);
+}
+
+function compileOptionalMember(expr, compiler, state, nullishLabel) {
+  if (!compileOptionalExpression(expr.object, compiler, state, nullishLabel)) {
+    return false;
+  }
+  if (expr.optional) {
+    const objIdx = storeStackToTemp(compiler);
+    emitNullishCheck(objIdx, compiler, nullishLabel);
+    compiler.emit(OPCODES.GET_VAR, objIdx);
+  }
+  if (expr.computed) {
+    if (!compileExpression(expr.property, compiler, state)) return false;
+  } else {
+    const idx = compiler.addConst(expr.property.name);
+    compiler.emit(OPCODES.PUSH_CONST, idx);
+  }
+  compiler.emit(OPCODES.GET_PROP);
+  return true;
+}
+
+function compileOptionalCall(expr, compiler, state, nullishLabel) {
+  const callee = expr.callee;
+  if (
+    callee.type === "OptionalMemberExpression" ||
+    callee.type === "MemberExpression"
+  ) {
+    const objectCompiler =
+      callee.type === "OptionalMemberExpression"
+        ? compileOptionalExpression
+        : compileExpression;
+    if (!objectCompiler(callee.object, compiler, state, nullishLabel)) {
+      return false;
+    }
+    const objIdx = storeStackToTemp(compiler);
+    if (callee.type === "OptionalMemberExpression" && callee.optional) {
+      emitNullishCheck(objIdx, compiler, nullishLabel);
+    }
+    if (expr.optional) {
+      compiler.emit(OPCODES.GET_VAR, objIdx);
+      if (callee.computed) {
+        if (!compileExpression(callee.property, compiler, state)) return false;
+      } else {
+        const idx = compiler.addConst(callee.property.name);
+        compiler.emit(OPCODES.PUSH_CONST, idx);
+      }
+      compiler.emit(OPCODES.GET_PROP);
+      const fnIdx = storeStackToTemp(compiler);
+      emitNullishCheck(fnIdx, compiler, nullishLabel);
+      compiler.emit(OPCODES.GET_VAR, objIdx);
+      compiler.emit(OPCODES.GET_VAR, fnIdx);
+      for (const arg of expr.arguments) {
+        if (arg.type === "SpreadElement") return false;
+        if (!compileExpression(arg, compiler, state)) return false;
+      }
+      compiler.emit(OPCODES.CALL_THIS, expr.arguments.length);
+      return true;
+    }
+    compiler.emit(OPCODES.GET_VAR, objIdx);
+    if (callee.computed) {
+      if (!compileExpression(callee.property, compiler, state)) return false;
+    } else {
+      const idx = compiler.addConst(callee.property.name);
+      compiler.emit(OPCODES.PUSH_CONST, idx);
+    }
+    for (const arg of expr.arguments) {
+      if (arg.type === "SpreadElement") return false;
+      if (!compileExpression(arg, compiler, state)) return false;
+    }
+    compiler.emit(OPCODES.CALL_METHOD, expr.arguments.length);
+    return true;
+  }
+
+  if (!compileExpression(callee, compiler, state)) return false;
+  const fnIdx = storeStackToTemp(compiler);
+  if (expr.optional) {
+    emitNullishCheck(fnIdx, compiler, nullishLabel);
+  }
+  compiler.emit(OPCODES.GET_VAR, fnIdx);
+  for (const arg of expr.arguments) {
+    if (arg.type === "SpreadElement") return false;
+    if (!compileExpression(arg, compiler, state)) return false;
+  }
+  compiler.emit(OPCODES.CALL, expr.arguments.length);
+  return true;
+}
+
+function compileOptionalExpression(expr, compiler, state, nullishLabel) {
+  if (expr.type === "OptionalMemberExpression") {
+    return compileOptionalMember(expr, compiler, state, nullishLabel);
+  }
+  if (expr.type === "OptionalCallExpression") {
+    return compileOptionalCall(expr, compiler, state, nullishLabel);
+  }
+  if (expr.type === "ChainExpression") {
+    return compileOptionalExpression(expr.expression, compiler, state, nullishLabel);
+  }
+  return compileExpression(expr, compiler, state);
+}
+
+function compileOptionalChain(expr, compiler, state) {
+  const end = createLabel();
+  const nullish = createLabel();
+  if (!compileOptionalExpression(expr, compiler, state, nullish)) return false;
+  compiler.emitJump(OPCODES.JMP, end);
+  compiler.mark(nullish);
+  compiler.emit(OPCODES.PUSH_CONST, compiler.addConst(undefined));
+  compiler.mark(end);
+  return true;
+}
+
 function compileExpression(expr, compiler, state) {
   const { ctx, locals } = state;
   const { t } = ctx;
@@ -366,6 +490,21 @@ function compileExpression(expr, compiler, state) {
       return true;
     }
     case "LogicalExpression": {
+      if (expr.operator === "??") {
+        const end = createLabel();
+        const notNullish = createLabel();
+        if (!compileExpression(expr.left, compiler, state)) return false;
+        compiler.emit(OPCODES.DUP);
+        compiler.emit(OPCODES.PUSH_CONST, compiler.addConst(null));
+        compiler.emit(OPCODES.BIN_OP, BIN_OPS.indexOf("=="));
+        compiler.emitJump(OPCODES.JMP_IF_FALSE, notNullish);
+        compiler.emit(OPCODES.POP);
+        if (!compileExpression(expr.right, compiler, state)) return false;
+        compiler.emitJump(OPCODES.JMP, end);
+        compiler.mark(notNullish);
+        compiler.mark(end);
+        return true;
+      }
       const end = createLabel();
       const shortLabel = createLabel();
       if (!compileExpression(expr.left, compiler, state)) return false;
@@ -469,6 +608,11 @@ function compileExpression(expr, compiler, state) {
       }
       return false;
     }
+    case "OptionalMemberExpression":
+    case "OptionalCallExpression":
+      return compileOptionalChain(expr, compiler, state);
+    case "ChainExpression":
+      return compileOptionalChain(expr.expression, compiler, state);
     case "MemberExpression": {
       if (!compileExpression(expr.object, compiler, state)) return false;
       if (expr.computed) {

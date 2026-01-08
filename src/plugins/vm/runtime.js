@@ -601,6 +601,47 @@ function ${execName}(code, consts, env, thisArg) {
           stack[sp++] = fn.apply(obj, args);
           break;
         }
+        case ${OPCODES.CALL_THIS}: {
+          const argc = code[ip++];
+          if (argc === 0) {
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg);
+            break;
+          }
+          if (argc === 1) {
+            const arg0 = stack[--sp];
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg, arg0);
+            break;
+          }
+          if (argc === 2) {
+            const arg1 = stack[--sp];
+            const arg0 = stack[--sp];
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg, arg0, arg1);
+            break;
+          }
+          if (argc === 3) {
+            const arg2 = stack[--sp];
+            const arg1 = stack[--sp];
+            const arg0 = stack[--sp];
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg, arg0, arg1, arg2);
+            break;
+          }
+          const args = new Array(argc);
+          for (let i = argc - 1; i >= 0; i -= 1) {
+            args[i] = stack[--sp];
+          }
+          const fn = stack[--sp];
+          const thisArg = stack[--sp];
+          stack[sp++] = fn.apply(thisArg, args);
+          break;
+        }
         case ${OPCODES.NEW}: {
           const argc = code[ip++];
           if (argc === 0) {
@@ -966,6 +1007,47 @@ async function ${execAsyncName}(code, consts, env, thisArg) {
           const obj = stack[--sp];
           const fn = obj[prop];
           stack[sp++] = fn.apply(obj, args);
+          break;
+        }
+        case ${OPCODES.CALL_THIS}: {
+          const argc = code[ip++];
+          if (argc === 0) {
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg);
+            break;
+          }
+          if (argc === 1) {
+            const arg0 = stack[--sp];
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg, arg0);
+            break;
+          }
+          if (argc === 2) {
+            const arg1 = stack[--sp];
+            const arg0 = stack[--sp];
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg, arg0, arg1);
+            break;
+          }
+          if (argc === 3) {
+            const arg2 = stack[--sp];
+            const arg1 = stack[--sp];
+            const arg0 = stack[--sp];
+            const fn = stack[--sp];
+            const thisArg = stack[--sp];
+            stack[sp++] = fn.call(thisArg, arg0, arg1, arg2);
+            break;
+          }
+          const args = new Array(argc);
+          for (let i = argc - 1; i >= 0; i -= 1) {
+            args[i] = stack[--sp];
+          }
+          const fn = stack[--sp];
+          const thisArg = stack[--sp];
+          stack[sp++] = fn.apply(thisArg, args);
           break;
         }
         case ${OPCODES.NEW}: {

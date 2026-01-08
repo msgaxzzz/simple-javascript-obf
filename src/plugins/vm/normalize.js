@@ -628,20 +628,6 @@ function canVirtualize(fnPath, ctx) {
         }
       }
     },
-    LogicalExpression(path) {
-      if (path.node.operator === "??") {
-        ok = false;
-        path.stop();
-      }
-    },
-    OptionalMemberExpression(path) {
-      ok = false;
-      path.stop();
-    },
-    OptionalCallExpression(path) {
-      ok = false;
-      path.stop();
-    },
     UnaryExpression(path) {
       if (path.node.operator === "delete") {
         ok = false;

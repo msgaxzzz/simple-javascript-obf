@@ -1,6 +1,6 @@
 const { DEFAULT_RESERVED } = require("./utils/reserved");
 
-const DEFAULT_ECMA = 2015;
+const DEFAULT_ECMA = 2020;
 
 function normalizeEcma(value) {
   if (value === undefined || value === null || value === "") {

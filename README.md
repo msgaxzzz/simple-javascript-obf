@@ -55,11 +55,11 @@ If an input directory is provided, it will recursively obfuscate all `.js` files
 - `--anti-hook` Enable anti-hook runtime guard
 - `--anti-hook-lock` Enable anti-hook and freeze built-in prototype chains
 - `--seed <value>` PRNG seed
-- `--ecma <version>` Terser output ECMAScript version (default 2015)
+- `--ecma <version>` Terser output ECMAScript version (default 2020)
 - `--sourcemap` Emit source map
 - `--compact` Compact output
 
-Default output is ES2015 to preserve `let/const`. For ES5, set `--ecma 5`.
+Default output is ES2020 to support optional chaining/nullish coalescing. For older targets, set `--ecma 2015` or `--ecma 5`.
 
 ## VM virtualization coverage
 VM supports most common syntax while keeping performance and memory overhead reasonable:
@@ -68,11 +68,10 @@ VM supports most common syntax while keeping performance and memory overhead rea
 - `async/await` (only inside `async` functions)
 - Variables: `var` (`let/const` are skipped by default; use `--vm-downlevel` to force)
 - Parameters: defaults, rest params, parameter destructuring (object/array)
-- Expressions: literals, member access, function calls, object/array literals, `new`, template strings, etc.
+- Expressions: literals, member access, optional chaining/nullish coalescing, function calls, object/array literals, `new`, template strings, etc.
 
 ### VM limitations
 - Generator function bodies are not virtualized (functions containing `yield` are skipped, but you can declare generators inside normal functions)
-- Optional chaining / nullish coalescing (`?.` / `??`) not supported
 - `spread` (call/array/object) and object rest destructuring not supported
 - Destructuring assignment expressions are not supported (only parameter/variable declaration destructuring)
 - Complex or unsupported nodes are skipped for that function
