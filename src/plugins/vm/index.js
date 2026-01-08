@@ -52,6 +52,28 @@ function shouldVirtualize(fnPath, options) {
   return comments.some((c) => c.value.includes("@vm"));
 }
 
+function getSuperInfo(fnPath) {
+  if (fnPath.isClassMethod && fnPath.isClassMethod()) {
+    return {
+      mode: fnPath.node.static ? "static" : "instance",
+      kind: fnPath.node.kind || "method",
+    };
+  }
+  if (fnPath.isClassPrivateMethod && fnPath.isClassPrivateMethod()) {
+    return {
+      mode: fnPath.node.static ? "static" : "instance",
+      kind: fnPath.node.kind || "method",
+    };
+  }
+  if (fnPath.isObjectMethod && fnPath.isObjectMethod()) {
+    return {
+      mode: "object",
+      kind: "method",
+    };
+  }
+  return null;
+}
+
 function applyVmToFunction(fnPath, ctx, runtimeIds) {
   if (!canVirtualize(fnPath, ctx)) {
     return false;
@@ -78,6 +100,7 @@ function applyVmToFunction(fnPath, ctx, runtimeIds) {
     isAsync: fnPath.node.async,
     newTargetKey: envNewTargetKey,
     withStack: [],
+    superInfo: getSuperInfo(fnPath),
   };
 
   for (const stmt of fnPath.node.body.body) {

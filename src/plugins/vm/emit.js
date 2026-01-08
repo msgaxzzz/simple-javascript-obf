@@ -375,6 +375,101 @@ function buildObjectSpreadExpression(properties, ctx) {
   );
 }
 
+function buildArgsArrayExpression(args, ctx) {
+  const spreadExpr = buildSpreadArrayExpression(args, ctx);
+  if (spreadExpr) {
+    return spreadExpr;
+  }
+  return ctx.t.arrayExpression(args);
+}
+
+function buildSuperBaseExpression(state) {
+  if (!state.superInfo) {
+    return null;
+  }
+  const { t } = state.ctx;
+  const getProto = (expr) =>
+    t.callExpression(
+      t.memberExpression(t.identifier("Object"), t.identifier("getPrototypeOf")),
+      [expr]
+    );
+  if (state.superInfo.mode === "static") {
+    return getProto(t.thisExpression());
+  }
+  if (state.superInfo.mode === "object") {
+    return getProto(t.thisExpression());
+  }
+  return getProto(getProto(t.thisExpression()));
+}
+
+function buildSuperConstructorExpression(state) {
+  if (!state.superInfo || state.superInfo.kind !== "constructor") {
+    return null;
+  }
+  if (!state.newTargetKey) {
+    return null;
+  }
+  const { t } = state.ctx;
+  const targetExpr = t.metaProperty(t.identifier("new"), t.identifier("target"));
+  return t.callExpression(
+    t.memberExpression(t.identifier("Object"), t.identifier("getPrototypeOf")),
+    [targetExpr]
+  );
+}
+
+function buildSuperGetExpression(memberExpr, state) {
+  const baseExpr = buildSuperBaseExpression(state);
+  if (!baseExpr) {
+    return null;
+  }
+  const { t } = state.ctx;
+  const propExpr = memberExpr.computed
+    ? memberExpr.property
+    : t.stringLiteral(memberExpr.property.name);
+  return t.callExpression(
+    t.memberExpression(t.identifier("Reflect"), t.identifier("get")),
+    [baseExpr, propExpr, t.thisExpression()]
+  );
+}
+
+function buildSuperMethodCallExpression(callExpr, state) {
+  const baseExpr = buildSuperBaseExpression(state);
+  if (!baseExpr) {
+    return null;
+  }
+  const { ctx } = state;
+  const { t } = ctx;
+  const callee = callExpr.callee;
+  const propExpr = callee.computed
+    ? callee.property
+    : t.stringLiteral(callee.property.name);
+  const receiver = t.thisExpression();
+  const getExpr = t.callExpression(
+    t.memberExpression(t.identifier("Reflect"), t.identifier("get")),
+    [baseExpr, propExpr, receiver]
+  );
+  const argsArray = buildArgsArrayExpression(callExpr.arguments, ctx);
+  return t.callExpression(
+    t.memberExpression(getExpr, t.identifier("apply")),
+    [receiver, argsArray]
+  );
+}
+
+function buildSuperConstructorCallExpression(callExpr, state) {
+  const ctorExpr = buildSuperConstructorExpression(state);
+  if (!ctorExpr) {
+    return null;
+  }
+  const { ctx } = state;
+  const { t } = ctx;
+  const argsArray = buildArgsArrayExpression(callExpr.arguments, ctx);
+  const targetExpr = t.metaProperty(t.identifier("new"), t.identifier("target"));
+  return t.callExpression(
+    t.memberExpression(t.identifier("Reflect"), t.identifier("construct")),
+    [ctorExpr, argsArray, targetExpr]
+  );
+}
+
 function emitSpreadCall(expr, argArrayExpr, compiler, state) {
   const callee = expr.callee;
   const applyIdx = compiler.addConst("apply");
@@ -766,6 +861,11 @@ function compileExpression(expr, compiler, state) {
     case "ChainExpression":
       return compileOptionalChain(expr.expression, compiler, state);
     case "MemberExpression": {
+      if (expr.object.type === "Super") {
+        const superGet = buildSuperGetExpression(expr, state);
+        if (!superGet) return false;
+        return compileExpression(superGet, compiler, state);
+      }
       if (!compileExpression(expr.object, compiler, state)) return false;
       if (expr.computed) {
         if (!compileExpression(expr.property, compiler, state)) return false;
@@ -777,11 +877,21 @@ function compileExpression(expr, compiler, state) {
       return true;
     }
     case "CallExpression": {
+      const callee = expr.callee;
+      if (callee.type === "Super") {
+        const superCall = buildSuperConstructorCallExpression(expr, state);
+        if (!superCall) return false;
+        return compileExpression(superCall, compiler, state);
+      }
+      if (callee.type === "MemberExpression" && callee.object.type === "Super") {
+        const superMethodCall = buildSuperMethodCallExpression(expr, state);
+        if (!superMethodCall) return false;
+        return compileExpression(superMethodCall, compiler, state);
+      }
       const spreadArgs = buildSpreadArrayExpression(expr.arguments, ctx);
       if (spreadArgs) {
         return emitSpreadCall(expr, spreadArgs, compiler, state);
       }
-      const callee = expr.callee;
       if (callee.type === "MemberExpression") {
         if (!compileExpression(callee.object, compiler, state)) return false;
         if (callee.computed) {
