@@ -61,47 +61,64 @@ const ${opcodeB64Name} = (() => {
     return out;
   };
   const makeStream = (keyBytes) => {
-    const key = Uint8Array.from(keyBytes || []);
-    const len = key.length || 1;
-    const pick = (idx) => key[idx % len] & 255;
-    const variant = pick(0) & 1;
-    const r0 = (pick(1) % 7) + 3;
-    const r1 = (pick(2) % 7) + 5;
-    const r2 = (pick(3) % 7) + 3;
-    const r3 = (pick(4) % 7) + 5;
-    let x =
-      ((pick(5) << 24) | (pick(6) << 16) | (pick(7) << 8) | pick(8)) >>> 0;
-    let y =
-      ((pick(9) << 24) | (pick(10) << 16) | (pick(11) << 8) | pick(12)) >>> 0;
-    x ^= (len << 24) >>> 0;
-    y ^= (len << 16) >>> 0;
-    for (let i = 0; i < len; i += 1) {
-      const v = (pick(i) + i * 17) & 255;
-      const fold = ((v << (i & 7)) | (v >>> (8 - (i & 7)))) & 255;
-      x = (x + fold) >>> 0;
-      x = rotl(x, r0);
-      y = (y + (x ^ (v << r2))) >>> 0;
-      y = rotr(y, r1);
+    // ChaCha20 stream cipher implementation
+    const SIGMA = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574];
+    const kb = Uint8Array.from(keyBytes || []);
+    // Normalize key to 32 bytes
+    const key = new Uint8Array(32);
+    if (kb.length >= 32) {
+      key.set(kb.slice(0, 32));
+    } else {
+      key.set(kb);
+      let h = 0x811c9dc5;
+      for (let i = 0; i < kb.length; i++) { h ^= kb[i]; h = Math.imul(h, 0x01000193) >>> 0; }
+      for (let i = kb.length; i < 32; i++) { h ^= i; h = Math.imul(h, 0x01000193) >>> 0; key[i] = h & 0xff; }
     }
-    let idx = 0;
+    // Derive nonce from key
+    const nonce = new Uint8Array(12);
+    let nh = 0x6a09e667;
+    for (let i = 0; i < kb.length; i++) { nh ^= kb[i]; nh = Math.imul(nh, 0x85ebca6b) >>> 0; nh = rotl(nh, 13); }
+    for (let i = 0; i < 12; i++) { nh ^= i * 0x9e3779b9; nh = Math.imul(nh, 0xcc9e2d51) >>> 0; nonce[i] = nh & 0xff; nh = rotl(nh, 15); }
+    // Initialize state
+    const state = new Uint32Array(16);
+    state[0] = SIGMA[0]; state[1] = SIGMA[1]; state[2] = SIGMA[2]; state[3] = SIGMA[3];
+    for (let i = 0; i < 8; i++) {
+      state[4 + i] = (key[i*4] | (key[i*4+1] << 8) | (key[i*4+2] << 16) | (key[i*4+3] << 24)) >>> 0;
+    }
+    state[12] = 0;
+    for (let i = 0; i < 3; i++) {
+      state[13 + i] = (nonce[i*4] | (nonce[i*4+1] << 8) | (nonce[i*4+2] << 16) | (nonce[i*4+3] << 24)) >>> 0;
+    }
+    // Quarter round function
+    const qr = (s, a, b, c, d) => {
+      s[a] = (s[a] + s[b]) >>> 0; s[d] = rotl(s[d] ^ s[a], 16);
+      s[c] = (s[c] + s[d]) >>> 0; s[b] = rotl(s[b] ^ s[c], 12);
+      s[a] = (s[a] + s[b]) >>> 0; s[d] = rotl(s[d] ^ s[a], 8);
+      s[c] = (s[c] + s[d]) >>> 0; s[b] = rotl(s[b] ^ s[c], 7);
+    };
+    let block = null;
+    let blockIdx = 64;
+    let counter = 0;
     return (byte) => {
-      const k = key[idx % len];
-      let out;
-      if (variant === 0) {
-        x = (x + (y ^ (k + idx + 1))) >>> 0;
-        x = rotl(x, r0);
-        y = (y + (k ^ (x & 255))) >>> 0;
-        y = rotr(y, r1);
-        out = (x ^ y ^ (x >>> 7)) & 255;
-      } else {
-        y = (y + k + (x & 255)) >>> 0;
-        y = rotl(y, r2);
-        x = (x + (y ^ (k << 8))) >>> 0;
-        x = rotr(x, r3);
-        out = (x + y + (x >>> 11)) & 255;
+      if (blockIdx >= 64) {
+        state[12] = counter >>> 0;
+        const w = new Uint32Array(state);
+        for (let r = 0; r < 10; r++) {
+          qr(w, 0, 4, 8, 12); qr(w, 1, 5, 9, 13); qr(w, 2, 6, 10, 14); qr(w, 3, 7, 11, 15);
+          qr(w, 0, 5, 10, 15); qr(w, 1, 6, 11, 12); qr(w, 2, 7, 8, 13); qr(w, 3, 4, 9, 14);
+        }
+        block = new Uint8Array(64);
+        for (let i = 0; i < 16; i++) {
+          const word = (w[i] + state[i]) >>> 0;
+          block[i*4] = word & 0xff;
+          block[i*4+1] = (word >>> 8) & 0xff;
+          block[i*4+2] = (word >>> 16) & 0xff;
+          block[i*4+3] = (word >>> 24) & 0xff;
+        }
+        blockIdx = 0;
+        counter++;
       }
-      idx += 1;
-      return byte ^ out;
+      return byte ^ block[blockIdx++];
     };
   };
   const stream = (data, order, onByte) => {

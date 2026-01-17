@@ -33,45 +33,122 @@ function hasUnsupported(node) {
   return unsupported;
 }
 
+// GCD helper
+function gcd(a, b) {
+  let x = a;
+  let y = b;
+  while (y !== 0) {
+    const temp = x % y;
+    x = y;
+    y = temp;
+  }
+  return x;
+}
+
+// Generate all coprime candidates for a given modulus
+function findCoprimes(modulus, rng) {
+  const coprimes = [];
+  // Start from 2 to avoid trivial multiplier 1
+  for (let i = 2; i < modulus * 2 && coprimes.length < 50; i++) {
+    if (gcd(modulus, i) === 1) {
+      coprimes.push(i);
+    }
+  }
+  // If we found candidates, pick a random one
+  if (coprimes.length > 0) {
+    return rng.pick(coprimes);
+  }
+  // Fallback to 1 if no coprime found
+  return 1;
+}
+
+// Generate fake dead code that looks realistic
+function buildFakeStatement(t, ctx) {
+  const fakeVarId = t.identifier(ctx.nameGen.next());
+  const fakeValueOptions = [
+    () => t.numericLiteral(ctx.rng.int(0, 1000)),
+    () => t.stringLiteral(ctx.nameGen.next()),
+    () => t.booleanLiteral(ctx.rng.bool()),
+    () => t.nullLiteral(),
+  ];
+  const fakeValue = ctx.rng.pick(fakeValueOptions)();
+  return t.variableDeclaration("var", [
+    t.variableDeclarator(fakeVarId, fakeValue),
+  ]);
+}
+
+// Build opaque predicate that always evaluates to true
+function buildOpaquePredicate(t, ctx) {
+  // Mathematical identities that are always true
+  const predicates = [
+    // (x | 1) !== 0 is always true
+    () => {
+      const x = t.numericLiteral(ctx.rng.int(1, 100));
+      return t.binaryExpression(
+        "!==",
+        t.binaryExpression("|", x, t.numericLiteral(1)),
+        t.numericLiteral(0)
+      );
+    },
+    // x * x >= 0 is always true
+    () => {
+      const x = t.numericLiteral(ctx.rng.int(-50, 50));
+      return t.binaryExpression(
+        ">=",
+        t.binaryExpression("*", x, x),
+        t.numericLiteral(0)
+      );
+    },
+    // (x & 1) === 0 || (x & 1) === 1 is always true
+    () => {
+      const x = t.numericLiteral(ctx.rng.int(0, 1000));
+      return t.logicalExpression(
+        "||",
+        t.binaryExpression(
+          "===",
+          t.binaryExpression("&", x, t.numericLiteral(1)),
+          t.numericLiteral(0)
+        ),
+        t.binaryExpression(
+          "===",
+          t.binaryExpression("&", x, t.numericLiteral(1)),
+          t.numericLiteral(1)
+        )
+      );
+    },
+  ];
+  return ctx.rng.pick(predicates)();
+}
+
 function buildFlattenedBody(t, ctx, statements) {
   const stateId = t.identifier(ctx.nameGen.next());
+  const state2Id = t.identifier(ctx.nameGen.next());
   const lookupId = t.identifier(ctx.nameGen.next());
   const seedId = t.identifier(ctx.nameGen.next());
   const count = statements.length;
   const order = Array.from({ length: count }, (_, i) => i);
   ctx.rng.shuffle(order);
   const seed = ctx.rng.int(0, count - 1);
+  const seed2 = ctx.rng.int(0, count - 1);
 
-  const gcd = (a, b) => {
-    let x = a;
-    let y = b;
-    while (y !== 0) {
-      const temp = x % y;
-      x = y;
-      y = temp;
-    }
-    return x;
+  // Dynamic multiplier generation
+  const multiplier = findCoprimes(count, ctx.rng);
+  const multiplier2 = findCoprimes(count, ctx.rng);
+
+  // Use two multipliers/seeds for more complex encoding
+  const encodeState = (index) => {
+    const s1 = (index * multiplier + seed) % count;
+    return (s1 * multiplier2 + seed2) % count;
   };
-  const multiplierCandidates = [7, 5, 11, 13, 17, 19];
-  let multiplier = 7;
-  for (const candidate of multiplierCandidates) {
-    if (gcd(count, candidate) === 1) {
-      multiplier = candidate;
-      break;
-    }
-  }
-  if (gcd(count, multiplier) !== 1) {
-    multiplier = 1;
-  }
 
-  const encodeState = (index) => (index * multiplier + seed) % count;
   const lookupValues = new Array(count);
   for (let i = 0; i < count; i += 1) {
     lookupValues[encodeState(i)] = i;
   }
 
-  const buildStateExpr = (indexLiteral) =>
-    t.binaryExpression(
+  const buildStateExpr = (indexLiteral) => {
+    // (((index * m1 + seed) % count) * m2 + seed2) % count
+    const s1Expr = t.binaryExpression(
       "%",
       t.binaryExpression(
         "+",
@@ -80,11 +157,32 @@ function buildFlattenedBody(t, ctx, statements) {
       ),
       t.numericLiteral(count)
     );
+    const s2Expr = t.binaryExpression(
+      "%",
+      t.binaryExpression(
+        "+",
+        t.binaryExpression("*", s1Expr, t.numericLiteral(multiplier2)),
+        state2Id
+      ),
+      t.numericLiteral(count)
+    );
+    return s2Expr;
+  };
 
   const cases = order.map((index) => {
     const stmt = statements[index];
     const caseBody = [];
-    caseBody.push(stmt);
+
+    // Occasionally wrap real statement with opaque predicate
+    if (ctx.rng.bool(0.15)) {
+      const predicate = buildOpaquePredicate(t, ctx);
+      caseBody.push(
+        t.ifStatement(predicate, t.blockStatement([stmt]), null)
+      );
+    } else {
+      caseBody.push(stmt);
+    }
+
     if (stmt.type !== "ReturnStatement" && stmt.type !== "ThrowStatement") {
       const nextValue = index + 1 < count ? index + 1 : -1;
       caseBody.push(
@@ -100,12 +198,24 @@ function buildFlattenedBody(t, ctx, statements) {
       );
     }
     caseBody.push(t.breakStatement());
-    return t.switchCase(
-      t.numericLiteral(index),
-      [t.blockStatement(caseBody)]
-    );
+    return t.switchCase(t.numericLiteral(index), [t.blockStatement(caseBody)]);
   });
 
+  // Add fake/dead code cases
+  const fakeCaseCount = ctx.rng.int(2, 5);
+  for (let i = 0; i < fakeCaseCount; i++) {
+    const fakeIndex = count + i;
+    const fakeBody = [
+      buildFakeStatement(t, ctx),
+      t.expressionStatement(
+        t.assignmentExpression("=", stateId, t.numericLiteral(-1))
+      ),
+      t.breakStatement(),
+    ];
+    cases.push(t.switchCase(t.numericLiteral(fakeIndex), [t.blockStatement(fakeBody)]));
+  }
+
+  // Default case
   cases.push(
     t.switchCase(null, [
       t.blockStatement([
@@ -117,13 +227,13 @@ function buildFlattenedBody(t, ctx, statements) {
     ])
   );
 
+  // Shuffle cases to further obfuscate
+  ctx.rng.shuffle(cases);
+
   const whileStmt = t.whileStatement(
     t.binaryExpression("!==", stateId, t.numericLiteral(-1)),
     t.blockStatement([
-      t.switchStatement(
-        t.memberExpression(lookupId, stateId, true),
-        cases
-      ),
+      t.switchStatement(t.memberExpression(lookupId, stateId, true), cases),
     ])
   );
 
@@ -132,11 +242,12 @@ function buildFlattenedBody(t, ctx, statements) {
       t.variableDeclarator(seedId, t.numericLiteral(seed)),
     ]),
     t.variableDeclaration("const", [
+      t.variableDeclarator(state2Id, t.numericLiteral(seed2)),
+    ]),
+    t.variableDeclaration("const", [
       t.variableDeclarator(
         lookupId,
-        t.arrayExpression(
-          lookupValues.map((value) => t.numericLiteral(value))
-        )
+        t.arrayExpression(lookupValues.map((value) => t.numericLiteral(value)))
       ),
     ]),
     t.variableDeclaration("let", [

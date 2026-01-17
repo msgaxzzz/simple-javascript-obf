@@ -23,7 +23,8 @@ async function main() {
     preset: "high",
     seed: "test-seed",
     filename: path.basename(inputPath),
-    vm: { enabled: true, include: ["fib"] },
+    renameGlobals: true,
+    vm: { enabled: true, include: ["fib"], downlevel: true },
   });
   const vmPath = path.join(outDir, `${baseName}.vm.js`);
   fs.writeFileSync(vmPath, obfVm.code);

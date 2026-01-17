@@ -71,9 +71,17 @@ function renameIdentifiers(ast, ctx) {
         reserved.add(name);
       }
       const usedNames = new Set(reserved);
+      if (path.scope) {
+        for (const name of Object.keys(path.scope.bindings)) {
+          usedNames.add(name);
+        }
+      }
       path.traverse({
         Scopable(scopePath) {
           if (!scopePath.scope) {
+            return;
+          }
+          if (scopePath.isProgram()) {
             return;
           }
           for (const name of Object.keys(scopePath.scope.bindings)) {
@@ -82,9 +90,13 @@ function renameIdentifiers(ast, ctx) {
         },
       });
 
+      if (options.renameOptions.renameGlobals && path.scope) {
+        renameScope(path.scope, ctx, reserved, usedNames);
+      }
+
       path.traverse({
         Scopable(scopePath) {
-          if (scopePath.isProgram() && !options.renameOptions.renameGlobals) {
+          if (scopePath.isProgram()) {
             return;
           }
           if (!scopePath.scope) {

@@ -1,5 +1,5 @@
-const crypto = require("crypto");
-const { concatKeys, streamXor } = require("../../utils/stream");
+const { getRandomBytes } = require("../../utils/rng");
+const { concatKeys, streamXor, ChaCha20 } = require("../../utils/stream");
 
 function xorBytes(bytes, maskBytes) {
   const mask = Uint8Array.from(maskBytes);
@@ -11,8 +11,12 @@ function xorBytes(bytes, maskBytes) {
 }
 
 function encodeBytecode(code, rng) {
-  const keyLength = rng.int(5, 12);
-  const keyBytes = Array.from({ length: keyLength }, () => rng.int(0, 255));
+  // Increased key length: 32 bytes (256 bits)
+  const keyLength = 32;
+  const keyBytes = rng.bytes ? rng.bytes(keyLength) : Array.from({ length: keyLength }, () => rng.int(0, 255));
+  // Generate nonce for ChaCha20
+  const nonceBytes = rng.bytes ? rng.bytes(12) : Array.from({ length: 12 }, () => rng.int(0, 255));
+
   const bytes = new Uint8Array(code.length * 4);
   for (let i = 0; i < code.length; i += 1) {
     const value = code[i] >>> 0;
@@ -42,6 +46,7 @@ function encodeBytecode(code, rng) {
   ]);
   const paramInfo = splitSecret(paramBytes, rng);
   const keyInfo = splitSecret(keyBytes, rng);
+  const nonceInfo = splitSecret(nonceBytes, rng);
   return {
     parts: shuffled,
     order,
@@ -57,14 +62,23 @@ function encodeBytecode(code, rng) {
     keyMask: keyInfo.mask,
     keyOrder: keyInfo.order,
     keyOrderMask: keyInfo.orderMask,
+    nonceMasked: nonceInfo.masked,
+    nonceMask: nonceInfo.mask,
+    nonceOrder: nonceInfo.order,
+    nonceOrderMask: nonceInfo.orderMask,
   };
 }
 
 function encodeConstPool(consts, rng) {
-  const keyLength = rng.int(5, 12);
-  const keyBytes = Array.from({ length: keyLength }, () => rng.int(0, 255));
-  const maskLength = rng.int(4, 10);
-  const maskBytes = Array.from({ length: maskLength }, () => rng.int(0, 255));
+  // Increased key length: 32 bytes (256 bits)
+  const keyLength = 32;
+  const keyBytes = rng.bytes ? rng.bytes(keyLength) : Array.from({ length: keyLength }, () => rng.int(0, 255));
+  // Increased mask length: 16-24 bytes
+  const maskLength = rng.int(16, 24);
+  const maskBytes = rng.bytes ? rng.bytes(maskLength) : Array.from({ length: maskLength }, () => rng.int(0, 255));
+  // Generate nonce
+  const nonceBytes = rng.bytes ? rng.bytes(12) : Array.from({ length: 12 }, () => rng.int(0, 255));
+
   const entries = consts.map((value) => {
     if (value === undefined) return ["u", 0];
     if (value === null) return ["l", 0];
@@ -101,6 +115,7 @@ function encodeConstPool(consts, rng) {
   const paramInfo = splitSecret(paramBytes, rng);
   const keyInfo = splitSecret(keyBytes, rng);
   const maskInfo = splitSecret(maskBytes, rng);
+  const nonceInfo = splitSecret(nonceBytes, rng);
   return {
     parts: shuffled,
     order,
@@ -120,6 +135,10 @@ function encodeConstPool(consts, rng) {
     maskMask: maskInfo.mask,
     maskOrder: maskInfo.order,
     maskOrderMask: maskInfo.orderMask,
+    nonceMasked: nonceInfo.masked,
+    nonceMask: nonceInfo.mask,
+    nonceOrder: nonceInfo.order,
+    nonceOrderMask: nonceInfo.orderMask,
   };
 }
 
@@ -168,12 +187,13 @@ function encodeBytes(bytes, rng) {
 }
 
 function splitSecret(bytes, rng) {
-  const order = Array.from({ length: bytes.length }, (_, i) => i);
+  const byteArray = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+  const order = Array.from({ length: byteArray.length }, (_, i) => i);
   rng.shuffle(order);
   const masked = [];
   const mask = [];
   for (let i = 0; i < order.length; i += 1) {
-    const value = bytes[order[i]];
+    const value = byteArray[order[i]];
     const m = rng.int(0, 255);
     masked.push(value ^ m);
     mask.push(m);
@@ -190,12 +210,18 @@ function splitSecret(bytes, rng) {
 
 function encodeOpcodeTable(opcodeDecode, rng) {
   const length = opcodeDecode.length;
-  const keyBytes = crypto.randomBytes(12);
-  const ivBytes = crypto.randomBytes(8);
-  const tag = crypto.randomBytes(10);
-  const fullKey = concatKeys(keyBytes, ivBytes, tag);
+  // Use RNG bytes method if available, otherwise use getRandomBytes
+  const keyBytes = rng.bytes ? rng.bytes(32) : (getRandomBytes(32) || Array.from({ length: 32 }, () => rng.int(0, 255)));
+  const nonceBytes = rng.bytes
+    ? rng.bytes(12)
+    : (getRandomBytes(12) || Array.from({ length: 12 }, () => rng.int(0, 255)));
+  const nonceMid = nonceBytes.length >>> 1;
+  const ivBytes = nonceBytes.slice(0, nonceMid);
+  const tagBytes = nonceBytes.slice(nonceMid);
+
   const input = Buffer.from(Uint8Array.from(opcodeDecode));
-  const ciphertext = streamXor(input, fullKey);
+  const streamKey = concatKeys(keyBytes, ivBytes, tagBytes);
+  const ciphertext = streamXor(input, streamKey);
   const encoded = encodeBytes(ciphertext, rng);
   const parts = splitPayload(encoded.encoded, rng);
   const order = Array.from({ length: parts.length }, (_, i) => i);
@@ -203,7 +229,7 @@ function encodeOpcodeTable(opcodeDecode, rng) {
   const shuffled = order.map((idx) => parts[idx]);
   const keyInfo = splitSecret(keyBytes, rng);
   const ivInfo = splitSecret(ivBytes, rng);
-  const tagInfo = splitSecret(tag, rng);
+  const tagInfo = splitSecret(tagBytes, rng);
   const alphabetInfo = splitSecret(Buffer.from(encoded.alphabet, "utf8"), rng);
   const cipherLength = encoded.length >>> 0;
   const opsLength = length >>> 0;
