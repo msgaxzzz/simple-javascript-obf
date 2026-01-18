@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased] - 2026-01-18
+## [Unreleased]
+
+## [1.1.1] - 2026-01-18
 ### Added
 - Local web UI (`web/` + `webstart.js`) for uploading/pasting JavaScript and downloading obfuscated output.
 - CLI flags to control string encoding for object keys, JSX attribute values, and template literal static chunks.
