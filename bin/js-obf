@@ -14,7 +14,14 @@ Options:
   --preset <high|balanced|low>  Preset strength (default: high)
   --no-rename                Disable identifier renaming
   --no-strings               Disable string encoding
+  --no-strings-object-keys   Skip encoding object literal keys
+  --strings-object-keys      Force encoding object literal keys
+  --no-strings-jsx-attrs     Skip encoding JSX attribute string values
+  --strings-jsx-attrs        Force encoding JSX attribute string values
+  --no-strings-template-chunks  Skip encoding template literal static chunks
+  --strings-template-chunks     Force encoding template literal static chunks
   --no-cff                   Disable control flow flattening
+  --cff-downlevel            Allow CFF to downlevel let/const to var
   --no-dead                  Disable dead code injection
   --vm                       Enable VM virtualization (see README limits)
   --vm-include <a,b,c>        Only virtualize specified function names
@@ -32,6 +39,8 @@ Options:
   --ecma <version>           Terser output ECMAScript version (default: 2020)
   --sourcemap                Emit source map
   --compact                  Compact output
+  --no-minify                Skip Terser minification
+  --beautify                 Beautify Terser output (multi-line, requires minify)
   -h, --help                 Show help
 `;
   process.stdout.write(text);
@@ -76,6 +85,14 @@ function parseArgs(argv) {
     }
     if (arg === "--compact") {
       options.compact = true;
+      continue;
+    }
+    if (arg === "--no-minify") {
+      options.minify = false;
+      continue;
+    }
+    if (arg === "--beautify") {
+      options.beautify = true;
       continue;
     }
     if (arg === "--vm") {
@@ -128,8 +145,36 @@ function parseArgs(argv) {
       options.strings = false;
       continue;
     }
+    if (arg === "--no-strings-object-keys") {
+      options.stringsObjectKeys = false;
+      continue;
+    }
+    if (arg === "--strings-object-keys") {
+      options.stringsObjectKeys = true;
+      continue;
+    }
+    if (arg === "--no-strings-jsx-attrs") {
+      options.stringsJsxAttrs = false;
+      continue;
+    }
+    if (arg === "--strings-jsx-attrs") {
+      options.stringsJsxAttrs = true;
+      continue;
+    }
+    if (arg === "--no-strings-template-chunks") {
+      options.stringsTemplateChunks = false;
+      continue;
+    }
+    if (arg === "--strings-template-chunks") {
+      options.stringsTemplateChunks = true;
+      continue;
+    }
     if (arg === "--no-cff") {
       options.cff = false;
+      continue;
+    }
+    if (arg === "--cff-downlevel") {
+      options.cffDownlevel = true;
       continue;
     }
     if (arg === "--no-dead") {
@@ -188,7 +233,15 @@ async function main() {
     preset: options.preset,
     rename: options.rename,
     strings: options.strings,
+    stringsOptions: {
+      encodeObjectKeys: options.stringsObjectKeys,
+      encodeJSXAttributes: options.stringsJsxAttrs,
+      encodeTemplateChunks: options.stringsTemplateChunks,
+    },
     cff: options.cff,
+    cffOptions: {
+      downlevel: options.cffDownlevel,
+    },
     dead: options.dead,
     antiHook: options.antiHook
       ? {
@@ -209,6 +262,8 @@ async function main() {
     ecma: options.ecma,
     sourceMap: options.sourcemap,
     compact: options.compact,
+    minify: options.minify,
+    beautify: options.beautify,
     filename: inputPath === "-" ? "stdin.js" : inputPath,
   });
 

@@ -1,28 +1,42 @@
 const { DEFAULT_RESERVED } = require("./reserved");
 
-const LOWER_CHARS = "abcdefghijklmnopqrstuvwxyz";
-const UPPER_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-const MIX_CHARS = `${LOWER_CHARS}${UPPER_CHARS}`;
+const FIRST_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_$";
+const REST_CHARS = `${FIRST_CHARS}0123456789`;
 
-function pickChar(chars, rng, fallbackSeed) {
+function shuffleChars(chars, rng) {
+  const list = chars.split("");
   if (rng) {
-    return chars[rng.int(0, chars.length - 1)];
+    rng.shuffle(list);
   }
-  return chars[fallbackSeed % chars.length];
+  return list.join("");
 }
 
-function buildSuffix(rng, seed) {
-  const chars = [
-    pickChar(LOWER_CHARS, rng, seed + 1),
-    pickChar(UPPER_CHARS, rng, seed + 2),
-    pickChar(MIX_CHARS, rng, seed + 3),
-  ];
-  if (rng) {
-    rng.shuffle(chars);
-  } else if (seed % 2 === 0) {
-    [chars[0], chars[1]] = [chars[1], chars[0]];
+function hash32(value) {
+  let x = value >>> 0;
+  x ^= x >>> 16;
+  x = Math.imul(x, 0x7feb352d) >>> 0;
+  x ^= x >>> 15;
+  x = Math.imul(x, 0x846ca68b) >>> 0;
+  x ^= x >>> 16;
+  return x >>> 0;
+}
+
+function encodeBase(value, alphabet, minLen) {
+  const base = alphabet.length;
+  let v = value >>> 0;
+  let out = "";
+  do {
+    out = alphabet[v % base] + out;
+    v = Math.floor(v / base);
+  } while (v > 0);
+  if (minLen && out.length < minLen) {
+    let pad = value >>> 0;
+    while (out.length < minLen) {
+      pad = Math.imul(pad ^ 0x5bd1e995, 0x27d4eb2d) >>> 0;
+      out = alphabet[pad % base] + out;
+    }
   }
-  return chars.join("");
+  return out;
 }
 
 class NameGenerator {
@@ -30,16 +44,23 @@ class NameGenerator {
     this.reserved = new Set(reserved);
     this.rng = rng;
     this.index = 0;
+    this.used = new Set();
+    this.firstAlphabet = shuffleChars(FIRST_CHARS, rng);
+    this.restAlphabet = shuffleChars(REST_CHARS, rng);
+    this.salt = rng ? rng.int(0, 0x7fffffff) : 0x9e3779b9;
   }
 
   next() {
     while (true) {
       const currentIndex = this.index;
-      const hexPart = currentIndex.toString(16);
-      const suffix = buildSuffix(this.rng, currentIndex * 31);
-      const name = `_0x${hexPart}${suffix}`;
       this.index += 1;
-      if (!this.reserved.has(name)) {
+      const mixed = hash32(currentIndex + this.salt);
+      const first = this.firstAlphabet[mixed % this.firstAlphabet.length];
+      const minLen = 2 + (mixed % 3);
+      const body = encodeBase(hash32(mixed ^ 0x9e3779b9), this.restAlphabet, minLen);
+      const name = `${first}${body}`;
+      if (!this.reserved.has(name) && !this.used.has(name)) {
+        this.used.add(name);
         return name;
       }
     }

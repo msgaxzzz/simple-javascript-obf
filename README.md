@@ -5,7 +5,7 @@ A modular JavaScript obfuscation CLI with control-flow flattening (CFF) and opti
 ## Features
 - CLI input/output for Node.js and browser-targeted bundles
 - AST-level obfuscation: variable renaming, string encryption (Base64 + custom stream cipher / polymorphic variants), dead-code injection, control-flow flattening
-- Always runs Terser compression on output
+- Runs Terser compression on output (disable with `--no-minify`)
 - Optional VM virtualization (covers common syntax; see limitations)
 - Optional anti-hook runtime guard (detects tampering of common built-ins)
 - VM opcode mapping randomization and mask obfuscation, fake opcode injection (configurable via `vm.opcodeShuffle` / `vm.fakeOpcodes`)
@@ -34,13 +34,28 @@ Use the interactive script to choose features and specify input file/directory a
 bash bin/obf.sh
 ```
 If an input directory is provided, it will recursively obfuscate all `.js` files and overwrite them, automatically ignoring `node_modules` (also tolerates common misspellings of that directory name).
+When string encryption is enabled, the script also prompts whether to skip encoding object literal keys, JSX attribute string values, or template literal static chunks.
+
+## Web UI
+Start the local web console (default port `6589`):
+```
+node webstart.js
+```
+Then open `http://localhost:6589` to upload or paste JavaScript, pick options, run obfuscation, and download results.
 
 ## CLI options
 - `-o, --output <file>` Output file
 - `--preset <high|balanced|low>` Preset strength (default `high`)
 - `--no-rename` Disable variable renaming
 - `--no-strings` Disable string encryption
+- `--no-strings-object-keys` Skip encoding object literal keys
+- `--strings-object-keys` Force encoding object literal keys
+- `--no-strings-jsx-attrs` Skip encoding JSX attribute string values
+- `--strings-jsx-attrs` Force encoding JSX attribute string values
+- `--no-strings-template-chunks` Skip encoding template literal static chunks
+- `--strings-template-chunks` Force encoding template literal static chunks
 - `--no-cff` Disable control-flow flattening
+- `--cff-downlevel` Allow CFF to downlevel `let/const` to `var`
 - `--no-dead` Disable dead-code injection
 - `--vm` Enable VM virtualization (see limitations)
 - `--vm-include name1,name2` Only virtualize the specified function names
@@ -58,6 +73,8 @@ If an input directory is provided, it will recursively obfuscate all `.js` files
 - `--ecma <version>` Terser output ECMAScript version (default 2020)
 - `--sourcemap` Emit source map
 - `--compact` Compact output
+- `--no-minify` Skip Terser minification
+- `--beautify` Beautify Terser output (multi-line, requires minify)
 
 Default output is ES2020 to support optional chaining/nullish coalescing. For older targets, set `--ecma 2015` or `--ecma 5`.
 

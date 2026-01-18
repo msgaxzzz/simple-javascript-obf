@@ -33,33 +33,28 @@ function hasUnsupported(node) {
   return unsupported;
 }
 
-// GCD helper
-function gcd(a, b) {
-  let x = a;
-  let y = b;
-  while (y !== 0) {
-    const temp = x % y;
-    x = y;
-    y = temp;
-  }
-  return x;
-}
-
-// Generate all coprime candidates for a given modulus
-function findCoprimes(modulus, rng) {
-  const coprimes = [];
-  // Start from 2 to avoid trivial multiplier 1
-  for (let i = 2; i < modulus * 2 && coprimes.length < 50; i++) {
-    if (gcd(modulus, i) === 1) {
-      coprimes.push(i);
+function buildStateValues(count, rng) {
+  const poolSize = Math.max(count * 3, count + 5);
+  const pool = Array.from({ length: poolSize }, (_, i) => i);
+  rng.shuffle(pool);
+  const isLinearStep = (values) => {
+    if (values.length < 3) {
+      return true;
     }
+    const step = values[1] - values[0];
+    for (let i = 2; i < values.length; i += 1) {
+      if (values[i] - values[i - 1] !== step) {
+        return false;
+      }
+    }
+    return true;
+  };
+  let values = pool.slice(0, count);
+  for (let attempt = 0; attempt < 5 && isLinearStep(values); attempt += 1) {
+    rng.shuffle(pool);
+    values = pool.slice(0, count);
   }
-  // If we found candidates, pick a random one
-  if (coprimes.length > 0) {
-    return rng.pick(coprimes);
-  }
-  // Fallback to 1 if no coprime found
-  return 1;
+  return values;
 }
 
 // Generate fake dead code that looks realistic
@@ -120,53 +115,36 @@ function buildOpaquePredicate(t, ctx) {
   return ctx.rng.pick(predicates)();
 }
 
+function downlevelLetConst(path) {
+  path.traverse({
+    Function(innerPath) {
+      innerPath.skip();
+    },
+    VariableDeclaration(innerPath) {
+      if (innerPath.node.kind === "let" || innerPath.node.kind === "const") {
+        innerPath.node.kind = "var";
+      }
+    },
+  });
+}
+
 function buildFlattenedBody(t, ctx, statements) {
   const stateId = t.identifier(ctx.nameGen.next());
-  const state2Id = t.identifier(ctx.nameGen.next());
-  const lookupId = t.identifier(ctx.nameGen.next());
-  const seedId = t.identifier(ctx.nameGen.next());
+  const stateValuesId = t.identifier(ctx.nameGen.next());
+  const nextId = t.identifier(ctx.nameGen.next());
+  const indexId = t.identifier(ctx.nameGen.next());
   const count = statements.length;
   const order = Array.from({ length: count }, (_, i) => i);
   ctx.rng.shuffle(order);
-  const seed = ctx.rng.int(0, count - 1);
-  const seed2 = ctx.rng.int(0, count - 1);
-
-  // Dynamic multiplier generation
-  const multiplier = findCoprimes(count, ctx.rng);
-  const multiplier2 = findCoprimes(count, ctx.rng);
-
-  // Use two multipliers/seeds for more complex encoding
-  const encodeState = (index) => {
-    const s1 = (index * multiplier + seed) % count;
-    return (s1 * multiplier2 + seed2) % count;
-  };
-
-  const lookupValues = new Array(count);
-  for (let i = 0; i < count; i += 1) {
-    lookupValues[encodeState(i)] = i;
-  }
-
-  const buildStateExpr = (indexLiteral) => {
-    // (((index * m1 + seed) % count) * m2 + seed2) % count
-    const s1Expr = t.binaryExpression(
-      "%",
-      t.binaryExpression(
-        "+",
-        t.binaryExpression("*", indexLiteral, t.numericLiteral(multiplier)),
-        seedId
-      ),
-      t.numericLiteral(count)
-    );
-    const s2Expr = t.binaryExpression(
-      "%",
-      t.binaryExpression(
-        "+",
-        t.binaryExpression("*", s1Expr, t.numericLiteral(multiplier2)),
-        state2Id
-      ),
-      t.numericLiteral(count)
-    );
-    return s2Expr;
+  const stateValues = buildStateValues(count, ctx.rng);
+  const usedStates = new Set(stateValues);
+  const pickUnusedState = () => {
+    let value = ctx.rng.int(count + 1, count * 6 + 30);
+    while (usedStates.has(value) || value === -1) {
+      value = ctx.rng.int(count + 1, count * 6 + 30);
+    }
+    usedStates.add(value);
+    return value;
   };
 
   const cases = order.map((index) => {
@@ -184,27 +162,26 @@ function buildFlattenedBody(t, ctx, statements) {
     }
 
     if (stmt.type !== "ReturnStatement" && stmt.type !== "ThrowStatement") {
-      const nextValue = index + 1 < count ? index + 1 : -1;
       caseBody.push(
         t.expressionStatement(
           t.assignmentExpression(
             "=",
             stateId,
-            nextValue === -1
-              ? t.numericLiteral(-1)
-              : buildStateExpr(t.numericLiteral(nextValue))
+            t.memberExpression(nextId, stateId, true)
           )
         )
       );
     }
     caseBody.push(t.breakStatement());
-    return t.switchCase(t.numericLiteral(index), [t.blockStatement(caseBody)]);
+    return t.switchCase(t.numericLiteral(stateValues[index]), [
+      t.blockStatement(caseBody),
+    ]);
   });
 
   // Add fake/dead code cases
   const fakeCaseCount = ctx.rng.int(2, 5);
   for (let i = 0; i < fakeCaseCount; i++) {
-    const fakeIndex = count + i;
+    const fakeIndex = pickUnusedState();
     const fakeBody = [
       buildFakeStatement(t, ctx),
       t.expressionStatement(
@@ -233,25 +210,68 @@ function buildFlattenedBody(t, ctx, statements) {
   const whileStmt = t.whileStatement(
     t.binaryExpression("!==", stateId, t.numericLiteral(-1)),
     t.blockStatement([
-      t.switchStatement(t.memberExpression(lookupId, stateId, true), cases),
+      t.switchStatement(stateId, cases),
     ])
   );
 
+  const maxState = Math.max(...stateValues);
+
   return [
     t.variableDeclaration("const", [
-      t.variableDeclarator(seedId, t.numericLiteral(seed)),
-    ]),
-    t.variableDeclaration("const", [
-      t.variableDeclarator(state2Id, t.numericLiteral(seed2)),
+      t.variableDeclarator(
+        stateValuesId,
+        t.arrayExpression(stateValues.map((value) => t.numericLiteral(value)))
+      ),
     ]),
     t.variableDeclaration("const", [
       t.variableDeclarator(
-        lookupId,
-        t.arrayExpression(lookupValues.map((value) => t.numericLiteral(value)))
+        nextId,
+        t.newExpression(t.identifier("Array"), [
+          t.numericLiteral(maxState + 1),
+        ])
       ),
     ]),
+    t.forStatement(
+      t.variableDeclaration("let", [
+        t.variableDeclarator(indexId, t.numericLiteral(0)),
+      ]),
+      t.binaryExpression(
+        "<",
+        indexId,
+        t.memberExpression(stateValuesId, t.identifier("length"))
+      ),
+      t.updateExpression("++", indexId),
+      t.blockStatement([
+        t.expressionStatement(
+          t.assignmentExpression(
+            "=",
+            t.memberExpression(
+              nextId,
+              t.memberExpression(stateValuesId, indexId, true),
+              true
+            ),
+            t.conditionalExpression(
+              t.binaryExpression(
+                "<",
+                t.binaryExpression("+", indexId, t.numericLiteral(1)),
+                t.memberExpression(stateValuesId, t.identifier("length"))
+              ),
+              t.memberExpression(
+                stateValuesId,
+                t.binaryExpression("+", indexId, t.numericLiteral(1)),
+                true
+              ),
+              t.numericLiteral(-1)
+            )
+          )
+        ),
+      ])
+    ),
     t.variableDeclaration("let", [
-      t.variableDeclarator(stateId, buildStateExpr(t.numericLiteral(0))),
+      t.variableDeclarator(
+        stateId,
+        t.memberExpression(stateValuesId, t.numericLiteral(0), true)
+      ),
     ]),
     whileStmt,
   ];
@@ -261,6 +281,9 @@ function flattenFunctionBody(path, ctx) {
   const bodyPath = path.get("body");
   if (!bodyPath.isBlockStatement()) {
     return;
+  }
+  if (ctx.options.cffOptions && ctx.options.cffOptions.downlevel) {
+    downlevelLetConst(bodyPath);
   }
   const statements = bodyPath.node.body;
   if (!statements || statements.length < ctx.options.cffOptions.minStatements) {

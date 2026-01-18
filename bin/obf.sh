@@ -88,7 +88,11 @@ fi
 
 enable_rename=true
 enable_strings=true
+encode_object_keys=true
+encode_jsx_attrs=true
+encode_template_chunks=true
 enable_cff=true
+enable_cff_downlevel=false
 enable_dead=true
 enable_vm=false
 enable_anti_hook=false
@@ -100,8 +104,24 @@ fi
 if ! prompt_yes_no "Enable string encryption? [y/N]: "; then
   enable_strings=false
 fi
+if ${enable_strings}; then
+  if prompt_yes_no "Skip encoding object literal keys? [y/N]: "; then
+    encode_object_keys=false
+  fi
+  if prompt_yes_no "Skip encoding JSX attribute string values? [y/N]: "; then
+    encode_jsx_attrs=false
+  fi
+  if prompt_yes_no "Skip encoding template literal static chunks? [y/N]: "; then
+    encode_template_chunks=false
+  fi
+fi
 if ! prompt_yes_no "Enable control-flow flattening? [y/N]: "; then
   enable_cff=false
+fi
+if ${enable_cff}; then
+  if prompt_yes_no "Downlevel let/const to var for CFF? [y/N]: "; then
+    enable_cff_downlevel=true
+  fi
 fi
 if ! prompt_yes_no "Enable dead-code injection? [y/N]: "; then
   enable_dead=false
@@ -124,11 +144,21 @@ fi
 seed=$(prompt "PRNG seed (optional): ")
 enable_sourcemap=false
 enable_compact=false
+enable_minify=true
+enable_beautify=false
 if prompt_yes_no "Generate source map? [y/N]: "; then
   enable_sourcemap=true
 fi
 if prompt_yes_no "Use compact output? [y/N]: "; then
   enable_compact=true
+fi
+if prompt_yes_no "Skip Terser minify? [y/N]: "; then
+  enable_minify=false
+fi
+if ${enable_minify}; then
+  if prompt_yes_no "Beautify output (multi-line)? [y/N]: "; then
+    enable_beautify=true
+  fi
 fi
 
 common_args=(--preset "${preset}")
@@ -138,9 +168,21 @@ if ! ${enable_rename}; then
 fi
 if ! ${enable_strings}; then
   common_args+=(--no-strings)
+else
+  if ! ${encode_object_keys}; then
+    common_args+=(--no-strings-object-keys)
+  fi
+  if ! ${encode_jsx_attrs}; then
+    common_args+=(--no-strings-jsx-attrs)
+  fi
+  if ! ${encode_template_chunks}; then
+    common_args+=(--no-strings-template-chunks)
+  fi
 fi
 if ! ${enable_cff}; then
   common_args+=(--no-cff)
+elif ${enable_cff_downlevel}; then
+  common_args+=(--cff-downlevel)
 fi
 if ! ${enable_dead}; then
   common_args+=(--no-dead)
@@ -164,6 +206,12 @@ if ${enable_sourcemap}; then
 fi
 if ${enable_compact}; then
   common_args+=(--compact)
+fi
+if ! ${enable_minify}; then
+  common_args+=(--no-minify)
+fi
+if ${enable_beautify}; then
+  common_args+=(--beautify)
 fi
 
 if [[ "${input_kind}" == "file" ]]; then

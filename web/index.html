@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JS Obfuscator</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Space+Grotesk:wght@400;500;600;700&display=swap");
+
+    :root {
+      color-scheme: light;
+      --bg: #f7f1e7;
+      --panel: #ffffff;
+      --ink: #1a1714;
+      --muted: #5e564e;
+      --line: #e4dacb;
+      --accent: #c7642a;
+      --accent-2: #214036;
+      --accent-3: #f0c07a;
+      --shadow: 0 20px 45px rgba(22, 16, 8, 0.12);
+      --radius: 18px;
+      --ring: 0 0 0 3px rgba(199, 100, 42, 0.2);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", "Segoe UI", system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(circle at 10% 20%, #fff6e8 0%, transparent 55%),
+        radial-gradient(circle at 85% 0%, #f3e4d4 0%, transparent 60%),
+        linear-gradient(160deg, #fff8ef 0%, var(--bg) 52%, #f2eadf 100%);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: -20% -10% auto auto;
+      width: 380px;
+      height: 380px;
+      background: radial-gradient(circle, rgba(199, 100, 42, 0.18), transparent 70%);
+      z-index: 0;
+      pointer-events: none;
+      filter: blur(10px);
+    }
+
+    header {
+      position: relative;
+      padding: 36px 6vw 14px;
+      z-index: 1;
+    }
+
+    .hero {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 18px;
+      align-items: center;
+    }
+
+    .hero h1 {
+      margin: 0 0 10px;
+      font-family: "Fraunces", "Georgia", serif;
+      font-size: clamp(30px, 4vw, 46px);
+      letter-spacing: -0.02em;
+    }
+
+    .hero p {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: var(--accent-2);
+      font-weight: 600;
+      margin-bottom: 10px;
+      display: inline-block;
+    }
+
+    .hero-card {
+      background: var(--panel);
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card h3 {
+      margin: 0 0 6px;
+      font-size: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      color: var(--accent-2);
+    }
+
+    .hero-card ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    main {
+      position: relative;
+      padding: 12px 6vw 48px;
+      display: grid;
+      gap: 20px;
+      max-width: 1180px;
+      margin: 0 auto;
+      z-index: 1;
+    }
+
+    .layout {
+      display: grid;
+      gap: 18px;
+    }
+
+    @media (min-width: 980px) {
+      .layout {
+        grid-template-columns: 1.1fr 0.9fr;
+        align-items: start;
+      }
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 18px;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+      animation: lift 0.5s ease both;
+    }
+
+    .panel::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 100% 0%, rgba(240, 192, 122, 0.18), transparent 55%);
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    .panel > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      text-transform: uppercase;
+      letter-spacing: 0.16em;
+      color: var(--accent-2);
+      position: relative;
+      z-index: 1;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select,
+    textarea {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      font-size: 14px;
+      font-family: inherit;
+      background: #fff;
+      color: var(--ink);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    textarea {
+      min-height: 200px;
+      resize: vertical;
+    }
+
+    input:focus-visible,
+    textarea:focus-visible,
+    select:focus-visible,
+    button:focus-visible {
+      outline: none;
+      box-shadow: var(--ring);
+      border-color: var(--accent);
+    }
+
+    .row {
+      display: grid;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .row.two {
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    }
+
+    .row.three {
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+
+    .inline {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: #fff;
+      font-weight: 600;
+    }
+
+    .drop {
+      border: 2px dashed var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      text-align: center;
+      color: var(--muted);
+      background: #fffaf3;
+      transition: border-color 0.2s, background 0.2s, transform 0.2s;
+      font-size: 14px;
+    }
+
+    .drop.active {
+      border-color: var(--accent);
+      background: #fff1de;
+      color: var(--ink);
+      transform: translateY(-2px);
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      color: var(--ink);
+      margin-bottom: 6px;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
+    .checkbox input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-size: 14px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, var(--accent), #e07c2d);
+      color: #fff;
+      box-shadow: 0 10px 20px rgba(199, 100, 42, 0.25);
+    }
+
+    button.primary:hover {
+      transform: translateY(-1px);
+    }
+
+    button.secondary {
+      background: #f3e6d5;
+      color: var(--accent-2);
+    }
+
+    button.ghost {
+      background: transparent;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    pre {
+      margin: 0;
+      padding: 12px;
+      border-radius: 12px;
+      background: #151311;
+      color: #f4f0eb;
+      font-size: 12px;
+      min-height: 120px;
+      max-height: 260px;
+      overflow: auto;
+      line-height: 1.5;
+    }
+
+    .muted { color: var(--muted); font-size: 12px; }
+
+    .divider {
+      height: 1px;
+      background: var(--line);
+      margin: 12px 0;
+    }
+
+    @keyframes lift {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .panel {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="hero">
+      <div>
+        <span class="eyebrow">Local Obfuscator</span>
+        <h1>JS Obfuscator Console</h1>
+        <p>Upload or paste JavaScript, tune options, and generate a hardened build. Default server port: 6589.</p>
+      </div>
+      <div class="hero-card">
+        <h3>Workflow</h3>
+        <ul>
+          <li>1. Drop a file or paste source.</li>
+          <li>2. Pick preset or fine-tune options.</li>
+          <li>3. Run, then download output + map.</li>
+        </ul>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="layout">
+      <div class="stack">
+        <section class="panel">
+      <h2>Input</h2>
+      <div class="row">
+        <label>Source file</label>
+        <input id="fileInput" type="file" accept=".js,.mjs,.cjs,.ts,.tsx,.jsx" />
+      </div>
+      <div class="divider"></div>
+      <div id="dropZone" class="drop">Drop a JavaScript file here</div>
+      <div class="divider"></div>
+      <div class="row">
+        <label for="source">Paste source</label>
+        <textarea id="source" placeholder="Paste JavaScript here"></textarea>
+      </div>
+      <div class="row two">
+        <div>
+          <label for="inputName">Input filename</label>
+          <input id="inputName" type="text" value="input.js" />
+        </div>
+        <div>
+          <label for="outputName">Output filename</label>
+          <input id="outputName" type="text" value="output.obf.js" />
+        </div>
+      </div>
+        </section>
+
+        <section class="panel">
+      <h2>Options</h2>
+      <div class="row two">
+        <div>
+          <label for="preset">Preset</label>
+          <select id="preset">
+            <option value="high">High</option>
+            <option value="balanced">Balanced</option>
+            <option value="low">Low</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div>
+          <label for="seed">Seed</label>
+          <input id="seed" type="text" value="js-obf" />
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="row two">
+        <div>
+          <label for="ecma">ECMA Target</label>
+          <input id="ecma" type="number" min="5" max="2024" value="2020" />
+        </div>
+        <div>
+          <label for="include">VM Include (comma)</label>
+          <input id="include" type="text" placeholder="fn1, fn2" />
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="row two">
+        <div>
+          <label class="checkbox"><input id="optRename" type="checkbox" checked /> Rename identifiers</label>
+          <label class="checkbox"><input id="optStrings" type="checkbox" checked /> Encrypt strings</label>
+          <label class="checkbox"><input id="optCff" type="checkbox" checked /> Control-flow flattening</label>
+          <label class="checkbox"><input id="optCffDownlevel" type="checkbox" /> CFF downlevel let/const</label>
+          <label class="checkbox"><input id="optDead" type="checkbox" checked /> Dead-code injection</label>
+        </div>
+        <div>
+          <label class="checkbox"><input id="optVm" type="checkbox" /> VM virtualization</label>
+          <label class="checkbox"><input id="optAntiHook" type="checkbox" /> Anti-hook guard</label>
+          <label class="checkbox"><input id="optAntiHookLock" type="checkbox" /> Lock built-ins (anti-hook)</label>
+          <label class="checkbox"><input id="optSourceMap" type="checkbox" /> Emit source map</label>
+          <label class="checkbox"><input id="optMinify" type="checkbox" checked /> Minify output (Terser)</label>
+          <label class="checkbox"><input id="optBeautify" type="checkbox" /> Beautify output (requires minify)</label>
+          <label class="checkbox"><input id="optCompact" type="checkbox" /> Compact output</label>
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="row two">
+        <div>
+          <label class="chip">String options</label>
+          <label class="checkbox"><input id="optStringsObjectKeys" type="checkbox" checked /> Encode object keys</label>
+          <label class="checkbox"><input id="optStringsJsxAttrs" type="checkbox" checked /> Encode JSX attrs</label>
+          <label class="checkbox"><input id="optStringsTemplate" type="checkbox" checked /> Encode template chunks</label>
+        </div>
+        <div>
+          <label class="chip">VM options</label>
+          <label class="checkbox"><input id="optVmOpcode" type="checkbox" checked /> Opcode shuffle</label>
+          <label class="checkbox"><input id="optVmBytecode" type="checkbox" checked /> Bytecode decrypt</label>
+          <label class="checkbox"><input id="optVmConsts" type="checkbox" checked /> Consts decrypt</label>
+          <label class="checkbox"><input id="optVmDownlevel" type="checkbox" /> Downlevel let/const</label>
+          <label>Fake opcode ratio (0-1)</label>
+          <input id="optVmFake" type="number" min="0" max="1" step="0.01" value="0.15" />
+        </div>
+      </div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="panel">
+      <h2>Output</h2>
+      <div class="row">
+        <label for="output">Obfuscated code</label>
+        <textarea id="output" placeholder="Output appears here" readonly></textarea>
+      </div>
+      <div class="actions" style="margin-top: 12px;">
+        <button id="runBtn" class="primary">Obfuscate</button>
+        <button id="downloadBtn" class="secondary" disabled>Download Result</button>
+        <button id="downloadMapBtn" class="ghost" disabled>Download Source Map</button>
+        <button id="copyBtn" class="ghost">Copy Output</button>
+        <button id="clearBtn" class="ghost">Clear</button>
+      </div>
+      <p class="muted" id="status">Idle.</p>
+        </section>
+
+        <section class="panel">
+      <h2>Startup Log</h2>
+      <pre id="log"></pre>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const logEl = document.getElementById("log");
+    const statusEl = document.getElementById("status");
+    const sourceEl = document.getElementById("source");
+    const outputEl = document.getElementById("output");
+    const inputNameEl = document.getElementById("inputName");
+    const outputNameEl = document.getElementById("outputName");
+    const presetEl = document.getElementById("preset");
+
+    const runBtn = document.getElementById("runBtn");
+    const downloadBtn = document.getElementById("downloadBtn");
+    const downloadMapBtn = document.getElementById("downloadMapBtn");
+    const clearBtn = document.getElementById("clearBtn");
+    const copyBtn = document.getElementById("copyBtn");
+
+    const optRename = document.getElementById("optRename");
+    const optStrings = document.getElementById("optStrings");
+    const optCff = document.getElementById("optCff");
+    const optCffDownlevel = document.getElementById("optCffDownlevel");
+    const optDead = document.getElementById("optDead");
+    const optVm = document.getElementById("optVm");
+    const optAntiHook = document.getElementById("optAntiHook");
+    const optAntiHookLock = document.getElementById("optAntiHookLock");
+    const optSourceMap = document.getElementById("optSourceMap");
+    const optMinify = document.getElementById("optMinify");
+    const optBeautify = document.getElementById("optBeautify");
+    const optCompact = document.getElementById("optCompact");
+
+    const optStringsObjectKeys = document.getElementById("optStringsObjectKeys");
+    const optStringsJsxAttrs = document.getElementById("optStringsJsxAttrs");
+    const optStringsTemplate = document.getElementById("optStringsTemplate");
+
+    const optVmOpcode = document.getElementById("optVmOpcode");
+    const optVmBytecode = document.getElementById("optVmBytecode");
+    const optVmConsts = document.getElementById("optVmConsts");
+    const optVmDownlevel = document.getElementById("optVmDownlevel");
+    const optVmFake = document.getElementById("optVmFake");
+
+    const fileInput = document.getElementById("fileInput");
+    const dropZone = document.getElementById("dropZone");
+
+    let lastResult = null;
+
+    const presetDefaults = {
+      high: { rename: true, strings: true, cff: true, dead: true, vm: false },
+      balanced: { rename: true, strings: true, cff: true, dead: false, vm: false },
+      low: { rename: true, strings: false, cff: false, dead: false, vm: false }
+    };
+
+    function now() {
+      return new Date().toLocaleTimeString();
+    }
+
+    function log(message) {
+      logEl.textContent += `[${now()}] ${message}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(message) {
+      statusEl.textContent = message;
+    }
+
+    function applyPreset(name) {
+      const defaults = presetDefaults[name];
+      if (!defaults) {
+        return;
+      }
+      optRename.checked = defaults.rename;
+      optStrings.checked = defaults.strings;
+      optCff.checked = defaults.cff;
+      optCffDownlevel.checked = false;
+      optDead.checked = defaults.dead;
+      optVm.checked = defaults.vm;
+      updateOptionStates();
+    }
+
+    function updateOptionStates() {
+      const stringsEnabled = optStrings.checked;
+      [optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate].forEach((el) => {
+        el.disabled = !stringsEnabled;
+      });
+
+      const vmEnabled = optVm.checked;
+      [optVmOpcode, optVmBytecode, optVmConsts, optVmDownlevel, optVmFake].forEach((el) => {
+        el.disabled = !vmEnabled;
+      });
+
+      const cffEnabled = optCff.checked;
+      optCffDownlevel.disabled = !cffEnabled;
+      if (!cffEnabled) {
+        optCffDownlevel.checked = false;
+      }
+
+      optAntiHookLock.disabled = !optAntiHook.checked;
+
+      const minifyEnabled = optMinify.checked;
+      optBeautify.disabled = !minifyEnabled;
+      if (!minifyEnabled) {
+        optBeautify.checked = false;
+      }
+    }
+
+    function markCustomPreset() {
+      if (presetEl.value !== "custom") {
+        presetEl.value = "custom";
+      }
+    }
+
+    function updateNamesFromFile(fileName) {
+      inputNameEl.value = fileName;
+      const base = fileName.replace(/\.[^.]+$/, "");
+      const outputName = fileName.endsWith(".js") ? `${base}.obf.js` : `${fileName}.obf.js`;
+      outputNameEl.value = outputName;
+    }
+
+    function setSourceFromFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        sourceEl.value = reader.result || "";
+        updateNamesFromFile(file.name);
+        log(`Loaded file: ${file.name}`);
+      };
+      reader.onerror = () => {
+        log(`Failed to read file: ${file.name}`);
+      };
+      reader.readAsText(file);
+    }
+
+    function collectOptions() {
+      const includeText = document.getElementById("include").value.trim();
+      const seed = document.getElementById("seed").value.trim();
+      const ecmaValue = document.getElementById("ecma").value.trim();
+      const vmFakeValue = optVmFake.value.trim();
+
+      const options = {
+        preset: presetEl.value === "custom" ? "high" : presetEl.value,
+        rename: optRename.checked,
+        strings: optStrings.checked,
+        cff: optCff.checked,
+        cffOptions: {
+          downlevel: optCffDownlevel.checked
+        },
+        dead: optDead.checked,
+        seed: seed || undefined,
+        ecma: ecmaValue ? Number(ecmaValue) : undefined,
+        sourceMap: optSourceMap.checked,
+        minify: optMinify.checked,
+        beautify: optBeautify.checked,
+        compact: optCompact.checked,
+        stringsOptions: {
+          encodeObjectKeys: optStringsObjectKeys.checked,
+          encodeJSXAttributes: optStringsJsxAttrs.checked,
+          encodeTemplateChunks: optStringsTemplate.checked
+        },
+        vm: {
+          enabled: optVm.checked,
+          include: includeText ? includeText.split(",").map((v) => v.trim()).filter(Boolean) : [],
+          opcodeShuffle: optVmOpcode.checked,
+          bytecodeEncrypt: optVmBytecode.checked,
+          constsEncrypt: optVmConsts.checked,
+          downlevel: optVmDownlevel.checked,
+          fakeOpcodes: vmFakeValue === "" ? undefined : Number(vmFakeValue)
+        },
+        antiHook: {
+          enabled: optAntiHook.checked,
+          lock: optAntiHookLock.checked
+        }
+      };
+
+      return options;
+    }
+
+    async function runObfuscation() {
+      const source = sourceEl.value;
+      if (!source.trim()) {
+        log("No source provided.");
+        setStatus("Add source code or upload a file first.");
+        return;
+      }
+
+      const payload = {
+        source,
+        filename: inputNameEl.value.trim() || "input.js",
+        options: collectOptions()
+      };
+
+      runBtn.disabled = true;
+      setStatus("Running obfuscation...");
+      log("Obfuscation started.");
+
+      try {
+        const response = await fetch("/api/obfuscate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.error || `Server error (${response.status})`);
+        }
+
+        const result = await response.json();
+        outputEl.value = result.code || "";
+        lastResult = result;
+
+        downloadBtn.disabled = !result.code;
+        downloadMapBtn.disabled = !result.map;
+
+        setStatus("Obfuscation complete.");
+        log("Obfuscation finished successfully.");
+      } catch (error) {
+        log(`Error: ${error.message}`);
+        setStatus("Obfuscation failed. See log.");
+      } finally {
+        runBtn.disabled = false;
+      }
+    }
+
+    function downloadFile(content, filename, type) {
+      const blob = new Blob([content], { type });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    }
+
+    runBtn.addEventListener("click", runObfuscation);
+
+    downloadBtn.addEventListener("click", () => {
+      if (!lastResult || !lastResult.code) {
+        return;
+      }
+      const name = outputNameEl.value.trim() || "output.obf.js";
+      downloadFile(lastResult.code, name, "text/javascript");
+      log(`Downloaded: ${name}`);
+    });
+
+    downloadMapBtn.addEventListener("click", () => {
+      if (!lastResult || !lastResult.map) {
+        return;
+      }
+      const name = `${outputNameEl.value.trim() || "output.obf.js"}.map`;
+      downloadFile(JSON.stringify(lastResult.map, null, 2), name, "application/json");
+      log(`Downloaded: ${name}`);
+    });
+
+    copyBtn.addEventListener("click", async () => {
+      if (!outputEl.value) {
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(outputEl.value);
+        log("Output copied to clipboard.");
+      } catch {
+        log("Clipboard copy failed.");
+      }
+    });
+
+    clearBtn.addEventListener("click", () => {
+      sourceEl.value = "";
+      outputEl.value = "";
+      lastResult = null;
+      downloadBtn.disabled = true;
+      downloadMapBtn.disabled = true;
+      setStatus("Cleared.");
+      log("Cleared input/output.");
+    });
+
+    presetEl.addEventListener("change", (event) => {
+      if (event.target.value !== "custom") {
+        applyPreset(event.target.value);
+      }
+    });
+
+    [optRename, optStrings, optCff, optDead, optVm, optMinify].forEach((el) => {
+      el.addEventListener("change", () => {
+        markCustomPreset();
+        updateOptionStates();
+      });
+    });
+
+    [optCffDownlevel, optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate,
+      optVmOpcode, optVmBytecode, optVmConsts, optVmDownlevel, optVmFake,
+      optAntiHook, optAntiHookLock, optSourceMap, optBeautify, optMinify, optCompact
+    ].forEach((el) => {
+      el.addEventListener("change", markCustomPreset);
+    });
+
+    optAntiHook.addEventListener("change", () => {
+      updateOptionStates();
+    });
+
+    fileInput.addEventListener("change", (event) => {
+      const file = event.target.files[0];
+      if (file) {
+        setSourceFromFile(file);
+      }
+    });
+
+    dropZone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropZone.classList.add("active");
+    });
+
+    dropZone.addEventListener("dragleave", () => {
+      dropZone.classList.remove("active");
+    });
+
+    dropZone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("active");
+      const file = event.dataTransfer.files[0];
+      if (file) {
+        setSourceFromFile(file);
+      }
+    });
+
+    updateOptionStates();
+    log("Ready.");
+  </script>
+</body>
+</html>

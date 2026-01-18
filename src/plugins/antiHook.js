@@ -1,5 +1,10 @@
 const parser = require("@babel/parser");
 
+function buildCharCodeExpr(value) {
+  const codes = Array.from(String(value), (ch) => ch.charCodeAt(0));
+  return `String.fromCharCode(${codes.join(", ")})`;
+}
+
 function insertAtTop(programPath, nodes) {
   const body = programPath.node.body;
   let index = 0;
@@ -15,6 +20,8 @@ function insertAtTop(programPath, nodes) {
 }
 
 function buildRuntime({ lock, timing, behavior }) {
+  const errIntegrity = buildCharCodeExpr("Integrity check failed");
+  const errRuntime = buildCharCodeExpr("Runtime integrity violation");
   const code = `
 (function () {
   const g = typeof globalThis !== "undefined"
@@ -27,6 +34,8 @@ function buildRuntime({ lock, timing, behavior }) {
 
   // Native code marker
   const nativeMark = "[native code]";
+  const errIntegrity = ${errIntegrity};
+  const errRuntime = ${errRuntime};
 
   // Get original toString before any tampering
   const origToString = Function.prototype.toString;
@@ -194,7 +203,7 @@ function buildRuntime({ lock, timing, behavior }) {
 
   // Perform initial check
   if (!checkAll()) {
-    throw new Error("Integrity check failed");
+    throw new Error(errIntegrity);
   }
 
   // Lock prototypes if requested
@@ -232,7 +241,7 @@ function buildRuntime({ lock, timing, behavior }) {
       checkCount++;
       if (checkCount > 100) return; // Limit checks to avoid performance impact
       if (!checkAll()) {
-        throw new Error("Runtime integrity violation");
+        throw new Error(errRuntime);
       }
       // Schedule next check with random delay
       const delay = 1000 + Math.floor(Math.random() * 4000);

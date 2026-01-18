@@ -2,7 +2,13 @@ const parser = require("@babel/parser");
 
 const { BIN_OPS, UNARY_OPS, OPCODES } = require("./constants");
 
-function buildVmRuntime(names, opcodeInfo, opcodeMask, miniVmInfo, miniVmPrograms) {
+function buildVmRuntimeSource(
+  names,
+  opcodeInfo,
+  opcodeMask,
+  miniVmInfo,
+  miniVmPrograms
+) {
   const {
     execName,
     execAsyncName,
@@ -12,6 +18,7 @@ function buildVmRuntime(names, opcodeInfo, opcodeMask, miniVmInfo, miniVmProgram
     makeFuncName,
     maskName,
     opcodeB64Name,
+    opcodeStreamName,
     miniVmName,
     bytecodeDecodeName,
     bytecodeCacheName,
@@ -29,6 +36,7 @@ function buildVmRuntime(names, opcodeInfo, opcodeMask, miniVmInfo, miniVmProgram
   const miniVmProgramBytecode = JSON.stringify(miniVmPrograms.bytecode);
   const miniVmProgramConsts = JSON.stringify(miniVmPrograms.consts);
   const opcodeHelpers = `
+let ${opcodeStreamName};
 const ${opcodeB64Name} = (() => {
   const __vmOps = ${miniVmOps};
   const __vmMask = ${miniVmMask};
@@ -239,12 +247,12 @@ const ${opcodeB64Name} = (() => {
     __map = map;
   };
   const len = () => __cipherLen;
+  ${opcodeStreamName} = stream;
   return {
     open,
     rebuild,
     ${miniVmName},
     seed,
-    stream,
     len,
     makeStream,
     joinKey,
@@ -265,7 +273,7 @@ function ${bytecodeDecodeName}(parts, order, pool) {
   let acc = 0;
   let accLen = 0;
   let wordIdx = 0;
-  ${opcodeB64Name}.stream(parts, order, (byte) => {
+  ${opcodeStreamName}(parts, order, (byte) => {
     const plain = next(byte);
     acc |= plain << (accLen * 8);
     accLen += 1;
@@ -310,25 +318,35 @@ function ${constDecodeName}(parts, order, pool) {
   const bytes = new Uint8Array(total);
   let idx = 0;
   let maskIdx = 0;
-  ${opcodeB64Name}.stream(parts, order, (byte) => {
+  ${opcodeStreamName}(parts, order, (byte) => {
     const masked = byte ^ mask[maskIdx++ % mask.length];
     bytes[idx++] = next(masked);
   });
   const text = ${constUtf8Name}(bytes);
   const entries = JSON.parse(text);
-  const outVals = new Array(entries.length);
-  for (let i = 0; i < entries.length; i += 1) {
-    const entry = entries[i];
+  const cache = [];
+  const hasOwn = Object.prototype.hasOwnProperty;
+  const decode = (idx) => {
+    if (hasOwn.call(cache, idx)) {
+      return cache[idx];
+    }
+    const entry = entries[idx];
+    if (!entry) {
+      return undefined;
+    }
     const tag = entry[0];
     const value = entry[1];
-    if (tag === "u") outVals[i] = undefined;
-    else if (tag === "l") outVals[i] = null;
-    else if (tag === "b") outVals[i] = Boolean(value);
-    else if (tag === "n") outVals[i] = Number(value);
-    else if (tag === "s") outVals[i] = value;
-    else outVals[i] = value;
-  }
-  return outVals;
+    let out;
+    if (tag === "u") out = undefined;
+    else if (tag === "l") out = null;
+    else if (tag === "b") out = Boolean(value);
+    else if (tag === "n") out = Number(value);
+    else if (tag === "s") out = value;
+    else out = value;
+    cache[idx] = out;
+    return out;
+  };
+  return decode;
 }
 `
     : "";
@@ -358,6 +376,8 @@ function ${constDecodeName}(parts, order, pool) {
 ${opcodeHelpers}
 ${bytecodeHelpers}
 ${constHelpers}
+const ${constCacheName} = (consts, idx) =>
+  typeof consts === "function" ? consts(idx) : consts[idx];
 const ${opsName} = (() => {
   const data = ${opcodeParts};
   const order = ${opcodeOrder};
@@ -483,23 +503,23 @@ function ${execName}(code, consts, env, thisArg) {
     try {
       switch (op) {
         case ${OPCODES.PUSH_CONST}:
-          stack[sp++] = consts[code[ip++]];
+          stack[sp++] = ${constCacheName}(consts, code[ip++]);
           break;
         case ${OPCODES.GET_VAR}:
-          stack[sp++] = env[consts[code[ip++]]];
+          stack[sp++] = env[${constCacheName}(consts, code[ip++])];
           break;
         case ${OPCODES.SET_VAR}: {
-          const name = consts[code[ip++]];
+          const name = ${constCacheName}(consts, code[ip++]);
           const value = stack[--sp];
           env[name] = value;
           stack[sp++] = value;
           break;
         }
         case ${OPCODES.GET_GLOBAL}:
-          stack[sp++] = ${globalsName}[consts[code[ip++]]];
+          stack[sp++] = ${globalsName}[${constCacheName}(consts, code[ip++])];
           break;
         case ${OPCODES.SET_GLOBAL}: {
-          const name = consts[code[ip++]];
+          const name = ${constCacheName}(consts, code[ip++]);
           const value = stack[--sp];
           ${globalsName}[name] = value;
           stack[sp++] = value;
@@ -775,7 +795,7 @@ function ${execName}(code, consts, env, thisArg) {
           stack[sp++] = {};
           break;
         case ${OPCODES.MAKE_FUNC}: {
-          const src = consts[code[ip++]];
+          const src = ${constCacheName}(consts, code[ip++]);
           stack[sp++] = ${makeFuncName}(src, env);
           break;
         }
@@ -891,23 +911,23 @@ async function ${execAsyncName}(code, consts, env, thisArg) {
     try {
       switch (op) {
         case ${OPCODES.PUSH_CONST}:
-          stack[sp++] = consts[code[ip++]];
+          stack[sp++] = ${constCacheName}(consts, code[ip++]);
           break;
         case ${OPCODES.GET_VAR}:
-          stack[sp++] = env[consts[code[ip++]]];
+          stack[sp++] = env[${constCacheName}(consts, code[ip++])];
           break;
         case ${OPCODES.SET_VAR}: {
-          const name = consts[code[ip++]];
+          const name = ${constCacheName}(consts, code[ip++]);
           const value = stack[--sp];
           env[name] = value;
           stack[sp++] = value;
           break;
         }
         case ${OPCODES.GET_GLOBAL}:
-          stack[sp++] = ${globalsName}[consts[code[ip++]]];
+          stack[sp++] = ${globalsName}[${constCacheName}(consts, code[ip++])];
           break;
         case ${OPCODES.SET_GLOBAL}: {
-          const name = consts[code[ip++]];
+          const name = ${constCacheName}(consts, code[ip++]);
           const value = stack[--sp];
           ${globalsName}[name] = value;
           stack[sp++] = value;
@@ -1183,7 +1203,7 @@ async function ${execAsyncName}(code, consts, env, thisArg) {
           stack[sp++] = {};
           break;
         case ${OPCODES.MAKE_FUNC}: {
-          const src = consts[code[ip++]];
+          const src = ${constCacheName}(consts, code[ip++]);
           stack[sp++] = ${makeFuncName}(src, env);
           break;
         }
@@ -1236,9 +1256,24 @@ async function ${execAsyncName}(code, consts, env, thisArg) {
   return undefined;
 }
 `;
-  return parser
-    .parse(`${code}\n${asyncCode}`, { sourceType: "script" })
-    .program.body;
+  return `${code}\n${asyncCode}`;
 }
 
-module.exports = { buildVmRuntime };
+function buildVmRuntime(
+  names,
+  opcodeInfo,
+  opcodeMask,
+  miniVmInfo,
+  miniVmPrograms
+) {
+  const source = buildVmRuntimeSource(
+    names,
+    opcodeInfo,
+    opcodeMask,
+    miniVmInfo,
+    miniVmPrograms
+  );
+  return parser.parse(source, { sourceType: "script" }).program.body;
+}
+
+module.exports = { buildVmRuntime, buildVmRuntimeSource };

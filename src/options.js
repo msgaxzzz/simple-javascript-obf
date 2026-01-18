@@ -49,6 +49,7 @@ function normalizeOptions(userOptions = {}) {
   const presetName = userOptions.preset || "high";
   const preset = PRESETS[presetName] || PRESETS.high;
   const stringsUserOptions = userOptions.stringsOptions || {};
+  const cffUserOptions = userOptions.cffOptions || {};
   const antiHookUserOptions = userOptions.antiHook;
   const ecma = normalizeEcma(userOptions.ecma);
 
@@ -63,11 +64,16 @@ function normalizeOptions(userOptions = {}) {
     filename: userOptions.filename || "input.js",
     sourceMap: Boolean(userOptions.sourceMap),
     compact: Boolean(userOptions.compact),
+    minify: userOptions.minify !== false,
+    beautify: Boolean(userOptions.beautify),
     ecma,
     stringsOptions: {
       minLength: stringsUserOptions.minLength ?? 3,
       maxCount: stringsUserOptions.maxCount ?? 5000,
       encodeConsole: stringsUserOptions.encodeConsole !== false,
+      encodeObjectKeys: stringsUserOptions.encodeObjectKeys !== false,
+      encodeJSXAttributes: stringsUserOptions.encodeJSXAttributes !== false,
+      encodeTemplateChunks: stringsUserOptions.encodeTemplateChunks !== false,
     },
     renameOptions: {
       reserved: userOptions.reserved || DEFAULT_RESERVED,
@@ -78,6 +84,7 @@ function normalizeOptions(userOptions = {}) {
     },
     cffOptions: {
       minStatements: 3,
+      downlevel: cffUserOptions.downlevel ?? Boolean(userOptions.cffDownlevel),
     },
     antiHook: {
       enabled: false,

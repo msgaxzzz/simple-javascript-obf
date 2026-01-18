@@ -3,6 +3,11 @@ const { encodeString } = require("../utils/string");
 
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
 
+function buildCharCodeExpr(value) {
+  const codes = Array.from(String(value), (ch) => ch.charCodeAt(0));
+  return `String.fromCharCode(${codes.join(", ")})`;
+}
+
 function splitArray(data, rng, count) {
   const total = data.length;
   if (total === 0) {
@@ -129,6 +134,8 @@ function buildRuntime({
   shiftName,
   rotKeyName,
   alphabetName,
+  b64LabelName,
+  errName,
   rotOffset,
   b64Name,
   chachaName,
@@ -171,7 +178,16 @@ const ${keyName} = ${JSON.stringify(key)};
 const ${shiftName} = ${shift};
 const ${cacheName} = [];
 const ${rotKeyName} = ${JSON.stringify(rotKey)};
-const ${alphabetName} = ${JSON.stringify(BASE64_ALPHABET)};
+const ${alphabetName} = (() => {
+  const out = [];
+  for (let i = 65; i <= 90; i += 1) out.push(String.fromCharCode(i));
+  for (let i = 97; i <= 122; i += 1) out.push(String.fromCharCode(i));
+  for (let i = 48; i <= 57; i += 1) out.push(String.fromCharCode(i));
+  out.push(String.fromCharCode(43), String.fromCharCode(47), String.fromCharCode(61));
+  return out.join("");
+})();
+const ${b64LabelName} = String.fromCharCode(98, 97, 115, 101, 54, 52);
+const ${errName} = ${buildCharCodeExpr("Decoder unavailable")};
 const ${poolSelectName} = (group) => {
   switch (group) {
 ${poolSelectCases}
@@ -223,7 +239,7 @@ const ${unshiftName} = (input) => {
 };
 const ${b64Name} = (s) => {
   if (typeof Buffer !== "undefined") {
-    return Buffer.from(s, "base64");
+    return Buffer.from(s, ${b64LabelName});
   }
   if (typeof atob !== "undefined") {
     const bin = atob(s);
@@ -233,7 +249,7 @@ const ${b64Name} = (s) => {
     }
     return out;
   }
-  throw new Error("No base64 support");
+  throw new Error(${errName});
 };
 const ${chachaName} = (keyBytes) => {
   const SIGMA = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574];
@@ -369,6 +385,30 @@ function stringEncode(ast, ctx) {
   let cacheId = null;
   let programPathRef = null;
 
+  function encodeStringValue(value) {
+    if (typeof value !== "string") {
+      return { node: t.stringLiteral(String(value)), encoded: false };
+    }
+    if (value.length < minLength || pool.length >= maxCount) {
+      return { node: t.stringLiteral(value), encoded: false };
+    }
+    let index = indexMap.get(value);
+    if (index === undefined) {
+      index = pool.length;
+      pool.push(encodeString(value, key));
+      indexMap.set(value, index);
+    }
+    if (!decoderId) {
+      decoderId = t.identifier(ctx.nameGen.next());
+      keyId = t.identifier(ctx.nameGen.next());
+      cacheId = t.identifier(ctx.nameGen.next());
+    }
+    return {
+      node: t.callExpression(decoderId, [t.numericLiteral(index + indexShift)]),
+      encoded: true,
+    };
+  }
+
   traverse(ast, {
     Program(path) {
       programPathRef = path;
@@ -380,62 +420,88 @@ function stringEncode(ast, ctx) {
       if (isDirectiveLiteral(path) || isModuleString(path)) {
         return;
       }
-      if (path.parentPath && path.parentPath.isJSXAttribute()) {
-        return;
-      }
-      if (path.parentPath && path.parentPath.isObjectProperty() && path.parentKey === "key") {
+      const parentPath = path.parentPath;
+      const isJsxAttrValue =
+        parentPath &&
+        parentPath.isJSXAttribute() &&
+        parentPath.node.value === path.node;
+      const isObjectKey =
+        parentPath &&
+        (parentPath.isObjectProperty() || parentPath.isObjectMethod()) &&
+        path.parentKey === "key";
+      const isObjectLiteralKey =
+        isObjectKey &&
+        parentPath.parentPath &&
+        parentPath.parentPath.isObjectExpression();
+      if (isJsxAttrValue && options.stringsOptions.encodeJSXAttributes === false) {
         return;
       }
       const value = path.node.value;
-      if (typeof value !== "string" || value.length < minLength) {
+      if (
+        isObjectKey &&
+        (!isObjectLiteralKey ||
+          value === "__proto__" ||
+          parentPath.node.computed ||
+          options.stringsOptions.encodeObjectKeys === false)
+      ) {
         return;
       }
-      if (pool.length >= maxCount) {
+      const decoded = encodeStringValue(value);
+      if (!decoded.encoded) {
         return;
       }
-      let index = indexMap.get(value);
-      if (index === undefined) {
-        index = pool.length;
-        pool.push(encodeString(value, key));
-        indexMap.set(value, index);
+      if (isJsxAttrValue) {
+        parentPath.node.value = t.jsxExpressionContainer(decoded.node);
+        return;
       }
-      if (!decoderId) {
-        decoderId = t.identifier(ctx.nameGen.next());
-        keyId = t.identifier(ctx.nameGen.next());
-        cacheId = t.identifier(ctx.nameGen.next());
+      if (isObjectKey && isObjectLiteralKey) {
+        parentPath.node.key = decoded.node;
+        parentPath.node.computed = true;
+        return;
       }
-      path.replaceWith(
-        t.callExpression(decoderId, [t.numericLiteral(index + indexShift)])
-      );
+      path.replaceWith(decoded.node);
     },
     TemplateLiteral(path) {
-      if (path.node.expressions.length > 0) {
+      if (path.parentPath && path.parentPath.isTaggedTemplateExpression()) {
         return;
       }
       if (!programPathRef) {
         return;
       }
-      if (pool.length >= maxCount) {
+      if (path.node.expressions.length > 0) {
+        if (options.stringsOptions.encodeTemplateChunks === false) {
+          return;
+        }
+        const parts = [];
+        let encodedAny = false;
+        for (let i = 0; i < path.node.quasis.length; i += 1) {
+          const quasi = path.node.quasis[i];
+          const value = quasi.value.cooked || "";
+          const encoded = encodeStringValue(value);
+          parts.push(encoded.node);
+          if (encoded.encoded) {
+            encodedAny = true;
+          }
+          if (i < path.node.expressions.length) {
+            parts.push(path.node.expressions[i]);
+          }
+        }
+        if (!encodedAny) {
+          return;
+        }
+        let expr = parts[0];
+        for (let i = 1; i < parts.length; i += 1) {
+          expr = t.binaryExpression("+", expr, parts[i]);
+        }
+        path.replaceWith(expr);
         return;
       }
       const value = path.node.quasis[0].value.cooked || "";
-      if (value.length < minLength) {
+      const decoded = encodeStringValue(value);
+      if (!decoded.encoded) {
         return;
       }
-      let index = indexMap.get(value);
-      if (index === undefined) {
-        index = pool.length;
-        pool.push(encodeString(value, key));
-        indexMap.set(value, index);
-      }
-      if (!decoderId) {
-        decoderId = t.identifier(ctx.nameGen.next());
-        keyId = t.identifier(ctx.nameGen.next());
-        cacheId = t.identifier(ctx.nameGen.next());
-      }
-      path.replaceWith(
-        t.callExpression(decoderId, [t.numericLiteral(index + indexShift)])
-      );
+      path.replaceWith(decoded.node);
     },
   });
 
@@ -446,6 +512,8 @@ function stringEncode(ast, ctx) {
     const indexId = t.identifier(ctx.nameGen.next());
     const rotKeyId = t.identifier(ctx.nameGen.next());
     const alphabetId = t.identifier(ctx.nameGen.next());
+    const b64LabelId = t.identifier(ctx.nameGen.next());
+    const errId = t.identifier(ctx.nameGen.next());
     const b64Id = t.identifier(ctx.nameGen.next());
     const chachaId = t.identifier(ctx.nameGen.next());
     const u8ToStrId = t.identifier(ctx.nameGen.next());
@@ -487,6 +555,8 @@ function stringEncode(ast, ctx) {
       shiftName: shiftId.name,
       rotKeyName: rotKeyId.name,
       alphabetName: alphabetId.name,
+      b64LabelName: b64LabelId.name,
+      errName: errId.name,
       rotOffset,
       b64Name: b64Id.name,
       chachaName: chachaId.name,

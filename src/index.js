@@ -62,15 +62,28 @@ async function obfuscate(source, userOptions = {}) {
     source
   );
 
+  if (!options.minify) {
+    return {
+      code: output.code || "",
+      map: options.sourceMap ? output.map || null : null,
+    };
+  }
+
   const ecma = Number.isFinite(options.ecma) ? options.ecma : 2015;
+  const format = { comments: false, ecma };
+  if (options.beautify) {
+    format.beautify = true;
+    format.indent_level = 2;
+  }
   const minifyOptions = {
     ecma,
     compress: {
       defaults: true,
       ecma,
     },
-    mangle: true,
-    format: { comments: false, ecma },
+    // Respect rename toggle; otherwise Terser will still mangle even when rename is off.
+    mangle: options.rename !== false,
+    format,
   };
   if (options.sourceMap) {
     minifyOptions.sourceMap = { content: output.map, asObject: true };

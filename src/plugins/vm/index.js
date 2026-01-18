@@ -5,7 +5,8 @@ const {
   encodeConstPool,
   encodeOpcodeTable,
 } = require("./encoding");
-const { buildVmRuntime } = require("./runtime");
+const parser = require("@babel/parser");
+const { buildVmRuntimeSource } = require("./runtime");
 const { VmCompiler } = require("./compiler");
 const { makeLiteral } = require("./ast-utils");
 const {
@@ -38,6 +39,53 @@ function buildMiniVmProgram(ops, blocks) {
     program.push(opStore, block.store);
   }
   return program;
+}
+
+function splitBytes(bytes, rng, count) {
+  const total = bytes.length;
+  if (total === 0) {
+    return [{ chunk: [], offset: 0 }];
+  }
+  const chunks = [];
+  let offset = 0;
+  const chunkCount = Math.max(1, Math.min(count, total));
+  for (let i = 0; i < chunkCount; i += 1) {
+    const remaining = total - offset;
+    const remainingChunks = chunkCount - i;
+    const minSize = Math.max(1, remaining - (remainingChunks - 1));
+    const size = i === chunkCount - 1 ? remaining : rng.int(1, minSize);
+    chunks.push({ chunk: bytes.slice(offset, offset + size), offset });
+    offset += size;
+  }
+  return chunks;
+}
+
+function encodeRuntimeSource(source, rng) {
+  const bytes = Buffer.from(source, "utf8");
+  const keyLen = rng.int(6, 14);
+  const key = Array.from({ length: keyLen }, () => rng.int(1, 255));
+  const chunkCount = Math.min(Math.max(2, rng.int(2, 6)), Math.max(2, bytes.length));
+  const splits = splitBytes(bytes, rng, chunkCount);
+  const parts = [];
+  const offsets = [];
+  for (const entry of splits) {
+    const out = new Array(entry.chunk.length);
+    for (let i = 0; i < entry.chunk.length; i += 1) {
+      const idx = entry.offset + i;
+      out[i] = entry.chunk[i] ^ key[idx % key.length];
+    }
+    parts.push(out);
+    offsets.push(entry.offset);
+  }
+  const order = Array.from({ length: parts.length }, (_, i) => i);
+  rng.shuffle(order);
+  return {
+    parts,
+    offsets,
+    order,
+    key,
+    total: bytes.length,
+  };
 }
 
 function shouldVirtualize(fnPath, options) {
@@ -74,7 +122,206 @@ function getSuperInfo(fnPath) {
   return null;
 }
 
-function applyVmToFunction(fnPath, ctx, runtimeIds) {
+function createRuntimeBundle(ctx) {
+  if (ctx.state.vmRuntimeBundle) {
+    return ctx.state.vmRuntimeBundle;
+  }
+  const execName = ctx.nameGen.next();
+  const execAsyncName = ctx.nameGen.next();
+  const opsName = ctx.nameGen.next();
+  const opsLookupName = ctx.nameGen.next();
+  const globalsName = ctx.nameGen.next();
+  const makeFuncName = ctx.nameGen.next();
+  const maskName = ctx.nameGen.next();
+  const opcodeB64Name = ctx.nameGen.next();
+  const opcodeStreamName = ctx.nameGen.next();
+  const miniVmName = ctx.nameGen.next();
+  const bytecodeEnabled = ctx.options.vm.bytecodeEncrypt !== false;
+  const bytecodeDecodeName = bytecodeEnabled ? ctx.nameGen.next() : null;
+  const bytecodeCacheName = bytecodeEnabled ? ctx.nameGen.next() : null;
+  const bytecodeB64Name = bytecodeEnabled ? ctx.nameGen.next() : null;
+  const bytecodeRc4Name = bytecodeEnabled ? ctx.nameGen.next() : null;
+  const constsEnabled = ctx.options.vm.constsEncrypt !== false;
+  const constDecodeName = constsEnabled ? ctx.nameGen.next() : null;
+  const constCacheName = constsEnabled ? ctx.nameGen.next() : null;
+  const constB64Name = constsEnabled ? ctx.nameGen.next() : null;
+  const constRc4Name = constsEnabled ? ctx.nameGen.next() : null;
+  const constUtf8Name = constsEnabled ? ctx.nameGen.next() : null;
+
+  const opcodeMapping = buildOpcodeMapping(ctx);
+  const opcodeInfo = encodeOpcodeTable(opcodeMapping.decode, ctx.rng);
+  const miniVmInfo = createMiniVmInfo(ctx.rng);
+  const miniVmPrograms = {
+    opcode: buildMiniVmProgram(miniVmInfo.ops, [
+      { pool: [0, 1, 2, 3], toString: true, store: 0 },
+      { pool: [4, 5, 6, 7], store: 1 },
+      { pool: [8, 9, 10, 11], store: 2 },
+      { pool: [12, 13, 14, 15], store: 3 },
+      { pool: [16, 17, 18, 19], store: 4 },
+    ]),
+    bytecode: buildMiniVmProgram(miniVmInfo.ops, [
+      { pool: [0, 1, 2, 3], toString: true, store: 0 },
+      { pool: [4, 5, 6, 7], store: 1 },
+      { pool: [8, 9, 10, 11], store: 2 },
+    ]),
+    consts: buildMiniVmProgram(miniVmInfo.ops, [
+      { pool: [0, 1, 2, 3], toString: true, store: 0 },
+      { pool: [4, 5, 6, 7], store: 1 },
+      { pool: [8, 9, 10, 11], store: 2 },
+      { pool: [12, 13, 14, 15], store: 3 },
+    ]),
+  };
+
+  const runtimeSource = buildVmRuntimeSource(
+    {
+      execName,
+      execAsyncName,
+      opsName,
+      opsLookupName,
+      globalsName,
+      makeFuncName,
+      maskName,
+      opcodeB64Name,
+      opcodeStreamName,
+      miniVmName,
+      bytecodeDecodeName,
+      bytecodeCacheName,
+      bytecodeB64Name,
+      bytecodeRc4Name,
+      constDecodeName,
+      constCacheName,
+      constB64Name,
+      constRc4Name,
+      constUtf8Name,
+    },
+    opcodeInfo,
+    opcodeMapping.mask,
+    miniVmInfo,
+    miniVmPrograms
+  );
+
+  const exportProps = {
+    exec: ctx.nameGen.next(),
+    execAsync: ctx.nameGen.next(),
+  };
+  if (bytecodeEnabled) {
+    exportProps.bytecodeDecode = ctx.nameGen.next();
+  }
+  if (constsEnabled) {
+    exportProps.constDecode = ctx.nameGen.next();
+  }
+
+  const exports = [
+    `"${exportProps.exec}": ${execName}`,
+    `"${exportProps.execAsync}": ${execAsyncName}`,
+  ];
+  if (bytecodeEnabled) {
+    exports.push(`"${exportProps.bytecodeDecode}": ${bytecodeDecodeName}`);
+  }
+  if (constsEnabled) {
+    exports.push(`"${exportProps.constDecode}": ${constDecodeName}`);
+  }
+
+  const wrappedSource = `${runtimeSource}\nreturn { ${exports.join(", ")} };`;
+  const cacheKey = `__vm_rt_${ctx.rng.int(1, 1e9)}`;
+  const bundle = {
+    runtimeSource: wrappedSource,
+    cacheKey,
+    props: exportProps,
+  };
+  ctx.state.vmRuntimeBundle = bundle;
+  return bundle;
+}
+
+function buildInlineRuntime(ctx, runtimeSource, cacheKey) {
+  const runtimeId = ctx.nameGen.next();
+  const partsId = ctx.nameGen.next();
+  const orderId = ctx.nameGen.next();
+  const offsetsId = ctx.nameGen.next();
+  const keyId = ctx.nameGen.next();
+  const totalId = ctx.nameGen.next();
+  const bytesId = ctx.nameGen.next();
+  const iId = ctx.nameGen.next();
+  const jId = ctx.nameGen.next();
+  const idxId = ctx.nameGen.next();
+  const chunkId = ctx.nameGen.next();
+  const offsetId = ctx.nameGen.next();
+  const srcId = ctx.nameGen.next();
+  const tmpId = ctx.nameGen.next();
+  const kId = ctx.nameGen.next();
+  const factoryId = ctx.nameGen.next();
+  const globalId = ctx.nameGen.next();
+  const cachedId = ctx.nameGen.next();
+  const cacheKeyId = ctx.nameGen.next();
+  const objId = ctx.nameGen.next();
+
+  const encoded = encodeRuntimeSource(runtimeSource, ctx.rng);
+  const code = `
+const ${runtimeId} = (() => {
+  const ${globalId} = typeof globalThis !== "undefined"
+    ? globalThis
+    : typeof window !== "undefined"
+      ? window
+      : typeof global !== "undefined"
+        ? global
+        : this;
+  const ${cacheKeyId} = ${JSON.stringify(cacheKey)};
+  const ${cachedId} = ${globalId}[${cacheKeyId}];
+  if (${cachedId}) {
+    return ${cachedId};
+  }
+  const ${partsId} = ${JSON.stringify(encoded.parts)};
+  const ${orderId} = ${JSON.stringify(encoded.order)};
+  const ${offsetsId} = ${JSON.stringify(encoded.offsets)};
+  const ${keyId} = ${JSON.stringify(encoded.key)};
+  const ${totalId} = ${encoded.total};
+  const ${bytesId} = new Uint8Array(${totalId});
+  for (let ${iId} = 0; ${iId} < ${orderId}.length; ${iId}++) {
+    const ${idxId} = ${orderId}[${iId}];
+    const ${chunkId} = ${partsId}[${idxId}];
+    const ${offsetId} = ${offsetsId}[${idxId}];
+    for (let ${jId} = 0; ${jId} < ${chunkId}.length; ${jId}++) {
+      ${bytesId}[${offsetId} + ${jId}] =
+        ${chunkId}[${jId}] ^ ${keyId}[(${offsetId} + ${jId}) % ${keyId}.length];
+    }
+  }
+  let ${srcId} = "";
+  if (typeof TextDecoder !== "undefined") {
+    ${srcId} = new TextDecoder().decode(${bytesId});
+  } else if (typeof Buffer !== "undefined") {
+    ${srcId} = Buffer.from(${bytesId}).toString("utf8");
+  } else {
+    let ${tmpId} = "";
+    for (let ${kId} = 0; ${kId} < ${bytesId}.length; ${kId}++) {
+      ${tmpId} += String.fromCharCode(${bytesId}[${kId}]);
+    }
+    try {
+      ${srcId} = decodeURIComponent(escape(${tmpId}));
+    } catch (err) {
+      ${srcId} = ${tmpId};
+    }
+  }
+  const ${factoryId} = Function(${srcId});
+  const ${objId} = ${factoryId}();
+  try {
+    Object.defineProperty(${globalId}, ${cacheKeyId}, {
+      value: ${objId},
+      configurable: true,
+    });
+  } catch (err) {
+    ${globalId}[${cacheKeyId}] = ${objId};
+  }
+  return ${objId};
+})();
+`;
+  const nodes = parser.parse(code, { sourceType: "script" }).program.body;
+  return {
+    runtimeId: ctx.t.identifier(runtimeId),
+    prelude: nodes,
+  };
+}
+
+function applyVmToFunction(fnPath, ctx) {
   if (!canVirtualize(fnPath, ctx)) {
     return false;
   }
@@ -128,10 +375,37 @@ function applyVmToFunction(fnPath, ctx, runtimeIds) {
           : ctx.t.numericLiteral(value)
       )
     );
+  const bundle = createRuntimeBundle(ctx);
+  const runtime = buildInlineRuntime(ctx, bundle.runtimeSource, bundle.cacheKey);
+  const execCallee = fnPath.node.async
+    ? ctx.t.memberExpression(
+        runtime.runtimeId,
+        ctx.t.stringLiteral(bundle.props.execAsync),
+        true
+      )
+    : ctx.t.memberExpression(
+        runtime.runtimeId,
+        ctx.t.stringLiteral(bundle.props.exec),
+        true
+      );
+  const bytecodeDecode = bundle.props.bytecodeDecode
+    ? ctx.t.memberExpression(
+        runtime.runtimeId,
+        ctx.t.stringLiteral(bundle.props.bytecodeDecode),
+        true
+      )
+    : null;
+  const constDecode = bundle.props.constDecode
+    ? ctx.t.memberExpression(
+        runtime.runtimeId,
+        ctx.t.stringLiteral(bundle.props.constDecode),
+        true
+      )
+    : null;
   let codeInit = ctx.t.arrayExpression(
     compiler.code.map((n) => ctx.t.numericLiteral(n))
   );
-  if (useBytecodeEncrypt && runtimeIds.bytecodeDecodeName) {
+  if (useBytecodeEncrypt && bytecodeDecode) {
     const meta = encodeBytecode(compiler.code, ctx.rng);
     const partsExpr = makeStrArray(meta.parts);
     const orderExpr = makeNumArray(meta.order);
@@ -149,15 +423,12 @@ function applyVmToFunction(fnPath, ctx, runtimeIds) {
       meta.keyOrder,
       meta.keyOrderMask,
     ]);
-    codeInit = ctx.t.callExpression(
-      ctx.t.identifier(runtimeIds.bytecodeDecodeName),
-      [partsExpr, orderExpr, poolExpr]
-    );
+    codeInit = ctx.t.callExpression(bytecodeDecode, [partsExpr, orderExpr, poolExpr]);
   }
   let constInit = ctx.t.arrayExpression(
     compiler.consts.map((value) => makeLiteral(ctx.t, value))
   );
-  if (useConstEncrypt && runtimeIds.constDecodeName) {
+  if (useConstEncrypt && constDecode) {
     const meta = encodeConstPool(compiler.consts, ctx.rng);
     const payloadExpr = makeStrArray(meta.parts);
     const orderExpr = makeNumArray(meta.order);
@@ -179,10 +450,7 @@ function applyVmToFunction(fnPath, ctx, runtimeIds) {
       meta.maskOrder,
       meta.maskOrderMask,
     ]);
-    constInit = ctx.t.callExpression(
-      ctx.t.identifier(runtimeIds.constDecodeName),
-      [payloadExpr, orderExpr, poolExpr]
-    );
+    constInit = ctx.t.callExpression(constDecode, [payloadExpr, orderExpr, poolExpr]);
   }
 
   const envProperties = [];
@@ -216,10 +484,6 @@ function applyVmToFunction(fnPath, ctx, runtimeIds) {
     )
   );
 
-  const execId = fnPath.node.async
-    ? runtimeIds.execAsyncName
-    : runtimeIds.execName;
-
   const newBody = ctx.t.blockStatement([
     ctx.t.variableDeclaration("const", [
       ctx.t.variableDeclarator(codeId, codeInit),
@@ -231,7 +495,7 @@ function applyVmToFunction(fnPath, ctx, runtimeIds) {
       ctx.t.variableDeclarator(envId, ctx.t.objectExpression(envProperties)),
     ]),
     ctx.t.returnStatement(
-      ctx.t.callExpression(ctx.t.identifier(execId), [
+      ctx.t.callExpression(execCallee, [
         codeId,
         constId,
         envId,
@@ -240,148 +504,24 @@ function applyVmToFunction(fnPath, ctx, runtimeIds) {
     ),
   ]);
 
-  fnPath.get("body").replaceWith(newBody);
-  return true;
-}
-
-function ensureRuntime(programPath, ctx) {
-  if (ctx.state.vmRuntime) {
-    return ctx.state.vmRuntime;
-  }
-  const execName = ctx.nameGen.next();
-  const execAsyncName = ctx.nameGen.next();
-  const opsName = ctx.nameGen.next();
-  const opsLookupName = ctx.nameGen.next();
-  const globalsName = ctx.nameGen.next();
-  const makeFuncName = ctx.nameGen.next();
-  const maskName = ctx.nameGen.next();
-  const opcodeB64Name = ctx.nameGen.next();
-  const miniVmName = ctx.nameGen.next();
-  const bytecodeEnabled = ctx.options.vm.bytecodeEncrypt !== false;
-  const bytecodeDecodeName = bytecodeEnabled ? ctx.nameGen.next() : null;
-  const bytecodeCacheName = bytecodeEnabled ? ctx.nameGen.next() : null;
-  const bytecodeB64Name = bytecodeEnabled ? ctx.nameGen.next() : null;
-  const bytecodeRc4Name = bytecodeEnabled ? ctx.nameGen.next() : null;
-  const constsEnabled = ctx.options.vm.constsEncrypt !== false;
-  const constDecodeName = constsEnabled ? ctx.nameGen.next() : null;
-  const constCacheName = constsEnabled ? ctx.nameGen.next() : null;
-  const constB64Name = constsEnabled ? ctx.nameGen.next() : null;
-  const constRc4Name = constsEnabled ? ctx.nameGen.next() : null;
-  const constUtf8Name = constsEnabled ? ctx.nameGen.next() : null;
-  const opcodeMapping = buildOpcodeMapping(ctx);
-  const opcodeInfo = encodeOpcodeTable(opcodeMapping.decode, ctx.rng);
-  const miniVmInfo = createMiniVmInfo(ctx.rng);
-  const miniVmPrograms = {
-    opcode: buildMiniVmProgram(miniVmInfo.ops, [
-      { pool: [0, 1, 2, 3], toString: true, store: 0 },
-      { pool: [4, 5, 6, 7], store: 1 },
-      { pool: [8, 9, 10, 11], store: 2 },
-      { pool: [12, 13, 14, 15], store: 3 },
-      { pool: [16, 17, 18, 19], store: 4 },
-    ]),
-    bytecode: buildMiniVmProgram(miniVmInfo.ops, [
-      { pool: [0, 1, 2, 3], toString: true, store: 0 },
-      { pool: [4, 5, 6, 7], store: 1 },
-      { pool: [8, 9, 10, 11], store: 2 },
-    ]),
-    consts: buildMiniVmProgram(miniVmInfo.ops, [
-      { pool: [0, 1, 2, 3], toString: true, store: 0 },
-      { pool: [4, 5, 6, 7], store: 1 },
-      { pool: [8, 9, 10, 11], store: 2 },
-      { pool: [12, 13, 14, 15], store: 3 },
-    ]),
-  };
-  const runtime = buildVmRuntime(
-    {
-      execName,
-      execAsyncName,
-      opsName,
-      opsLookupName,
-      globalsName,
-      makeFuncName,
-      maskName,
-      opcodeB64Name,
-      miniVmName,
-      bytecodeDecodeName,
-      bytecodeCacheName,
-      bytecodeB64Name,
-      bytecodeRc4Name,
-      constDecodeName,
-      constCacheName,
-      constB64Name,
-      constRc4Name,
-      constUtf8Name,
-    },
-    opcodeInfo,
-    opcodeMapping.mask,
-    miniVmInfo,
-    miniVmPrograms
+  fnPath.get("body").replaceWith(
+    ctx.t.blockStatement([...runtime.prelude, ...newBody.body])
   );
-  const body = programPath.node.body;
-  let index = 0;
-  while (index < body.length) {
-    const stmt = body[index];
-    if (stmt.type === "ExpressionStatement" && stmt.directive) {
-      index += 1;
-      continue;
-    }
-    break;
-  }
-  body.splice(index, 0, ...runtime);
-  ctx.state.vmRuntime = {
-    execName,
-    execAsyncName,
-    opsName,
-    opsLookupName,
-    globalsName,
-    makeFuncName,
-    maskName,
-    opcodeB64Name,
-    miniVmName,
-    bytecodeDecodeName,
-    bytecodeCacheName,
-    bytecodeB64Name,
-    bytecodeRc4Name,
-    constDecodeName,
-    constCacheName,
-    constB64Name,
-    constRc4Name,
-    constUtf8Name,
-  };
-  ctx.state.vmRuntimeMeta = {
-    programPath,
-    index,
-    size: runtime.length,
-  };
-  return ctx.state.vmRuntime;
+  return true;
 }
 
 function vmPlugin(ast, ctx) {
   const { traverse, options } = ctx;
-  let applied = false;
   traverse(ast, {
     Program(path) {
-      let runtimeIds = null;
       path.traverse({
         Function(fnPath) {
           if (!shouldVirtualize(fnPath, options.vm)) {
             return;
           }
-          if (!runtimeIds) {
-            runtimeIds = ensureRuntime(path, ctx);
-          }
-          const didApply = applyVmToFunction(fnPath, ctx, runtimeIds);
-          if (didApply) {
-            applied = true;
-          }
+          applyVmToFunction(fnPath, ctx);
         },
       });
-      if (!applied && ctx.state.vmRuntimeMeta) {
-        const { programPath, index, size } = ctx.state.vmRuntimeMeta;
-        programPath.node.body.splice(index, size);
-        ctx.state.vmRuntime = null;
-        ctx.state.vmRuntimeMeta = null;
-      }
     },
   });
 }
