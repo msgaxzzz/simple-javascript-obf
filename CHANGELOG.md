@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-02-02
+### Added
+- Luau CLI wrapper (`luau-obf`) and expanded CLI flags for Luau-specific VM/CFF/rename/string options.
+- Luau obfuscation pipeline features: VM virtualization (multi-layer), VM-CFF mode, anti-hook guard, dead-code filler, entry rewriting, and member encoding.
+- Luau VM hardening: runtime bytecode split, runtime key masking, fake opcodes, and encrypted const pool decoding.
+- Luau string splitting (fragmented decode + concat) and optional homoglyph rename mode.
+- Web UI language selector (JavaScript/Luau) with Luau-specific controls and file support.
+
 ## [1.1.1] - 2026-01-18
 ### Added
 - Local web UI (`web/` + `webstart.js`) for uploading/pasting JavaScript and downloading obfuscated output.

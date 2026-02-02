@@ -25,27 +25,41 @@ function buildPipeline({ t, traverse, options }) {
     state: {},
   };
 
+  const wrapPlugin = (name, plugin) => (ast) => {
+    try {
+      plugin(ast, ctx);
+    } catch (err) {
+      const message = err && err.message ? err.message : String(err);
+      const wrapped = new Error(`[js-obf] plugin ${name} failed: ${message}`);
+      if (err && err.stack) {
+        wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
+      }
+      wrapped.cause = err;
+      throw wrapped;
+    }
+  };
+
   const plugins = [];
 
-  plugins.push((ast) => entryPlugin(ast, ctx));
+  plugins.push(wrapPlugin("entry", entryPlugin));
   if (options.vm.enabled) {
-    plugins.push((ast) => vmPlugin(ast, ctx));
+    plugins.push(wrapPlugin("vm", vmPlugin));
   }
   if (options.cff) {
-    plugins.push((ast) => cffPlugin(ast, ctx));
+    plugins.push(wrapPlugin("controlFlowFlatten", cffPlugin));
   }
   if (options.strings) {
-    plugins.push((ast) => memberEncodePlugin(ast, ctx));
-    plugins.push((ast) => stringPlugin(ast, ctx));
+    plugins.push(wrapPlugin("encodeMembers", memberEncodePlugin));
+    plugins.push(wrapPlugin("stringEncode", stringPlugin));
   }
   if (options.dead) {
-    plugins.push((ast) => deadPlugin(ast, ctx));
+    plugins.push(wrapPlugin("deadCode", deadPlugin));
   }
   if (options.antiHook && options.antiHook.enabled) {
-    plugins.push((ast) => antiHookPlugin(ast, ctx));
+    plugins.push(wrapPlugin("antiHook", antiHookPlugin));
   }
   if (options.rename) {
-    plugins.push((ast) => renamePlugin(ast, ctx));
+    plugins.push(wrapPlugin("rename", renamePlugin));
   }
 
   return plugins;

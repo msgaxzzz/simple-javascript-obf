@@ -7,13 +7,23 @@ const { obfuscate } = require("../src/index");
 function printHelp() {
   const text = `
 Usage:
-  js-obf <input.js | -> [options]
+  js-obf <input.js|input.lua|input.luau|-> [options]
 
 Options:
   -o, --output <file>        Output file
   --preset <high|balanced|low>  Preset strength (default: high)
   --no-rename                Disable identifier renaming
+  --rename-globals           Rename global bindings (Luau only)
+  --no-rename-globals        Skip renaming globals
+  --rename-members           Rename member/table keys (Luau only)
+  --no-rename-members        Skip renaming members
+  --rename-homoglyphs        Use l/I/1 homoglyph alphabet (Luau only)
+  --no-rename-homoglyphs     Disable homoglyph alphabet
   --no-strings               Disable string encoding
+  --strings-split            Split long strings into fragments (Luau)
+  --no-strings-split         Disable string splitting
+  --strings-split-min <n>    Minimum length to split (Luau, default 12)
+  --strings-split-max-parts <n>  Max fragments (Luau, default 3)
   --no-strings-object-keys   Skip encoding object literal keys
   --strings-object-keys      Force encoding object literal keys
   --no-strings-jsx-attrs     Skip encoding JSX attribute string values
@@ -22,8 +32,12 @@ Options:
   --strings-template-chunks     Force encoding template literal static chunks
   --no-cff                   Disable control flow flattening
   --cff-downlevel            Allow CFF to downlevel let/const to var
+  --cff-mode <vm|classic>    CFF strategy for Luau (default: vm)
+  --cff-opaque               Enable opaque predicates (default: on)
+  --no-cff-opaque            Disable opaque predicates
   --no-dead                  Disable dead code injection
   --vm                       Enable VM virtualization (see README limits)
+  --vm-layers <n>            VM layers (Luau, default 1)
   --vm-include <a,b,c>        Only virtualize specified function names
   --vm-opcode-shuffle        Enable VM opcode shuffle (default: on)
   --no-vm-opcode-shuffle     Disable VM opcode shuffle
@@ -32,9 +46,15 @@ Options:
   --no-vm-bytecode           Disable VM bytecode encryption
   --vm-consts                Encrypt VM const pool at runtime (default: on)
   --no-vm-consts             Disable VM const pool encryption
+  --vm-runtime-key           Runtime key for Luau VM bytecode (default: on)
+  --no-vm-runtime-key        Disable runtime key for Luau VM bytecode
+  --vm-runtime-split         Split Luau VM bytecode into parts (default: on)
+  --no-vm-runtime-split      Disable runtime bytecode split
   --vm-downlevel             Allow VM to downlevel let/const to var
   --anti-hook                Enable anti-hook runtime guard
   --anti-hook-lock           Freeze built-in prototypes after guard
+  --lang <js|luau>            Select language (default: js, inferred from .lua/.luau)
+  --luau-parser <luaparse|custom>  Luau parser backend (default: luaparse)
   --seed <value>              RNG seed
   --ecma <version>           Terser output ECMAScript version (default: 2020)
   --sourcemap                Emit source map
@@ -74,6 +94,20 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--lang") {
+      options.lang = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--luau") {
+      options.lang = "luau";
+      continue;
+    }
+    if (arg === "--luau-parser") {
+      options.luauParser = args[i + 1];
+      i += 1;
+      continue;
+    }
     if (arg === "--ecma") {
       options.ecma = args[i + 1];
       i += 1;
@@ -97,6 +131,11 @@ function parseArgs(argv) {
     }
     if (arg === "--vm") {
       options.vm = true;
+      continue;
+    }
+    if (arg === "--vm-layers") {
+      options.vmLayers = args[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--vm-include") {
@@ -133,6 +172,22 @@ function parseArgs(argv) {
       options.vmConsts = false;
       continue;
     }
+    if (arg === "--vm-runtime-key") {
+      options.vmRuntimeKey = true;
+      continue;
+    }
+    if (arg === "--no-vm-runtime-key") {
+      options.vmRuntimeKey = false;
+      continue;
+    }
+    if (arg === "--vm-runtime-split") {
+      options.vmRuntimeSplit = true;
+      continue;
+    }
+    if (arg === "--no-vm-runtime-split") {
+      options.vmRuntimeSplit = false;
+      continue;
+    }
     if (arg === "--vm-downlevel") {
       options.vmDownlevel = true;
       continue;
@@ -141,8 +196,50 @@ function parseArgs(argv) {
       options.rename = false;
       continue;
     }
+    if (arg === "--rename-globals") {
+      options.renameGlobals = true;
+      continue;
+    }
+    if (arg === "--no-rename-globals") {
+      options.renameGlobals = false;
+      continue;
+    }
+    if (arg === "--rename-members") {
+      options.renameMembers = true;
+      continue;
+    }
+    if (arg === "--no-rename-members") {
+      options.renameMembers = false;
+      continue;
+    }
+    if (arg === "--rename-homoglyphs") {
+      options.renameHomoglyphs = true;
+      continue;
+    }
+    if (arg === "--no-rename-homoglyphs") {
+      options.renameHomoglyphs = false;
+      continue;
+    }
     if (arg === "--no-strings") {
       options.strings = false;
+      continue;
+    }
+    if (arg === "--strings-split") {
+      options.stringsSplit = true;
+      continue;
+    }
+    if (arg === "--no-strings-split") {
+      options.stringsSplit = false;
+      continue;
+    }
+    if (arg === "--strings-split-min") {
+      options.stringsSplitMin = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--strings-split-max-parts") {
+      options.stringsSplitMaxParts = args[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--no-strings-object-keys") {
@@ -175,6 +272,19 @@ function parseArgs(argv) {
     }
     if (arg === "--cff-downlevel") {
       options.cffDownlevel = true;
+      continue;
+    }
+    if (arg === "--cff-mode") {
+      options.cffMode = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--cff-opaque") {
+      options.cffOpaque = true;
+      continue;
+    }
+    if (arg === "--no-cff-opaque") {
+      options.cffOpaque = false;
       continue;
     }
     if (arg === "--no-dead") {
@@ -219,6 +329,14 @@ async function main() {
   }
 
   const inputPath = positional[0];
+  const inputExt = inputPath === "-" ? "" : path.extname(inputPath).toLowerCase();
+  const inferredLang =
+    inputPath === "-"
+      ? "js"
+      : inputExt === ".lua" || inputExt === ".luau"
+        ? "luau"
+        : "js";
+  const lang = options.lang || inferredLang;
   const source = readInput(inputPath);
   const outputPath = options.output
     ? options.output
@@ -226,7 +344,9 @@ async function main() {
       ? null
       : path.join(
           path.dirname(inputPath),
-          `${path.basename(inputPath, path.extname(inputPath))}.obf.js`
+          lang === "luau"
+            ? `${path.basename(inputPath, path.extname(inputPath))}.obf${inputExt || ".lua"}`
+            : `${path.basename(inputPath, path.extname(inputPath))}.obf.js`
         );
 
   const result = await obfuscate(source, {
@@ -237,10 +357,15 @@ async function main() {
       encodeObjectKeys: options.stringsObjectKeys,
       encodeJSXAttributes: options.stringsJsxAttrs,
       encodeTemplateChunks: options.stringsTemplateChunks,
+      split: options.stringsSplit,
+      splitMin: options.stringsSplitMin,
+      splitMaxParts: options.stringsSplitMaxParts,
     },
     cff: options.cff,
     cffOptions: {
       downlevel: options.cffDownlevel,
+      mode: options.cffMode,
+      opaque: options.cffOpaque,
     },
     dead: options.dead,
     antiHook: options.antiHook
@@ -252,10 +377,13 @@ async function main() {
     vm: {
       enabled: Boolean(options.vm),
       include: options.vmInclude,
+      layers: options.vmLayers,
       opcodeShuffle: options.vmOpcodeShuffle,
       fakeOpcodes: options.vmFakeOpcodes,
       bytecodeEncrypt: options.vmBytecode,
       constsEncrypt: options.vmConsts,
+      runtimeKey: options.vmRuntimeKey,
+      runtimeSplit: options.vmRuntimeSplit,
       downlevel: options.vmDownlevel,
     },
     seed: options.seed,
@@ -265,6 +393,13 @@ async function main() {
     minify: options.minify,
     beautify: options.beautify,
     filename: inputPath === "-" ? "stdin.js" : inputPath,
+    lang,
+    luauParser: options.luauParser,
+    renameOptions: {
+      renameGlobals: options.renameGlobals,
+      renameMembers: options.renameMembers,
+      homoglyphs: options.renameHomoglyphs,
+    },
   });
 
   let outputCode = result.code;

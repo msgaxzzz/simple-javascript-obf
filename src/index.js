@@ -5,6 +5,7 @@ const t = require("@babel/types");
 const { minify } = require("terser");
 const { buildPipeline } = require("./pipeline");
 const { normalizeOptions } = require("./options");
+const { obfuscateLuau } = require("./luau");
 
 function parseSource(code, filename) {
   return parser.parse(code, {
@@ -38,6 +39,9 @@ function parseSource(code, filename) {
 
 async function obfuscate(source, userOptions = {}) {
   const options = normalizeOptions(userOptions);
+  if (options.lang === "luau") {
+    return obfuscateLuau(source, options);
+  }
   const ast = parseSource(source, options.filename);
 
   const pipeline = buildPipeline({

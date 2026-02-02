@@ -370,7 +370,7 @@
       <div>
         <span class="eyebrow">Local Obfuscator</span>
         <h1>JS Obfuscator Console</h1>
-        <p>Upload or paste JavaScript, tune options, and generate a hardened build. Default server port: 6589.</p>
+        <p>Upload or paste JavaScript or Luau, tune options, and generate a hardened build. Default server port: 6589.</p>
       </div>
       <div class="hero-card">
         <h3>Workflow</h3>
@@ -390,14 +390,14 @@
       <h2>Input</h2>
       <div class="row">
         <label>Source file</label>
-        <input id="fileInput" type="file" accept=".js,.mjs,.cjs,.ts,.tsx,.jsx" />
+        <input id="fileInput" type="file" accept=".js,.mjs,.cjs,.ts,.tsx,.jsx,.lua,.luau" />
       </div>
       <div class="divider"></div>
-      <div id="dropZone" class="drop">Drop a JavaScript file here</div>
+      <div id="dropZone" class="drop">Drop a JavaScript or Luau file here</div>
       <div class="divider"></div>
       <div class="row">
         <label for="source">Paste source</label>
-        <textarea id="source" placeholder="Paste JavaScript here"></textarea>
+        <textarea id="source" placeholder="Paste JavaScript or Luau here"></textarea>
       </div>
       <div class="row two">
         <div>
@@ -426,6 +426,23 @@
         <div>
           <label for="seed">Seed</label>
           <input id="seed" type="text" value="js-obf" />
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="row two">
+        <div>
+          <label for="lang">Language</label>
+          <select id="lang">
+            <option value="js">JavaScript</option>
+            <option value="luau">Luau</option>
+          </select>
+        </div>
+        <div>
+          <label for="luauParser">Luau parser</label>
+          <select id="luauParser">
+            <option value="luaparse">luaparse</option>
+            <option value="custom">custom</option>
+          </select>
         </div>
       </div>
       <div class="divider"></div>
@@ -465,15 +482,42 @@
           <label class="checkbox"><input id="optStringsObjectKeys" type="checkbox" checked /> Encode object keys</label>
           <label class="checkbox"><input id="optStringsJsxAttrs" type="checkbox" checked /> Encode JSX attrs</label>
           <label class="checkbox"><input id="optStringsTemplate" type="checkbox" checked /> Encode template chunks</label>
+          <label class="checkbox"><input id="optStringsSplit" type="checkbox" /> Split long strings</label>
+          <label for="optStringsSplitMin">Split min length</label>
+          <input id="optStringsSplitMin" type="number" min="2" value="12" />
+          <label for="optStringsSplitMax">Split max parts</label>
+          <input id="optStringsSplitMax" type="number" min="2" max="6" value="3" />
         </div>
         <div>
           <label class="chip">VM options</label>
           <label class="checkbox"><input id="optVmOpcode" type="checkbox" checked /> Opcode shuffle</label>
           <label class="checkbox"><input id="optVmBytecode" type="checkbox" checked /> Bytecode decrypt</label>
           <label class="checkbox"><input id="optVmConsts" type="checkbox" checked /> Consts decrypt</label>
+          <label class="checkbox"><input id="optVmRuntimeKey" type="checkbox" checked /> Runtime key (Luau)</label>
+          <label class="checkbox"><input id="optVmRuntimeSplit" type="checkbox" checked /> Runtime split (Luau)</label>
           <label class="checkbox"><input id="optVmDownlevel" type="checkbox" /> Downlevel let/const</label>
+          <label for="optVmLayers">VM layers (Luau)</label>
+          <input id="optVmLayers" type="number" min="1" max="3" value="1" />
           <label>Fake opcode ratio (0-1)</label>
           <input id="optVmFake" type="number" min="0" max="1" step="0.01" value="0.15" />
+        </div>
+      </div>
+      <div class="divider"></div>
+      <div class="row two">
+        <div>
+          <label class="chip">Rename options</label>
+          <label class="checkbox"><input id="optRenameGlobals" type="checkbox" /> Rename globals (Luau)</label>
+          <label class="checkbox"><input id="optRenameMembers" type="checkbox" /> Rename members (Luau)</label>
+          <label class="checkbox"><input id="optRenameHomoglyphs" type="checkbox" /> Homoglyph alphabet (Luau)</label>
+        </div>
+        <div>
+          <label class="chip">CFF options</label>
+          <label for="optCffMode">CFF mode (Luau)</label>
+          <select id="optCffMode">
+            <option value="vm">vm</option>
+            <option value="classic">classic</option>
+          </select>
+          <label class="checkbox"><input id="optCffOpaque" type="checkbox" checked /> Opaque predicates</label>
         </div>
       </div>
         </section>
@@ -512,6 +556,8 @@
     const inputNameEl = document.getElementById("inputName");
     const outputNameEl = document.getElementById("outputName");
     const presetEl = document.getElementById("preset");
+    const langEl = document.getElementById("lang");
+    const luauParserEl = document.getElementById("luauParser");
 
     const runBtn = document.getElementById("runBtn");
     const downloadBtn = document.getElementById("downloadBtn");
@@ -535,12 +581,24 @@
     const optStringsObjectKeys = document.getElementById("optStringsObjectKeys");
     const optStringsJsxAttrs = document.getElementById("optStringsJsxAttrs");
     const optStringsTemplate = document.getElementById("optStringsTemplate");
+    const optStringsSplit = document.getElementById("optStringsSplit");
+    const optStringsSplitMin = document.getElementById("optStringsSplitMin");
+    const optStringsSplitMax = document.getElementById("optStringsSplitMax");
 
     const optVmOpcode = document.getElementById("optVmOpcode");
     const optVmBytecode = document.getElementById("optVmBytecode");
     const optVmConsts = document.getElementById("optVmConsts");
+    const optVmRuntimeKey = document.getElementById("optVmRuntimeKey");
+    const optVmRuntimeSplit = document.getElementById("optVmRuntimeSplit");
     const optVmDownlevel = document.getElementById("optVmDownlevel");
     const optVmFake = document.getElementById("optVmFake");
+    const optVmLayers = document.getElementById("optVmLayers");
+
+    const optRenameGlobals = document.getElementById("optRenameGlobals");
+    const optRenameMembers = document.getElementById("optRenameMembers");
+    const optRenameHomoglyphs = document.getElementById("optRenameHomoglyphs");
+    const optCffMode = document.getElementById("optCffMode");
+    const optCffOpaque = document.getElementById("optCffOpaque");
 
     const fileInput = document.getElementById("fileInput");
     const dropZone = document.getElementById("dropZone");
@@ -560,6 +618,23 @@
     function log(message) {
       logEl.textContent += `[${now()}] ${message}\n`;
       logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function getLangFromFilename(fileName) {
+      const lower = fileName.toLowerCase();
+      if (lower.endsWith(".lua") || lower.endsWith(".luau")) {
+        return "luau";
+      }
+      return "js";
+    }
+
+    function buildOutputName(fileName, lang) {
+      const base = fileName.replace(/\.[^.]+$/, "");
+      if (lang === "luau") {
+        const ext = fileName.endsWith(".luau") ? ".luau" : ".lua";
+        return `${base}.obf${ext}`;
+      }
+      return `${base}.obf.js`;
     }
 
     function setStatus(message) {
@@ -582,12 +657,12 @@
 
     function updateOptionStates() {
       const stringsEnabled = optStrings.checked;
-      [optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate].forEach((el) => {
+      [optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate, optStringsSplit, optStringsSplitMin, optStringsSplitMax].forEach((el) => {
         el.disabled = !stringsEnabled;
       });
 
       const vmEnabled = optVm.checked;
-      [optVmOpcode, optVmBytecode, optVmConsts, optVmDownlevel, optVmFake].forEach((el) => {
+      [optVmOpcode, optVmBytecode, optVmConsts, optVmDownlevel, optVmFake, optVmRuntimeKey, optVmRuntimeSplit, optVmLayers].forEach((el) => {
         el.disabled = !vmEnabled;
       });
 
@@ -595,6 +670,42 @@
       optCffDownlevel.disabled = !cffEnabled;
       if (!cffEnabled) {
         optCffDownlevel.checked = false;
+      }
+
+      const isLuau = langEl.value === "luau";
+      optCffDownlevel.disabled = !cffEnabled || isLuau;
+      optCffMode.disabled = !cffEnabled || !isLuau;
+      optCffOpaque.disabled = !cffEnabled || !isLuau;
+      if (isLuau) {
+        optCffDownlevel.checked = false;
+      }
+
+      optRenameGlobals.disabled = !isLuau;
+      optRenameMembers.disabled = !isLuau;
+      optRenameHomoglyphs.disabled = !isLuau;
+
+      optStringsJsxAttrs.disabled = !stringsEnabled || isLuau;
+      optStringsTemplate.disabled = !stringsEnabled || isLuau;
+      optStringsSplit.disabled = !stringsEnabled || !isLuau;
+      optStringsSplitMin.disabled = !stringsEnabled || !isLuau;
+      optStringsSplitMax.disabled = !stringsEnabled || !isLuau;
+
+      optVmRuntimeKey.disabled = !vmEnabled || !isLuau;
+      optVmRuntimeSplit.disabled = !vmEnabled || !isLuau;
+      optVmLayers.disabled = !vmEnabled || !isLuau;
+
+      luauParserEl.disabled = !isLuau;
+
+      const ecmaEl = document.getElementById("ecma");
+      ecmaEl.disabled = isLuau;
+
+      optMinify.disabled = isLuau;
+      optBeautify.disabled = isLuau || !optMinify.checked;
+      optCompact.disabled = isLuau;
+      if (isLuau) {
+        optBeautify.checked = false;
+        optMinify.checked = false;
+        optCompact.checked = false;
       }
 
       optAntiHookLock.disabled = !optAntiHook.checked;
@@ -614,9 +725,15 @@
 
     function updateNamesFromFile(fileName) {
       inputNameEl.value = fileName;
-      const base = fileName.replace(/\.[^.]+$/, "");
-      const outputName = fileName.endsWith(".js") ? `${base}.obf.js` : `${fileName}.obf.js`;
-      outputNameEl.value = outputName;
+      const lang = getLangFromFilename(fileName);
+      langEl.value = lang;
+      outputNameEl.value = buildOutputName(fileName, lang);
+      updateOptionStates();
+    }
+
+    function updateOutputNameFromLang() {
+      const fileName = inputNameEl.value.trim() || (langEl.value === "luau" ? "input.lua" : "input.js");
+      outputNameEl.value = buildOutputName(fileName, langEl.value);
     }
 
     function setSourceFromFile(file) {
@@ -637,14 +754,21 @@
       const seed = document.getElementById("seed").value.trim();
       const ecmaValue = document.getElementById("ecma").value.trim();
       const vmFakeValue = optVmFake.value.trim();
+      const vmLayersValue = optVmLayers.value.trim();
+      const splitMinValue = optStringsSplitMin.value.trim();
+      const splitMaxValue = optStringsSplitMax.value.trim();
 
       const options = {
         preset: presetEl.value === "custom" ? "high" : presetEl.value,
+        lang: langEl.value,
+        luauParser: luauParserEl.value,
         rename: optRename.checked,
         strings: optStrings.checked,
         cff: optCff.checked,
         cffOptions: {
-          downlevel: optCffDownlevel.checked
+          downlevel: optCffDownlevel.checked,
+          mode: optCffMode.value,
+          opaque: optCffOpaque.checked
         },
         dead: optDead.checked,
         seed: seed || undefined,
@@ -656,7 +780,10 @@
         stringsOptions: {
           encodeObjectKeys: optStringsObjectKeys.checked,
           encodeJSXAttributes: optStringsJsxAttrs.checked,
-          encodeTemplateChunks: optStringsTemplate.checked
+          encodeTemplateChunks: optStringsTemplate.checked,
+          split: optStringsSplit.checked,
+          splitMin: splitMinValue === "" ? undefined : Number(splitMinValue),
+          splitMaxParts: splitMaxValue === "" ? undefined : Number(splitMaxValue)
         },
         vm: {
           enabled: optVm.checked,
@@ -664,12 +791,20 @@
           opcodeShuffle: optVmOpcode.checked,
           bytecodeEncrypt: optVmBytecode.checked,
           constsEncrypt: optVmConsts.checked,
+          runtimeKey: optVmRuntimeKey.checked,
+          runtimeSplit: optVmRuntimeSplit.checked,
           downlevel: optVmDownlevel.checked,
-          fakeOpcodes: vmFakeValue === "" ? undefined : Number(vmFakeValue)
+          fakeOpcodes: vmFakeValue === "" ? undefined : Number(vmFakeValue),
+          layers: vmLayersValue === "" ? undefined : Number(vmLayersValue)
         },
         antiHook: {
           enabled: optAntiHook.checked,
           lock: optAntiHookLock.checked
+        },
+        renameOptions: {
+          renameGlobals: optRenameGlobals.checked,
+          renameMembers: optRenameMembers.checked,
+          homoglyphs: optRenameHomoglyphs.checked
         }
       };
 
@@ -791,11 +926,23 @@
     });
 
     [optCffDownlevel, optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate,
-      optVmOpcode, optVmBytecode, optVmConsts, optVmDownlevel, optVmFake,
-      optAntiHook, optAntiHookLock, optSourceMap, optBeautify, optMinify, optCompact
+      optStringsSplit, optStringsSplitMin, optStringsSplitMax,
+      optVmOpcode, optVmBytecode, optVmConsts, optVmRuntimeKey, optVmRuntimeSplit,
+      optVmDownlevel, optVmFake, optVmLayers,
+      optAntiHook, optAntiHookLock, optSourceMap, optBeautify, optMinify, optCompact,
+      optRenameGlobals, optRenameMembers, optRenameHomoglyphs,
+      optCffMode, optCffOpaque
     ].forEach((el) => {
       el.addEventListener("change", markCustomPreset);
     });
+
+    langEl.addEventListener("change", () => {
+      markCustomPreset();
+      updateOutputNameFromLang();
+      updateOptionStates();
+    });
+
+    luauParserEl.addEventListener("change", markCustomPreset);
 
     optAntiHook.addEventListener("change", () => {
       updateOptionStates();

@@ -1,23 +1,5 @@
 const parser = require("@babel/parser");
-
-function buildCharCodeExpr(value) {
-  const codes = Array.from(String(value), (ch) => ch.charCodeAt(0));
-  return `String.fromCharCode(${codes.join(", ")})`;
-}
-
-function insertAtTop(programPath, nodes) {
-  const body = programPath.node.body;
-  let index = 0;
-  while (index < body.length) {
-    const stmt = body[index];
-    if (stmt.type === "ExpressionStatement" && stmt.directive) {
-      index += 1;
-      continue;
-    }
-    break;
-  }
-  body.splice(index, 0, ...nodes);
-}
+const { buildCharCodeExpr } = require("../../utils/runtime");
 
 function buildRuntime({ lock, timing, behavior }) {
   const errIntegrity = buildCharCodeExpr("Integrity check failed");
@@ -255,29 +237,6 @@ function buildRuntime({ lock, timing, behavior }) {
   return parser.parse(code, { sourceType: "script" }).program.body;
 }
 
-function antiHook(ast, ctx) {
-  if (!ctx.options.antiHook || !ctx.options.antiHook.enabled) {
-    return;
-  }
-
-  let programPathRef = null;
-  ctx.traverse(ast, {
-    Program(path) {
-      programPathRef = path;
-    },
-  });
-
-  if (!programPathRef) {
-    return;
-  }
-
-  const runtime = buildRuntime({
-    lock: ctx.options.antiHook.lock,
-    timing: ctx.options.antiHook.timing !== false,
-    behavior: ctx.options.antiHook.behavior !== false,
-  });
-
-  insertAtTop(programPathRef, runtime);
-}
-
-module.exports = antiHook;
+module.exports = {
+  buildRuntime,
+};

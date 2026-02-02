@@ -89,14 +89,48 @@ function buildCliArgs(options = {}) {
   if (options.preset) {
     args.push("--preset", String(options.preset));
   }
+  if (options.lang) {
+    args.push("--lang", String(options.lang));
+  }
+  if (options.luauParser) {
+    args.push("--luau-parser", String(options.luauParser));
+  }
   if (options.rename === false) {
     args.push("--no-rename");
+  }
+  if (options.renameOptions) {
+    if (options.renameOptions.renameGlobals === true) {
+      args.push("--rename-globals");
+    } else if (options.renameOptions.renameGlobals === false) {
+      args.push("--no-rename-globals");
+    }
+    if (options.renameOptions.renameMembers === true) {
+      args.push("--rename-members");
+    } else if (options.renameOptions.renameMembers === false) {
+      args.push("--no-rename-members");
+    }
+    if (options.renameOptions.homoglyphs === true) {
+      args.push("--rename-homoglyphs");
+    } else if (options.renameOptions.homoglyphs === false) {
+      args.push("--no-rename-homoglyphs");
+    }
   }
   if (options.strings === false) {
     args.push("--no-strings");
   }
 
   const stringsOptions = options.stringsOptions || {};
+  if (stringsOptions.split === true) {
+    args.push("--strings-split");
+  } else if (stringsOptions.split === false) {
+    args.push("--no-strings-split");
+  }
+  if (stringsOptions.splitMin !== undefined && stringsOptions.splitMin !== null) {
+    args.push("--strings-split-min", String(stringsOptions.splitMin));
+  }
+  if (stringsOptions.splitMaxParts !== undefined && stringsOptions.splitMaxParts !== null) {
+    args.push("--strings-split-max-parts", String(stringsOptions.splitMaxParts));
+  }
   if (stringsOptions.encodeObjectKeys === false) {
     args.push("--no-strings-object-keys");
   } else if (stringsOptions.encodeObjectKeys === true) {
@@ -120,6 +154,14 @@ function buildCliArgs(options = {}) {
   if (cffOptions.downlevel) {
     args.push("--cff-downlevel");
   }
+  if (cffOptions.mode) {
+    args.push("--cff-mode", String(cffOptions.mode));
+  }
+  if (cffOptions.opaque === true) {
+    args.push("--cff-opaque");
+  } else if (cffOptions.opaque === false) {
+    args.push("--no-cff-opaque");
+  }
   if (options.dead === false) {
     args.push("--no-dead");
   }
@@ -127,6 +169,9 @@ function buildCliArgs(options = {}) {
   const vm = options.vm || {};
   if (vm.enabled) {
     args.push("--vm");
+  }
+  if (vm.layers !== undefined && vm.layers !== null) {
+    args.push("--vm-layers", String(vm.layers));
   }
   if (Array.isArray(vm.include) && vm.include.length > 0) {
     args.push("--vm-include", vm.include.join(","));
@@ -148,6 +193,16 @@ function buildCliArgs(options = {}) {
     args.push("--no-vm-consts");
   } else if (vm.constsEncrypt === true) {
     args.push("--vm-consts");
+  }
+  if (vm.runtimeKey === false) {
+    args.push("--no-vm-runtime-key");
+  } else if (vm.runtimeKey === true) {
+    args.push("--vm-runtime-key");
+  }
+  if (vm.runtimeSplit === false) {
+    args.push("--no-vm-runtime-split");
+  } else if (vm.runtimeSplit === true) {
+    args.push("--vm-runtime-split");
   }
   if (vm.downlevel) {
     args.push("--vm-downlevel");
@@ -190,9 +245,16 @@ async function runCliObfuscate(source, filename, options) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "js-obf-"));
   const safeName = safeFilename(filename);
   const inputPath = path.join(tempDir, safeName);
+  const ext = path.extname(safeName);
+  const inferredLang =
+    ext === ".lua" || ext === ".luau" ? "luau" : "js";
+  const lang = options.lang || inferredLang;
+  const outputExt = lang === "luau"
+    ? (ext === ".lua" || ext === ".luau" ? ext : ".lua")
+    : ".js";
   const outputPath = path.join(
     tempDir,
-    `${path.basename(safeName, path.extname(safeName))}.obf.js`
+    `${path.basename(safeName, path.extname(safeName))}.obf${outputExt}`
   );
 
   fs.writeFileSync(inputPath, source, "utf8");
