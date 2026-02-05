@@ -1,4 +1,5 @@
 const { walk } = require("./ast");
+const { collectSSAReadNamesFromRoot } = require("./ssa-utils");
 
 const LUA_KEYWORDS = new Set([
   "and",
@@ -28,6 +29,19 @@ const LUA_KEYWORDS = new Set([
   "until",
   "while",
   "self",
+]);
+const LUA_RESERVED_GLOBALS = new Set(["_ENV", "_G"]);
+const BUILTIN_LIBS = new Set([
+  "bit32",
+  "coroutine",
+  "debug",
+  "io",
+  "math",
+  "os",
+  "package",
+  "string",
+  "table",
+  "utf8",
 ]);
 
 const FIRST_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
@@ -167,7 +181,43 @@ function resolveName(scope, name) {
   return null;
 }
 
+function getStringLiteralValue(node) {
+  if (!node || node.type !== "StringLiteral") {
+    return null;
+  }
+  if (typeof node.value === "string") {
+    return node.value;
+  }
+  if (typeof node.raw === "string") {
+    const raw = node.raw;
+    if ((raw.startsWith("\"") && raw.endsWith("\"")) || (raw.startsWith("'") && raw.endsWith("'"))) {
+      return raw.slice(1, -1);
+    }
+  }
+  return null;
+}
+
+function isBuiltinLibBase(expr, scope) {
+  if (!expr || typeof expr !== "object") {
+    return false;
+  }
+  if (expr.type === "Identifier") {
+    return BUILTIN_LIBS.has(expr.name) && !resolveName(scope, expr.name);
+  }
+  if (expr.type === "IndexExpression") {
+    if (expr.base && expr.base.type === "Identifier" && (expr.base.name === "_ENV" || expr.base.name === "_G")) {
+      const value = getStringLiteralValue(expr.index);
+      return value ? BUILTIN_LIBS.has(value) : false;
+    }
+  }
+  return false;
+}
+
 function defineName(scope, name, ctx) {
+  if (ctx && ctx.readNames && !ctx.readNames.has(name)) {
+    scope.bindings.set(name, name);
+    return name;
+  }
   if (ctx.reserved.has(name)) {
     scope.bindings.set(name, name);
     return name;
@@ -182,6 +232,10 @@ function defineName(scope, name, ctx) {
 }
 
 function defineGlobal(name, ctx) {
+  if (ctx && ctx.readNames && !ctx.readNames.has(name)) {
+    ctx.globals.set(name, name);
+    return name;
+  }
   if (ctx.reserved.has(name)) {
     ctx.globals.set(name, name);
     return name;
@@ -262,16 +316,22 @@ function renameExpression(expr, scope, ctx) {
       renameExpression(expr.index, scope, ctx);
       return;
     case "MemberExpression":
+      const skipMemberRename = isBuiltinLibBase(expr.base, scope);
       renameExpression(expr.base, scope, ctx);
-      renameMemberName(expr.identifier, ctx);
+      if (!skipMemberRename) {
+        renameMemberName(expr.identifier, ctx);
+      }
       return;
     case "CallExpression":
       renameExpression(expr.base, scope, ctx);
       expr.arguments.forEach((arg) => renameExpression(arg, scope, ctx));
       return;
     case "MethodCallExpression":
+      const skipMethodRename = isBuiltinLibBase(expr.base, scope);
       renameExpression(expr.base, scope, ctx);
-      renameMemberName(expr.method, ctx);
+      if (!skipMethodRename) {
+        renameMemberName(expr.method, ctx);
+      }
       expr.arguments.forEach((arg) => renameExpression(arg, scope, ctx));
       return;
     case "TableCallExpression":
@@ -497,16 +557,20 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
 
   if (fnMember) {
     if (fnMember.type === "FunctionName") {
+      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope);
       renameIdentifier(fnMember.base, scope, ctx);
-      if (ctx.renameMembers && Array.isArray(fnMember.members)) {
+      if (ctx.renameMembers && Array.isArray(fnMember.members) && !skipMemberRename) {
         fnMember.members.forEach((member) => renameMemberName(member, ctx));
       }
-      if (ctx.renameMembers && fnMember.method) {
+      if (ctx.renameMembers && fnMember.method && !skipMemberRename) {
         renameMemberName(fnMember.method, ctx);
       }
     } else if (fnMember.type === "MemberExpression") {
+      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope);
       renameExpression(fnMember.base, scope, ctx);
-      renameMemberName(fnMember.identifier, ctx);
+      if (!skipMemberRename) {
+        renameMemberName(fnMember.identifier, ctx);
+      }
     }
   }
 
@@ -579,8 +643,12 @@ function renameIfStatement(stmt, scope, ctx) {
 
 function renameLuau(ast, ctx) {
   const userReserved = ctx.options.renameOptions?.reserved || [];
-  const reserved = new Set([...LUA_KEYWORDS, ...userReserved]);
+  const reserved = new Set([...LUA_KEYWORDS, ...LUA_RESERVED_GLOBALS, ...userReserved]);
   const used = collectIdentifiers(ast);
+  const readNames =
+    ctx && typeof ctx.getSSA === "function"
+      ? collectSSAReadNamesFromRoot(ctx.getSSA())
+      : null;
   const useHomoglyphs = Boolean(ctx.options.renameOptions?.homoglyphs);
   const alphabets = useHomoglyphs
     ? { first: "lI", rest: "lI1" }
@@ -602,6 +670,7 @@ function renameLuau(ast, ctx) {
     renameGlobals,
     renameMembers,
     memberMap: new Map(),
+    readNames,
   };
   const rootScope = createScope(null);
   if (Array.isArray(ast.body)) {

@@ -19,17 +19,44 @@ Options:
   --no-rename-members        Skip renaming members
   --rename-homoglyphs        Use l/I/1 homoglyph alphabet (Luau only)
   --no-rename-homoglyphs     Disable homoglyph alphabet
+  --mask-globals             Mask global reads via _ENV (Luau only)
+  --no-mask-globals          Skip masking global reads
   --no-strings               Disable string encoding
   --strings-split            Split long strings into fragments (Luau)
   --no-strings-split         Disable string splitting
   --strings-split-min <n>    Minimum length to split (Luau, default 12)
   --strings-split-max-parts <n>  Max fragments (Luau, default 3)
+  --strings-segment-size <n>    Max entries per Luau string pool (default 120)
+  --const-array              Extract constants into a table (Luau)
+  --no-const-array           Disable constant extraction (Luau)
+  --const-array-threshold <0-1>  Constant extraction probability (default 1)
+  --const-array-strings-only  Extract strings only (Luau)
+  --no-const-array-strings-only  Include numbers/booleans (Luau)
+  --const-array-shuffle      Shuffle constant table (default on)
+  --no-const-array-shuffle   Disable constant shuffle
+  --const-array-rotate       Rotate constant table (default on)
+  --no-const-array-rotate    Disable constant rotate
+  --const-array-encoding <none|base64>  Encode string constants (Luau)
+  --const-array-wrapper      Wrap indices with offset indirection (default on)
+  --no-const-array-wrapper   Disable wrapper indirection
+  --numbers-expr             Convert numeric literals to expressions (Luau)
+  --no-numbers-expr          Disable numeric expression conversion (Luau)
+  --numbers-expr-threshold <0-1>  Numeric conversion probability (default 1)
+  --numbers-expr-inner <0-1>  Nested conversion probability (default 0.2)
+  --numbers-expr-max-depth <n>  Max nested depth (default 6)
   --no-strings-object-keys   Skip encoding object literal keys
   --strings-object-keys      Force encoding object literal keys
   --no-strings-jsx-attrs     Skip encoding JSX attribute string values
   --strings-jsx-attrs        Force encoding JSX attribute string values
   --no-strings-template-chunks  Skip encoding template literal static chunks
   --strings-template-chunks     Force encoding template literal static chunks
+  --wrap                      Wrap chunk in a function (Luau only)
+  --wrap-iterations <n>        Wrap iterations (Luau only, default 1)
+  --proxify-locals             Proxy local variables via table indirection (Luau only)
+  --no-proxify-locals          Disable proxy locals (Luau only)
+  --pad-footer                 Append fake Luau blocks after real code (Luau only)
+  --no-pad-footer              Disable footer padding
+  --pad-footer-blocks <n>       Number of fake blocks (Luau only, default 2)
   --no-cff                   Disable control flow flattening
   --cff-downlevel            Allow CFF to downlevel let/const to var
   --cff-mode <vm|classic>    CFF strategy for Luau (default: vm)
@@ -46,21 +73,29 @@ Options:
   --no-vm-bytecode           Disable VM bytecode encryption
   --vm-consts                Encrypt VM const pool at runtime (default: on)
   --no-vm-consts             Disable VM const pool encryption
+  --vm-consts-encoding <table|string>  VM const pool storage (default table)
+  --vm-consts-split          Split VM const pool into parts (default on)
+  --no-vm-consts-split       Disable VM const pool splitting
+  --vm-consts-split-size <n>  Approximate const chunk size (default 24)
   --vm-runtime-key           Runtime key for Luau VM bytecode (default: on)
   --no-vm-runtime-key        Disable runtime key for Luau VM bytecode
   --vm-runtime-split         Split Luau VM bytecode into parts (default: on)
   --no-vm-runtime-split      Disable runtime bytecode split
+  --vm-block-dispatch         Use block-dispatch VM (Luau, hides bytecode table)
+  --no-vm-block-dispatch      Use table-driven VM (default)
   --vm-downlevel             Allow VM to downlevel let/const to var
+  --vm-debug                 Log Luau VM compile failures
   --anti-hook                Enable anti-hook runtime guard
   --anti-hook-lock           Freeze built-in prototypes after guard
   --lang <js|luau>            Select language (default: js, inferred from .lua/.luau)
-  --luau-parser <luaparse|custom>  Luau parser backend (default: luaparse)
   --seed <value>              RNG seed
   --ecma <version>           Terser output ECMAScript version (default: 2020)
   --sourcemap                Emit source map
-  --compact                  Compact output
+  --compact                  Compact output (JS) / one-line Luau
   --no-minify                Skip Terser minification
   --beautify                 Beautify Terser output (multi-line, requires minify)
+  --timing                   Print per-plugin timings (ms precision, default on)
+  --no-timing                Disable per-plugin timings
   -h, --help                 Show help
 `;
   process.stdout.write(text);
@@ -103,8 +138,10 @@ function parseArgs(argv) {
       options.lang = "luau";
       continue;
     }
+    if (arg.startsWith("--luau-parser=")) {
+      continue;
+    }
     if (arg === "--luau-parser") {
-      options.luauParser = args[i + 1];
       i += 1;
       continue;
     }
@@ -127,6 +164,14 @@ function parseArgs(argv) {
     }
     if (arg === "--beautify") {
       options.beautify = true;
+      continue;
+    }
+    if (arg === "--timing" || arg === "--timings") {
+      options.timing = true;
+      continue;
+    }
+    if (arg === "--no-timing") {
+      options.timing = false;
       continue;
     }
     if (arg === "--vm") {
@@ -172,6 +217,24 @@ function parseArgs(argv) {
       options.vmConsts = false;
       continue;
     }
+    if (arg === "--vm-consts-encoding") {
+      options.vmConstsEncoding = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-consts-split") {
+      options.vmConstsSplit = true;
+      continue;
+    }
+    if (arg === "--no-vm-consts-split") {
+      options.vmConstsSplit = false;
+      continue;
+    }
+    if (arg === "--vm-consts-split-size") {
+      options.vmConstsSplitSize = args[i + 1];
+      i += 1;
+      continue;
+    }
     if (arg === "--vm-runtime-key") {
       options.vmRuntimeKey = true;
       continue;
@@ -188,8 +251,20 @@ function parseArgs(argv) {
       options.vmRuntimeSplit = false;
       continue;
     }
+    if (arg === "--vm-block-dispatch") {
+      options.vmBlockDispatch = true;
+      continue;
+    }
+    if (arg === "--no-vm-block-dispatch") {
+      options.vmBlockDispatch = false;
+      continue;
+    }
     if (arg === "--vm-downlevel") {
       options.vmDownlevel = true;
+      continue;
+    }
+    if (arg === "--vm-debug") {
+      options.vmDebug = true;
       continue;
     }
     if (arg === "--no-rename") {
@@ -220,6 +295,14 @@ function parseArgs(argv) {
       options.renameHomoglyphs = false;
       continue;
     }
+    if (arg === "--mask-globals") {
+      options.maskGlobals = true;
+      continue;
+    }
+    if (arg === "--no-mask-globals") {
+      options.maskGlobals = false;
+      continue;
+    }
     if (arg === "--no-strings") {
       options.strings = false;
       continue;
@@ -239,6 +322,84 @@ function parseArgs(argv) {
     }
     if (arg === "--strings-split-max-parts") {
       options.stringsSplitMaxParts = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--strings-segment-size") {
+      options.stringsSegmentSize = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--const-array") {
+      options.constArray = true;
+      continue;
+    }
+    if (arg === "--no-const-array") {
+      options.constArray = false;
+      continue;
+    }
+    if (arg === "--const-array-threshold") {
+      options.constArrayProbability = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--const-array-strings-only") {
+      options.constArrayStringsOnly = true;
+      continue;
+    }
+    if (arg === "--no-const-array-strings-only") {
+      options.constArrayStringsOnly = false;
+      continue;
+    }
+    if (arg === "--const-array-shuffle") {
+      options.constArrayShuffle = true;
+      continue;
+    }
+    if (arg === "--no-const-array-shuffle") {
+      options.constArrayShuffle = false;
+      continue;
+    }
+    if (arg === "--const-array-rotate") {
+      options.constArrayRotate = true;
+      continue;
+    }
+    if (arg === "--no-const-array-rotate") {
+      options.constArrayRotate = false;
+      continue;
+    }
+    if (arg === "--const-array-encoding") {
+      options.constArrayEncoding = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--const-array-wrapper") {
+      options.constArrayWrapper = true;
+      continue;
+    }
+    if (arg === "--no-const-array-wrapper") {
+      options.constArrayWrapper = false;
+      continue;
+    }
+    if (arg === "--numbers-expr") {
+      options.numbersExpr = true;
+      continue;
+    }
+    if (arg === "--no-numbers-expr") {
+      options.numbersExpr = false;
+      continue;
+    }
+    if (arg === "--numbers-expr-threshold") {
+      options.numbersExprProbability = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--numbers-expr-inner") {
+      options.numbersExprInner = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--numbers-expr-max-depth") {
+      options.numbersExprMaxDepth = args[i + 1];
       i += 1;
       continue;
     }
@@ -264,6 +425,36 @@ function parseArgs(argv) {
     }
     if (arg === "--strings-template-chunks") {
       options.stringsTemplateChunks = true;
+      continue;
+    }
+    if (arg === "--wrap") {
+      options.wrap = true;
+      continue;
+    }
+    if (arg === "--wrap-iterations") {
+      options.wrapIterations = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--proxify-locals") {
+      options.proxifyLocals = true;
+      continue;
+    }
+    if (arg === "--no-proxify-locals") {
+      options.proxifyLocals = false;
+      continue;
+    }
+    if (arg === "--pad-footer") {
+      options.padFooter = true;
+      continue;
+    }
+    if (arg === "--no-pad-footer") {
+      options.padFooter = false;
+      continue;
+    }
+    if (arg === "--pad-footer-blocks") {
+      options.padFooterBlocks = args[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--no-cff") {
@@ -360,6 +551,31 @@ async function main() {
       split: options.stringsSplit,
       splitMin: options.stringsSplitMin,
       splitMaxParts: options.stringsSplitMaxParts,
+      segmentSize: options.stringsSegmentSize,
+    },
+    constArray: options.constArray,
+    constArrayOptions: {
+      probability: options.constArrayProbability,
+      stringsOnly: options.constArrayStringsOnly,
+      shuffle: options.constArrayShuffle,
+      rotate: options.constArrayRotate,
+      encoding: options.constArrayEncoding,
+      wrapper: options.constArrayWrapper,
+    },
+    numbers: options.numbersExpr,
+    numbersOptions: {
+      probability: options.numbersExprProbability,
+      innerProbability: options.numbersExprInner,
+      maxDepth: options.numbersExprMaxDepth,
+    },
+    wrap: options.wrap,
+    wrapOptions: {
+      iterations: options.wrapIterations,
+    },
+    proxifyLocals: options.proxifyLocals,
+    padFooter: options.padFooter,
+    padFooterOptions: {
+      blocks: options.padFooterBlocks,
     },
     cff: options.cff,
     cffOptions: {
@@ -382,9 +598,14 @@ async function main() {
       fakeOpcodes: options.vmFakeOpcodes,
       bytecodeEncrypt: options.vmBytecode,
       constsEncrypt: options.vmConsts,
+      constsEncoding: options.vmConstsEncoding,
+      constsSplit: options.vmConstsSplit,
+      constsSplitSize: options.vmConstsSplitSize,
       runtimeKey: options.vmRuntimeKey,
       runtimeSplit: options.vmRuntimeSplit,
+      blockDispatch: options.vmBlockDispatch,
       downlevel: options.vmDownlevel,
+      debug: options.vmDebug,
     },
     seed: options.seed,
     ecma: options.ecma,
@@ -392,6 +613,7 @@ async function main() {
     compact: options.compact,
     minify: options.minify,
     beautify: options.beautify,
+    timing: options.timing,
     filename: inputPath === "-" ? "stdin.js" : inputPath,
     lang,
     luauParser: options.luauParser,
@@ -399,6 +621,7 @@ async function main() {
       renameGlobals: options.renameGlobals,
       renameMembers: options.renameMembers,
       homoglyphs: options.renameHomoglyphs,
+      maskGlobals: options.maskGlobals,
     },
   });
 

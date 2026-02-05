@@ -1,7 +1,11 @@
 const { walk } = require("./ast");
 
-function stringLiteral(value) {
-  return { type: "StringLiteral", value, raw: JSON.stringify(value) };
+function stringLiteral(value, ctx) {
+  const raw = JSON.stringify(value);
+  if (ctx && ctx.factory && typeof ctx.factory.makeStringLiteral === "function") {
+    return ctx.factory.makeStringLiteral(raw, value);
+  }
+  return { type: "StringLiteral", value, raw };
 }
 
 function shouldEncodeMembers(options) {
@@ -11,7 +15,7 @@ function shouldEncodeMembers(options) {
   return options.stringsOptions.encodeObjectKeys !== false;
 }
 
-function encodeMemberExpression(node) {
+function encodeMemberExpression(node, ctx) {
   if (!node || node.type !== "MemberExpression") {
     return node;
   }
@@ -25,18 +29,18 @@ function encodeMemberExpression(node) {
   return {
     type: "IndexExpression",
     base: node.base,
-    index: stringLiteral(name),
+    index: stringLiteral(name, ctx),
   };
 }
 
-function encodeTableField(field) {
+function encodeTableField(field, ctx) {
   if (!field || typeof field !== "object") {
     return field;
   }
   if (field.type === "TableKeyString") {
     return {
       type: "TableKey",
-      key: stringLiteral(field.key.name),
+      key: stringLiteral(field.key.name, ctx),
       value: field.value,
     };
   }
@@ -44,7 +48,7 @@ function encodeTableField(field) {
     return {
       type: "TableField",
       kind: "index",
-      key: stringLiteral(field.name.name),
+      key: stringLiteral(field.name.name, ctx),
       value: field.value,
     };
   }
@@ -64,7 +68,7 @@ function encodeMembers(ast, ctx) {
       if (parent.type === "FunctionDeclaration" && key === "identifier") {
         return;
       }
-      const replacement = encodeMemberExpression(node);
+      const replacement = encodeMemberExpression(node, ctx);
       if (replacement !== node) {
         if (index === null || index === undefined) {
           parent[key] = replacement;
@@ -75,7 +79,7 @@ function encodeMembers(ast, ctx) {
       return;
     }
     if (node.type === "TableKeyString" || node.kind === "name") {
-      const replacement = encodeTableField(node);
+      const replacement = encodeTableField(node, ctx);
       if (replacement !== node) {
         if (index === null || index === undefined) {
           parent[key] = replacement;

@@ -1,12 +1,12 @@
 const { walk } = require("./ast");
+const { collectIdentifierNames, makeNameFactory } = require("./names");
 
-function buildName(rng) {
-  const suffix = rng.int(0, 0x7fffffff).toString(36);
-  return `__obf_${suffix}`;
-}
-
-function stringLiteral(value) {
-  return { type: "StringLiteral", value, raw: JSON.stringify(value) };
+function stringLiteral(value, ctx) {
+  const raw = JSON.stringify(value);
+  if (ctx && ctx.factory && typeof ctx.factory.makeStringLiteral === "function") {
+    return ctx.factory.makeStringLiteral(raw, value);
+  }
+  return { type: "StringLiteral", value, raw };
 }
 
 function isGlobalEnv(node) {
@@ -15,6 +15,8 @@ function isGlobalEnv(node) {
 
 function entryLuau(ast, ctx) {
   let replacement = null;
+  const used = collectIdentifierNames(ast, ctx);
+  const nameGen = makeNameFactory(ctx.rng, used);
   walk(ast, (node, parent, key, index) => {
     if (!node || !parent || key === null || key === undefined) {
       return;
@@ -31,7 +33,7 @@ function entryLuau(ast, ctx) {
         return;
       }
       if (!replacement) {
-        replacement = buildName(ctx.rng);
+        replacement = nameGen();
       }
       node.identifier.name = replacement;
       return;
@@ -48,9 +50,9 @@ function entryLuau(ast, ctx) {
         return;
       }
       if (!replacement) {
-        replacement = buildName(ctx.rng);
+        replacement = nameGen();
       }
-      node.index = stringLiteral(replacement);
+      node.index = stringLiteral(replacement, ctx);
       if (index === null || index === undefined) {
         parent[key] = node;
       } else {

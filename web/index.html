@@ -437,13 +437,6 @@
             <option value="luau">Luau</option>
           </select>
         </div>
-        <div>
-          <label for="luauParser">Luau parser</label>
-          <select id="luauParser">
-            <option value="luaparse">luaparse</option>
-            <option value="custom">custom</option>
-          </select>
-        </div>
       </div>
       <div class="divider"></div>
       <div class="row two">
@@ -472,7 +465,7 @@
           <label class="checkbox"><input id="optSourceMap" type="checkbox" /> Emit source map</label>
           <label class="checkbox"><input id="optMinify" type="checkbox" checked /> Minify output (Terser)</label>
           <label class="checkbox"><input id="optBeautify" type="checkbox" /> Beautify output (requires minify)</label>
-          <label class="checkbox"><input id="optCompact" type="checkbox" /> Compact output</label>
+          <label class="checkbox"><input id="optCompact" type="checkbox" /> Compact output (JS) / one line (Luau)</label>
         </div>
       </div>
       <div class="divider"></div>
@@ -493,8 +486,17 @@
           <label class="checkbox"><input id="optVmOpcode" type="checkbox" checked /> Opcode shuffle</label>
           <label class="checkbox"><input id="optVmBytecode" type="checkbox" checked /> Bytecode decrypt</label>
           <label class="checkbox"><input id="optVmConsts" type="checkbox" checked /> Consts decrypt</label>
+          <label class="checkbox"><input id="optVmConstsSplit" type="checkbox" checked /> Consts split (Luau)</label>
+          <label for="optVmConstsSplitSize">Consts split size (Luau)</label>
+          <input id="optVmConstsSplitSize" type="number" min="4" max="200" value="24" />
+          <label for="optVmConstsEncoding">Consts encoding (Luau)</label>
+          <select id="optVmConstsEncoding">
+            <option value="table">table</option>
+            <option value="string">string</option>
+          </select>
           <label class="checkbox"><input id="optVmRuntimeKey" type="checkbox" checked /> Runtime key (Luau)</label>
           <label class="checkbox"><input id="optVmRuntimeSplit" type="checkbox" checked /> Runtime split (Luau)</label>
+          <label class="checkbox"><input id="optVmBlockDispatch" type="checkbox" /> Block dispatch (Luau)</label>
           <label class="checkbox"><input id="optVmDownlevel" type="checkbox" /> Downlevel let/const</label>
           <label for="optVmLayers">VM layers (Luau)</label>
           <input id="optVmLayers" type="number" min="1" max="3" value="1" />
@@ -509,6 +511,15 @@
           <label class="checkbox"><input id="optRenameGlobals" type="checkbox" /> Rename globals (Luau)</label>
           <label class="checkbox"><input id="optRenameMembers" type="checkbox" /> Rename members (Luau)</label>
           <label class="checkbox"><input id="optRenameHomoglyphs" type="checkbox" /> Homoglyph alphabet (Luau)</label>
+          <label class="checkbox"><input id="optMaskGlobals" type="checkbox" checked /> Mask globals via _ENV (Luau)</label>
+          <label class="chip">Luau extras</label>
+          <label class="checkbox"><input id="optWrap" type="checkbox" /> Wrap in function</label>
+          <label for="optWrapIterations">Wrap iterations</label>
+          <input id="optWrapIterations" type="number" min="1" max="6" value="1" />
+          <label class="checkbox"><input id="optProxifyLocals" type="checkbox" /> Proxify locals</label>
+          <label class="checkbox"><input id="optNumbers" type="checkbox" checked /> Numbers to expressions</label>
+          <label class="checkbox"><input id="optConstArray" type="checkbox" checked /> Constant array</label>
+          <label class="checkbox"><input id="optPadFooter" type="checkbox" checked /> Pad footer noise</label>
         </div>
         <div>
           <label class="chip">CFF options</label>
@@ -557,7 +568,6 @@
     const outputNameEl = document.getElementById("outputName");
     const presetEl = document.getElementById("preset");
     const langEl = document.getElementById("lang");
-    const luauParserEl = document.getElementById("luauParser");
 
     const runBtn = document.getElementById("runBtn");
     const downloadBtn = document.getElementById("downloadBtn");
@@ -588,8 +598,12 @@
     const optVmOpcode = document.getElementById("optVmOpcode");
     const optVmBytecode = document.getElementById("optVmBytecode");
     const optVmConsts = document.getElementById("optVmConsts");
+    const optVmConstsSplit = document.getElementById("optVmConstsSplit");
+    const optVmConstsSplitSize = document.getElementById("optVmConstsSplitSize");
+    const optVmConstsEncoding = document.getElementById("optVmConstsEncoding");
     const optVmRuntimeKey = document.getElementById("optVmRuntimeKey");
     const optVmRuntimeSplit = document.getElementById("optVmRuntimeSplit");
+    const optVmBlockDispatch = document.getElementById("optVmBlockDispatch");
     const optVmDownlevel = document.getElementById("optVmDownlevel");
     const optVmFake = document.getElementById("optVmFake");
     const optVmLayers = document.getElementById("optVmLayers");
@@ -597,6 +611,13 @@
     const optRenameGlobals = document.getElementById("optRenameGlobals");
     const optRenameMembers = document.getElementById("optRenameMembers");
     const optRenameHomoglyphs = document.getElementById("optRenameHomoglyphs");
+    const optMaskGlobals = document.getElementById("optMaskGlobals");
+    const optWrap = document.getElementById("optWrap");
+    const optWrapIterations = document.getElementById("optWrapIterations");
+    const optProxifyLocals = document.getElementById("optProxifyLocals");
+    const optNumbers = document.getElementById("optNumbers");
+    const optConstArray = document.getElementById("optConstArray");
+    const optPadFooter = document.getElementById("optPadFooter");
     const optCffMode = document.getElementById("optCffMode");
     const optCffOpaque = document.getElementById("optCffOpaque");
 
@@ -606,9 +627,36 @@
     let lastResult = null;
 
     const presetDefaults = {
-      high: { rename: true, strings: true, cff: true, dead: true, vm: false },
-      balanced: { rename: true, strings: true, cff: true, dead: false, vm: false },
-      low: { rename: true, strings: false, cff: false, dead: false, vm: false }
+      high: {
+        rename: true,
+        strings: true,
+        cff: true,
+        dead: true,
+        vm: false,
+        numbers: true,
+        constArray: true,
+        padFooter: true
+      },
+      balanced: {
+        rename: true,
+        strings: true,
+        cff: true,
+        dead: false,
+        vm: false,
+        numbers: false,
+        constArray: false,
+        padFooter: false
+      },
+      low: {
+        rename: true,
+        strings: false,
+        cff: false,
+        dead: false,
+        vm: false,
+        numbers: false,
+        constArray: false,
+        padFooter: false
+      }
     };
 
     function now() {
@@ -652,6 +700,9 @@
       optCffDownlevel.checked = false;
       optDead.checked = defaults.dead;
       optVm.checked = defaults.vm;
+      optNumbers.checked = Boolean(defaults.numbers);
+      optConstArray.checked = Boolean(defaults.constArray);
+      optPadFooter.checked = Boolean(defaults.padFooter);
       updateOptionStates();
     }
 
@@ -662,7 +713,20 @@
       });
 
       const vmEnabled = optVm.checked;
-      [optVmOpcode, optVmBytecode, optVmConsts, optVmDownlevel, optVmFake, optVmRuntimeKey, optVmRuntimeSplit, optVmLayers].forEach((el) => {
+      [
+        optVmOpcode,
+        optVmBytecode,
+        optVmConsts,
+        optVmConstsSplit,
+        optVmConstsSplitSize,
+        optVmConstsEncoding,
+        optVmRuntimeKey,
+        optVmRuntimeSplit,
+        optVmBlockDispatch,
+        optVmDownlevel,
+        optVmFake,
+        optVmLayers
+      ].forEach((el) => {
         el.disabled = !vmEnabled;
       });
 
@@ -683,6 +747,13 @@
       optRenameGlobals.disabled = !isLuau;
       optRenameMembers.disabled = !isLuau;
       optRenameHomoglyphs.disabled = !isLuau;
+      optMaskGlobals.disabled = !isLuau;
+      optWrap.disabled = !isLuau;
+      optWrapIterations.disabled = !isLuau || !optWrap.checked;
+      optProxifyLocals.disabled = !isLuau;
+      optNumbers.disabled = !isLuau;
+      optConstArray.disabled = !isLuau;
+      optPadFooter.disabled = !isLuau;
 
       optStringsJsxAttrs.disabled = !stringsEnabled || isLuau;
       optStringsTemplate.disabled = !stringsEnabled || isLuau;
@@ -692,20 +763,20 @@
 
       optVmRuntimeKey.disabled = !vmEnabled || !isLuau;
       optVmRuntimeSplit.disabled = !vmEnabled || !isLuau;
+      optVmConstsSplit.disabled = !vmEnabled || !isLuau;
+      optVmConstsSplitSize.disabled = !vmEnabled || !isLuau || !optVmConstsSplit.checked;
+      optVmConstsEncoding.disabled = !vmEnabled || !isLuau;
+      optVmBlockDispatch.disabled = !vmEnabled || !isLuau;
       optVmLayers.disabled = !vmEnabled || !isLuau;
-
-      luauParserEl.disabled = !isLuau;
 
       const ecmaEl = document.getElementById("ecma");
       ecmaEl.disabled = isLuau;
 
       optMinify.disabled = isLuau;
       optBeautify.disabled = isLuau || !optMinify.checked;
-      optCompact.disabled = isLuau;
       if (isLuau) {
         optBeautify.checked = false;
         optMinify.checked = false;
-        optCompact.checked = false;
       }
 
       optAntiHookLock.disabled = !optAntiHook.checked;
@@ -755,13 +826,14 @@
       const ecmaValue = document.getElementById("ecma").value.trim();
       const vmFakeValue = optVmFake.value.trim();
       const vmLayersValue = optVmLayers.value.trim();
+      const vmConstsSplitSizeValue = optVmConstsSplitSize.value.trim();
       const splitMinValue = optStringsSplitMin.value.trim();
       const splitMaxValue = optStringsSplitMax.value.trim();
+      const wrapIterationsValue = optWrapIterations.value.trim();
 
       const options = {
         preset: presetEl.value === "custom" ? "high" : presetEl.value,
         lang: langEl.value,
-        luauParser: luauParserEl.value,
         rename: optRename.checked,
         strings: optStrings.checked,
         cff: optCff.checked,
@@ -785,14 +857,26 @@
           splitMin: splitMinValue === "" ? undefined : Number(splitMinValue),
           splitMaxParts: splitMaxValue === "" ? undefined : Number(splitMaxValue)
         },
+        wrap: optWrap.checked,
+        wrapOptions: {
+          iterations: wrapIterationsValue === "" ? undefined : Number(wrapIterationsValue)
+        },
+        proxifyLocals: optProxifyLocals.checked,
+        numbers: optNumbers.checked,
+        constArray: optConstArray.checked,
+        padFooter: optPadFooter.checked,
         vm: {
           enabled: optVm.checked,
           include: includeText ? includeText.split(",").map((v) => v.trim()).filter(Boolean) : [],
           opcodeShuffle: optVmOpcode.checked,
           bytecodeEncrypt: optVmBytecode.checked,
           constsEncrypt: optVmConsts.checked,
+          constsSplit: optVmConstsSplit.checked,
+          constsSplitSize: vmConstsSplitSizeValue === "" ? undefined : Number(vmConstsSplitSizeValue),
+          constsEncoding: optVmConstsEncoding.value,
           runtimeKey: optVmRuntimeKey.checked,
           runtimeSplit: optVmRuntimeSplit.checked,
+          blockDispatch: optVmBlockDispatch.checked,
           downlevel: optVmDownlevel.checked,
           fakeOpcodes: vmFakeValue === "" ? undefined : Number(vmFakeValue),
           layers: vmLayersValue === "" ? undefined : Number(vmLayersValue)
@@ -804,7 +888,8 @@
         renameOptions: {
           renameGlobals: optRenameGlobals.checked,
           renameMembers: optRenameMembers.checked,
-          homoglyphs: optRenameHomoglyphs.checked
+          homoglyphs: optRenameHomoglyphs.checked,
+          maskGlobals: optMaskGlobals.checked
         }
       };
 
@@ -918,7 +1003,7 @@
       }
     });
 
-    [optRename, optStrings, optCff, optDead, optVm, optMinify].forEach((el) => {
+    [optRename, optStrings, optCff, optDead, optVm, optVmConstsSplit, optMinify, optWrap].forEach((el) => {
       el.addEventListener("change", () => {
         markCustomPreset();
         updateOptionStates();
@@ -927,10 +1012,12 @@
 
     [optCffDownlevel, optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate,
       optStringsSplit, optStringsSplitMin, optStringsSplitMax,
-      optVmOpcode, optVmBytecode, optVmConsts, optVmRuntimeKey, optVmRuntimeSplit,
+      optVmOpcode, optVmBytecode, optVmConsts, optVmConstsSplit, optVmConstsSplitSize, optVmConstsEncoding,
+      optVmRuntimeKey, optVmRuntimeSplit, optVmBlockDispatch,
       optVmDownlevel, optVmFake, optVmLayers,
       optAntiHook, optAntiHookLock, optSourceMap, optBeautify, optMinify, optCompact,
       optRenameGlobals, optRenameMembers, optRenameHomoglyphs,
+      optWrap, optWrapIterations, optProxifyLocals, optNumbers, optConstArray, optPadFooter,
       optCffMode, optCffOpaque
     ].forEach((el) => {
       el.addEventListener("change", markCustomPreset);
@@ -941,8 +1028,6 @@
       updateOutputNameFromLang();
       updateOptionStates();
     });
-
-    luauParserEl.addEventListener("change", markCustomPreset);
 
     optAntiHook.addEventListener("change", () => {
       updateOptionStates();

@@ -2,7 +2,6 @@ const fs = require("fs");
 const path = require("path");
 const { obfuscateLuau } = require("../src/luau");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
-const { parseLuau: parseLuaparse } = require("../src/luau/ast");
 
 const source = [
   "local function demo(a, b)",
@@ -20,11 +19,10 @@ const source = [
   "print(demo(2, 6))",
 ].join("\n");
 
-async function run(parser) {
-  const useCustom = parser === "custom";
+async function run() {
   const out = await obfuscateLuau(source, {
     lang: "luau",
-    luauParser: parser,
+    luauParser: "custom",
     vm: { enabled: true, layers: 2 },
     cff: true,
     dead: true,
@@ -33,25 +31,20 @@ async function run(parser) {
     rename: true,
     renameOptions: { renameGlobals: true, renameMembers: true, homoglyphs: true },
     antiHook: { enabled: true, lock: false },
-    seed: `luau-test-${parser}`,
+    seed: "luau-test-custom",
   });
 
-  if (useCustom) {
-    parseCustom(out.code);
-  } else {
-    parseLuaparse(out.code, { luaVersion: "5.3" });
-  }
+  parseCustom(out.code);
 
   const outDir = path.join(__dirname, "dist");
   fs.mkdirSync(outDir, { recursive: true });
-  const outFile = path.join(outDir, `luau-${parser}.obf.lua`);
+  const outFile = path.join(outDir, "luau-custom.obf.lua");
   fs.writeFileSync(outFile, out.code, "utf8");
-  console.log(`luau obf (${parser}) -> ${outFile}`);
+  console.log(`luau obf (custom) -> ${outFile}`);
 }
 
 (async () => {
-  await run("custom");
-  await run("luaparse");
+  await run();
   console.log("luau-obf: ok");
 })().catch((err) => {
   console.error(err);

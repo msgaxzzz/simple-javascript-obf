@@ -1,4 +1,5 @@
 const { walk } = require("./ast");
+const { collectIdentifierNames, makeNameFactory } = require("./names");
 
 const SUPPORTED_STATEMENTS = new Set([
   "LocalStatement",
@@ -7,18 +8,6 @@ const SUPPORTED_STATEMENTS = new Set([
   "CallStatement",
   "ReturnStatement",
 ]);
-
-function buildNameFactory(rng, used) {
-  return (prefix) => {
-    let name = "";
-    do {
-      const suffix = rng.int(0, 0x7fffffff).toString(36);
-      name = `__obf_${prefix}_${suffix}`;
-    } while (used.has(name));
-    used.add(name);
-    return name;
-  };
-}
 
 function buildStateValues(count, rng) {
   const poolSize = Math.max(count * 3, count + 5);
@@ -42,16 +31,6 @@ function buildStateValues(count, rng) {
     values = pool.slice(0, count);
   }
   return values;
-}
-
-function collectIdentifierNames(node) {
-  const used = new Set();
-  walk(node, (child) => {
-    if (child && child.type === "Identifier" && typeof child.name === "string") {
-      used.add(child.name);
-    }
-  });
-  return used;
 }
 
 function getFunctionStatements(node) {
@@ -173,10 +152,61 @@ function buildOpaquePredicate(stateName, rng) {
   return binaryExpression("==", left, numericLiteral(0));
 }
 
-function buildFlattenedStatements(statements, ctx, style) {
+function addNamesFromSSA(ssa, used) {
+  if (!ssa || !used) {
+    return;
+  }
+  if (Array.isArray(ssa.variables)) {
+    ssa.variables.forEach((name) => {
+      if (name) {
+        used.add(name);
+      }
+    });
+  }
+  const addVersioned = (value) => {
+    if (!value || typeof value !== "string") {
+      return;
+    }
+    const base = value.split("$", 1)[0];
+    if (base) {
+      used.add(base);
+    }
+  };
+  if (ssa.uses && typeof ssa.uses.forEach === "function") {
+    ssa.uses.forEach((value) => addVersioned(value));
+  }
+  if (ssa.defs && typeof ssa.defs.forEach === "function") {
+    ssa.defs.forEach((value) => addVersioned(value));
+  }
+  if (ssa.blocks) {
+    Object.values(ssa.blocks).forEach((block) => {
+      if (block && Array.isArray(block.phi)) {
+        block.phi.forEach((phi) => {
+          if (phi && phi.variable) {
+            used.add(phi.variable);
+          }
+        });
+      }
+    });
+  }
+}
+
+function findSSAForNode(ssaRoot, node) {
+  if (!ssaRoot || !Array.isArray(ssaRoot.functions)) {
+    return null;
+  }
+  for (const cfg of ssaRoot.functions) {
+    if (cfg && cfg.node === node) {
+      return cfg.ssa || null;
+    }
+  }
+  return null;
+}
+
+function buildFlattenedStatements(statements, ctx, style, usedNames = null) {
   const { rng } = ctx;
-  const usedNames = collectIdentifierNames({ type: "Chunk", body: statements });
-  const nameFor = buildNameFactory(rng, usedNames);
+  const used = usedNames || collectIdentifierNames({ type: "Chunk", body: statements });
+  const nameFor = makeNameFactory(rng, used);
   const stateName = nameFor("cff_state");
   const nextName = nameFor("cff_next");
   const valuesName = nameFor("cff_vals");
@@ -262,11 +292,22 @@ function flattenFunction(node, ctx) {
     return;
   }
 
-  const flattened = buildFlattenedStatements(statements, ctx, style);
+  const usedNames = collectIdentifierNames({ type: "Chunk", body: statements });
+  if (ctx && typeof ctx.getSSA === "function") {
+    const ssaRoot = ctx.getSSA();
+    const ssa = findSSAForNode(ssaRoot, node);
+    if (ssa) {
+      addNamesFromSSA(ssa, usedNames);
+    }
+  }
+  const flattened = buildFlattenedStatements(statements, ctx, style, usedNames);
   setFunctionStatements(node, flattened, style);
 }
 
 function controlFlowFlatten(ast, ctx) {
+  if (ctx && typeof ctx.getCFG === "function") {
+    ctx.cfg = ctx.getCFG();
+  }
   walk(ast, (node) => {
     if (!node || !node.type) {
       return;

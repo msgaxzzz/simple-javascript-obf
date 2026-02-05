@@ -1,21 +1,24 @@
 const { parse } = require("./parser");
 const { walk } = require("./walk");
+const { makeNameFactory } = require("../names");
 
-function buildNameFactory(rng) {
+function collectIdentifierNames(ast) {
   const used = new Set();
-  return (prefix) => {
-    let name = "";
-    do {
-      const suffix = rng.int(0, 0x7fffffff).toString(36);
-      name = `__obf_${prefix}_${suffix}`;
-    } while (used.has(name));
-    used.add(name);
-    return name;
-  };
+  walk(ast, (node) => {
+    if (node && node.type === "Identifier" && typeof node.name === "string") {
+      used.add(node.name);
+    }
+  });
+  return used;
 }
 
-function encodeBytes(text, key) {
-  const bytes = Buffer.from(text, "utf8");
+function isBinaryRaw(raw) {
+  return typeof raw === "string" && /\\(?:[0-9]{1,3}|x[0-9a-fA-F]{2})/.test(raw);
+}
+
+function encodeBytes(text, key, raw) {
+  const encoding = isBinaryRaw(raw) ? "latin1" : "utf8";
+  const bytes = Buffer.from(text, encoding);
   const out = new Array(bytes.length);
   for (let i = 0; i < bytes.length; i += 1) {
     out[i] = (bytes[i] + key[i % key.length]) & 0xff;
@@ -160,7 +163,20 @@ function decodeRawString(raw) {
   return null;
 }
 
-function buildRuntime(segments) {
+function luaByteString(bytes) {
+  if (!bytes || !bytes.length) {
+    return "\"\"";
+  }
+  let out = "\"";
+  for (const value of bytes) {
+    const num = Math.max(0, Math.min(255, Number(value) || 0));
+    out += `\\${String(num).padStart(3, "0")}`;
+  }
+  out += "\"";
+  return out;
+}
+
+function buildRuntime(segments, poolEncoding) {
   const lines = [];
   for (const segment of segments) {
     if (!segment.pool.length) {
@@ -168,10 +184,17 @@ function buildRuntime(segments) {
     }
     lines.push(`local ${segment.poolName} = {`);
     for (const entry of segment.pool) {
-      lines.push(`  { ${entry.join(", ")} },`);
+      if (poolEncoding === "string") {
+        lines.push(`  ${luaByteString(entry)},`);
+      } else {
+        lines.push(`  { ${entry.join(", ")} },`);
+      }
     }
     lines.push("}");
     lines.push(`local ${segment.keyName} = { ${segment.key.join(", ")} }`);
+    if (poolEncoding === "string") {
+      lines.push(`local ${segment.byteName} = string.byte`);
+    }
     lines.push(`local ${segment.cacheName} = {}`);
     lines.push(`local function ${segment.decodeName}(i)`);
     lines.push(`  local cached = ${segment.cacheName}[i]`);
@@ -185,7 +208,11 @@ function buildRuntime(segments) {
     lines.push("    local idx = j - 1");
     lines.push("    idx = idx % keyLen");
     lines.push("    idx = idx + 1");
-    lines.push(`    local v = data[j] - ${segment.keyName}[idx]`);
+    if (poolEncoding === "string") {
+      lines.push(`    local v = ${segment.byteName}(data, j) - ${segment.keyName}[idx]`);
+    } else {
+      lines.push(`    local v = data[j] - ${segment.keyName}[idx]`);
+    }
     lines.push("    if v < 0 then v = v + 256 end");
     lines.push("    out[j] = string.char(v)");
     lines.push("  end");
@@ -248,8 +275,10 @@ function stringEncode(ast, options, rng) {
   const splitMin = options.stringsOptions.splitMin ?? 12;
   const splitMaxParts = options.stringsOptions.splitMaxParts ?? 3;
 
-  const nameFor = buildNameFactory(rng);
+  const usedNames = collectIdentifierNames(ast);
+  const nameFor = makeNameFactory(rng, usedNames);
   const segments = [];
+  const poolEncoding = "table";
   const encodedMap = new Map();
   const partMap = new Map();
   const decisionMap = new Map();
@@ -265,6 +294,7 @@ function stringEncode(ast, options, rng) {
       keyName: nameFor("key"),
       cacheName: nameFor("cache"),
       decodeName: nameFor("str"),
+      byteName: nameFor("byte"),
     };
     segments.push(segment);
     return segment;
@@ -280,8 +310,13 @@ function stringEncode(ast, options, rng) {
     return makeDecodeCall(entry.segment, entry.index);
   }
 
-  function encodeSingle(value, map) {
-    const existing = map.get(value);
+  function makeMapKey(value, binary) {
+    return `${binary ? "b" : "t"}:${value}`;
+  }
+
+  function encodeSingle(value, map, raw) {
+    const key = makeMapKey(value, isBinaryRaw(raw));
+    const existing = map.get(key);
     if (existing) {
       return buildEncodedNode(existing);
     }
@@ -294,20 +329,21 @@ function stringEncode(ast, options, rng) {
       }
       currentSegment = createSegment();
     }
-    const encoded = encodeBytes(value, currentSegment.key);
+    const encoded = encodeBytes(value, currentSegment.key, raw);
     const index = currentSegment.pool.length + 1;
     currentSegment.pool.push(encoded);
     totalCount += 1;
     const entry = { kind: "single", segment: currentSegment, index };
-    map.set(value, entry);
+    map.set(key, entry);
     return buildEncodedNode(entry);
   }
 
-  function encodeStringValue(value) {
+  function encodeStringValue(value, raw) {
     if (typeof value !== "string" || value.length < minLength) {
       return null;
     }
-    const existing = encodedMap.get(value);
+    const key = makeMapKey(value, isBinaryRaw(raw));
+    const existing = encodedMap.get(key);
     if (existing) {
       return buildEncodedNode(existing);
     }
@@ -328,19 +364,19 @@ function stringEncode(ast, options, rng) {
       const parts = splitString(value, rng, splitMaxParts);
       const entries = [];
       for (const part of parts) {
-        const node = encodeSingle(part, partMap);
+        const node = encodeSingle(part, partMap, raw);
         if (!node) {
           return null;
         }
-        const entry = partMap.get(part);
+        const entry = partMap.get(makeMapKey(part, isBinaryRaw(raw)));
         entries.push(entry);
       }
       const combined = { kind: "split", parts: entries };
-      encodedMap.set(value, combined);
+      encodedMap.set(key, combined);
       return buildEncodedNode(combined);
     }
 
-    return encodeSingle(value, encodedMap);
+    return encodeSingle(value, encodedMap, raw);
   }
 
   walk(ast, (node, parent, key, index) => {
@@ -351,7 +387,7 @@ function stringEncode(ast, options, rng) {
     if (decoded == null) {
       return;
     }
-    const replacement = encodeStringValue(decoded);
+    const replacement = encodeStringValue(decoded, node.raw);
     if (!replacement || !parent || key === null || key === undefined) {
       return;
     }
@@ -366,7 +402,7 @@ function stringEncode(ast, options, rng) {
     return;
   }
 
-  const runtime = buildRuntime(segments);
+  const runtime = buildRuntime(segments, poolEncoding);
   const runtimeAst = parse(runtime);
   ast.body.unshift(...runtimeAst.body);
 }

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-02-02
+### Added
+- Luau VM hardening: per-instruction key schedule, encoded opcode map generation, and lazy constant decoding.
+- Luau VM debug mode (`--vm-debug`) to log virtualizer compile failures.
+
+### Changed
+- Luau VM call/return handling now uses stack-frame bases for less regular patterns.
+
+## [1.2.1] - 2026-02-02
+### Added
+- Luau global masking to rewrite global reads via `_ENV[...]` for fewer exposed identifiers.
+
 ## [1.2.0] - 2026-02-02
 ### Added
 - Luau CLI wrapper (`luau-obf`) and expanded CLI flags for Luau-specific VM/CFF/rename/string options.
