@@ -9,7 +9,7 @@ A modular JavaScript and Luau obfuscation CLI with control-flow flattening (CFF)
 - Optional VM virtualization (both JS + Luau, with Luau VM-CFF support)
 - Optional anti-hook runtime guard
 - VM opcode randomization, fake opcode insertion, runtime bytecode keying/splitting, and const pool decoding
-- Luau-specific options: member/key encoding, string splitting, globals/members rename, homoglyph rename mode
+- Luau-specific options: member/key encoding, string splitting, global masking, globals/members rename, homoglyph rename mode
 - Modular plugin architecture for easy extension
 
 ## Install
@@ -58,16 +58,43 @@ Then open `http://localhost:6589` to upload or paste JavaScript/Luau, pick optio
 - `--rename-globals` Rename global bindings (Luau)
 - `--rename-members` Rename member/table keys (Luau)
 - `--rename-homoglyphs` Use l/I/1 homoglyph alphabet (Luau)
+- `--mask-globals` Mask global reads via `_ENV` (Luau)
+- `--no-mask-globals` Skip masking global reads
 - `--no-strings` Disable string encryption
 - `--strings-split` Split long strings into fragments (Luau)
 - `--strings-split-min <n>` Minimum length to split (Luau)
 - `--strings-split-max-parts <n>` Maximum fragments (Luau)
+- `--strings-segment-size <n>` Max entries per Luau string pool (default 120)
+- `--const-array` Extract constants into a table (Luau)
+- `--no-const-array` Disable constant extraction (Luau)
+- `--const-array-threshold <0-1>` Constant extraction probability (Luau)
+- `--const-array-strings-only` Extract strings only (Luau)
+- `--no-const-array-strings-only` Include numbers/booleans (Luau)
+- `--const-array-shuffle` Shuffle constant table (default on)
+- `--no-const-array-shuffle` Disable constant shuffle
+- `--const-array-rotate` Rotate constant table (default on)
+- `--no-const-array-rotate` Disable constant rotate
+- `--const-array-encoding <none|base64>` Encode string constants (Luau)
+- `--const-array-wrapper` Wrap indices with offset indirection (default on)
+- `--no-const-array-wrapper` Disable wrapper indirection
+- `--numbers-expr` Convert numeric literals to expressions (Luau)
+- `--no-numbers-expr` Disable numeric expression conversion (Luau)
+- `--numbers-expr-threshold <0-1>` Numeric conversion probability (Luau)
+- `--numbers-expr-inner <0-1>` Nested conversion probability (Luau)
+- `--numbers-expr-max-depth <n>` Max nested depth (Luau)
 - `--no-strings-object-keys` Skip encoding object literal keys
 - `--strings-object-keys` Force encoding object literal keys
 - `--no-strings-jsx-attrs` Skip encoding JSX attribute string values
 - `--strings-jsx-attrs` Force encoding JSX attribute string values
 - `--no-strings-template-chunks` Skip encoding template literal static chunks
 - `--strings-template-chunks` Force encoding template literal static chunks
+- `--wrap` Wrap chunk in a function (Luau)
+- `--wrap-iterations <n>` Wrap iterations (Luau, default 1)
+- `--proxify-locals` Proxy locals via table indirection (Luau)
+- `--no-proxify-locals` Disable proxy locals (Luau)
+- `--pad-footer` Append fake Luau blocks after real code (Luau)
+- `--no-pad-footer` Disable footer padding
+- `--pad-footer-blocks <n>` Number of fake blocks (Luau, default 2)
 - `--no-cff` Disable control-flow flattening
 - `--cff-downlevel` Allow CFF to downlevel `let/const` to `var`
 - `--cff-mode <vm|classic>` Luau CFF mode (default `vm`)
@@ -83,19 +110,28 @@ Then open `http://localhost:6589` to upload or paste JavaScript/Luau, pick optio
 - `--no-vm-bytecode` Disable VM bytecode runtime decryption
 - `--vm-consts` Enable VM const pool runtime decryption (default on)
 - `--no-vm-consts` Disable VM const pool runtime decryption
+- `--vm-consts-encoding <table|string>` VM const pool storage (default `table`)
+- `--vm-consts-split` Split VM const pool into parts (default on)
+- `--no-vm-consts-split` Disable VM const pool splitting
+- `--vm-consts-split-size <n>` Approximate const chunk size (default 24)
 - `--vm-runtime-key` Luau VM runtime key (default on)
 - `--vm-runtime-split` Luau VM runtime split (default on)
+- `--vm-block-dispatch` Use block-dispatch VM (Luau)
 - `--vm-downlevel` Allow VM to downlevel `let/const` to `var`
+- `--vm-debug` Log Luau VM compile failures
 - `--anti-hook` Enable anti-hook runtime guard
 - `--anti-hook-lock` Enable anti-hook and freeze built-in prototype chains
 - `--seed <value>` PRNG seed
 - `--ecma <version>` Terser output ECMAScript version (default 2020)
 - `--sourcemap` Emit source map
-- `--compact` Compact output
+- `--compact` Compact output (JS) / one-line Luau output
 - `--no-minify` Skip Terser minification
 - `--beautify` Beautify Terser output (multi-line, requires minify)
+- `--timing` Print per-plugin timings (ms precision, default on) to stderr
+- `--no-timing` Disable per-plugin timings
 - `--lang <js|luau>` Select language (default `js`, inferred from `.lua/.luau`)
-- `--luau-parser <luaparse|custom>` Luau parser backend (default `luaparse`)
+
+Luau parsing always uses the custom AST backend.
 
 Default output is ES2020 to support optional chaining/nullish coalescing. For older targets, set `--ecma 2015` or `--ecma 5`.
 

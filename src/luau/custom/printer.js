@@ -1,7 +1,62 @@
-function printChunk(ast) {
+const { makeDiagnosticErrorFromNode } = require("./diagnostics");
+
+let COMPACT = false;
+
+function printChunk(ast, options = {}) {
+  const compact = Boolean(options.compact);
+  const previousCompact = COMPACT;
+  COMPACT = compact;
+  if (compact) {
+    const code = printBlockInline(ast.body);
+    COMPACT = previousCompact;
+    return code;
+  }
   const out = [];
   printBlock(ast.body, out, 0);
-  return out.join("\n");
+  const result = out.join("\n");
+  COMPACT = previousCompact;
+  return result;
+}
+
+const BINARY_PRECEDENCE = {
+  or: 1,
+  and: 2,
+  "<": 3,
+  ">": 3,
+  "<=": 3,
+  ">=": 3,
+  "~=": 3,
+  "==": 3,
+  "|": 4,
+  "~": 5,
+  "&": 6,
+  "<<": 7,
+  ">>": 7,
+  "..": 8,
+  "+": 9,
+  "-": 9,
+  "*": 10,
+  "/": 10,
+  "//": 10,
+  "%": 10,
+  "^": 12,
+};
+
+const RIGHT_ASSOCIATIVE = new Set(["..", "^"]);
+const UNARY_PRECEDENCE = 11;
+const POSTFIX_PRECEDENCE = 13;
+const PRIMARY_PRECEDENCE = 14;
+const IF_EXPRESSION_PRECEDENCE = 0;
+
+function printBlockInline(body) {
+  const parts = [];
+  for (const stmt of body) {
+    const attrs = stmt.attributes && stmt.attributes.length
+      ? stmt.attributes.map(printAttribute).join(" ") + " "
+      : "";
+    parts.push(`${attrs}${printStatement(stmt, 0, true)}`);
+  }
+  return parts.join("; ");
 }
 
 function printBlock(body, out, indent) {
@@ -11,7 +66,7 @@ function printBlock(body, out, indent) {
         out.push(`${"  ".repeat(indent)}${printAttribute(attr)}`);
       }
     }
-    out.push(`${"  ".repeat(indent)}${printStatement(stmt, indent)}`);
+    out.push(`${"  ".repeat(indent)}${printStatement(stmt, indent, false)}`);
   }
 }
 
@@ -20,18 +75,23 @@ function printAttribute(attr) {
   if (!attr.arguments || !attr.arguments.length) {
     return `@${name}`;
   }
-  return `@${name}(${attr.arguments.map(printExpression).join(", ")})`;
+  if (attr.argumentStyle === "bare" && attr.arguments.length === 1) {
+    return `@${name} ${printExpression(attr.arguments[0])}`;
+  }
+  return `@${name}(${attr.arguments.map((arg) => printExpression(arg)).join(", ")})`;
 }
 
-function printStatement(stmt, indent) {
+function printStatement(stmt, indent, compact) {
   switch (stmt.type) {
     case "LocalStatement": {
       const names = stmt.variables.map(printTypedIdentifier).join(", ");
-      const init = stmt.init && stmt.init.length ? ` = ${stmt.init.map(printExpression).join(", ")}` : "";
+      const init = stmt.init && stmt.init.length ? ` = ${stmt.init.map((arg) => printExpression(arg)).join(", ")}` : "";
       return `local ${names}${init}`;
     }
     case "AssignmentStatement":
-      return `${stmt.variables.map(printExpression).join(", ")} = ${stmt.init.map(printExpression).join(", ")}`;
+      return `${stmt.variables.map((arg) => printExpression(arg)).join(", ")} = ${stmt.init
+        .map((arg) => printExpression(arg))
+        .join(", ")}`;
     case "CompoundAssignmentStatement":
       return `${printExpression(stmt.variable)} ${stmt.operator} ${printExpression(stmt.value)}`;
     case "CallStatement":
@@ -43,6 +103,11 @@ function printStatement(stmt, indent) {
       const args = buildVarargParams(params, stmt.hasVararg, stmt.varargAnnotation);
       const typeParams = printTypeParameters(stmt.typeParameters);
       const returnType = stmt.returnType ? `: ${printType(stmt.returnType)}` : "";
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `${header} ${name}${typeParams}(${args})${returnType}${bodyText}end`;
+      }
       const lines = [`${header} ${name}${typeParams}(${args})${returnType}`];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}end`);
@@ -53,12 +118,33 @@ function printStatement(stmt, indent) {
       const args = buildVarargParams(params, stmt.hasVararg, stmt.varargAnnotation);
       const typeParams = printTypeParameters(stmt.typeParameters);
       const returnType = stmt.returnType ? `: ${printType(stmt.returnType)}` : "";
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `function${typeParams}(${args})${returnType}${bodyText}end`;
+      }
       const lines = [`function${typeParams}(${args})${returnType}`];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
     case "IfStatement": {
+      if (compact) {
+        const parts = [];
+        stmt.clauses.forEach((clause, idx) => {
+          const head = idx === 0 ? "if" : "elseif";
+          const body = printBlockInline(clause.body.body);
+          const bodyText = body ? ` ${body} ` : " ";
+          parts.push(`${head} ${printExpression(clause.condition)} then${bodyText}`);
+        });
+        if (stmt.elseBody) {
+          const body = printBlockInline(stmt.elseBody.body);
+          const bodyText = body ? ` ${body} ` : " ";
+          parts.push(`else${bodyText}`);
+        }
+        parts.push("end");
+        return parts.join(" ");
+      }
       const lines = [];
       stmt.clauses.forEach((clause, idx) => {
         const head = idx === 0 ? "if" : "elseif";
@@ -73,12 +159,22 @@ function printStatement(stmt, indent) {
       return lines.join("\n" + "  ".repeat(indent));
     }
     case "WhileStatement": {
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `while ${printExpression(stmt.condition)} do${bodyText}end`;
+      }
       const lines = [`while ${printExpression(stmt.condition)} do`];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
     case "RepeatStatement": {
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `repeat${bodyText}until ${printExpression(stmt.condition)}`;
+      }
       const lines = ["repeat"];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}until ${printExpression(stmt.condition)}`);
@@ -91,6 +187,11 @@ function printStatement(stmt, indent) {
       if (stmt.step) {
         parts.push(`, ${printExpression(stmt.step)}`);
       }
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `${parts.join("")} do${bodyText}end`;
+      }
       const lines = [parts.join("") + " do"];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}end`);
@@ -98,13 +199,23 @@ function printStatement(stmt, indent) {
     }
     case "ForGenericStatement": {
       const vars = stmt.variables.map(printTypedIdentifier).join(", ");
-      const iter = stmt.iterators.map(printExpression).join(", ");
+      const iter = stmt.iterators.map((arg) => printExpression(arg)).join(", ");
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `for ${vars} in ${iter} do${bodyText}end`;
+      }
       const lines = [`for ${vars} in ${iter} do`];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
     case "DoStatement": {
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `do${bodyText}end`;
+      }
       const lines = ["do"];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}end`);
@@ -112,7 +223,7 @@ function printStatement(stmt, indent) {
     }
     case "ReturnStatement":
       return stmt.arguments.length
-        ? `return ${stmt.arguments.map(printExpression).join(", ")}`
+        ? `return ${stmt.arguments.map((arg) => printExpression(arg)).join(", ")}`
         : "return";
     case "BreakStatement":
       return "break";
@@ -135,41 +246,129 @@ function printStatement(stmt, indent) {
         ? `: ${stmt.returnTypes.map(printType).join(", ")}`
         : "";
       const prefix = stmt.type === "ExportTypeFunctionStatement" ? "export type function" : "type function";
+      if (compact) {
+        const body = printBlockInline(stmt.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        return `${prefix} ${printIdentifier(stmt.name)}${typeParams}(${args})${returnTypes}${bodyText}end`;
+      }
       const lines = [`${prefix} ${printIdentifier(stmt.name)}${typeParams}(${args})${returnTypes}`];
       printBlock(stmt.body.body, lines, indent + 1);
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
+    case "DeclareFunctionStatement": {
+      const params = stmt.parameters.map(printTypedIdentifier).join(", ");
+      const args = buildVarargParams(params, stmt.hasVararg, stmt.varargAnnotation);
+      const typeParams = printTypeParameters(stmt.typeParameters);
+      const returnType = stmt.returnType ? `: ${printType(stmt.returnType)}` : "";
+      const name = printFunctionName(stmt.name);
+      return `declare function ${name}${typeParams}(${args})${returnType}`;
+    }
+    case "DeclareVariableStatement":
+      return `declare ${printIdentifier(stmt.name)}: ${printType(stmt.annotation)}`;
     default:
-      throw new Error(`Unsupported statement: ${stmt.type}`);
+      throw makeDiagnosticErrorFromNode(`Unsupported statement: ${stmt.type}`, stmt);
   }
 }
 
-function printExpression(expr) {
+function getExpressionPrecedence(expr) {
+  switch (expr.type) {
+    case "BinaryExpression":
+      return BINARY_PRECEDENCE[expr.operator] ?? IF_EXPRESSION_PRECEDENCE;
+    case "UnaryExpression":
+      return UNARY_PRECEDENCE;
+    case "TypeAssertion":
+    case "MemberExpression":
+    case "IndexExpression":
+    case "CallExpression":
+    case "MethodCallExpression":
+      return POSTFIX_PRECEDENCE;
+    case "IfExpression":
+      return IF_EXPRESSION_PRECEDENCE;
+    case "GroupExpression":
+    case "FunctionExpression":
+    case "TableConstructorExpression":
+    case "Identifier":
+    case "NumericLiteral":
+    case "StringLiteral":
+    case "InterpolatedString":
+    case "BooleanLiteral":
+    case "NilLiteral":
+    case "VarargLiteral":
+      return PRIMARY_PRECEDENCE;
+    default:
+      return PRIMARY_PRECEDENCE;
+  }
+}
+
+function needsParentheses(expr, parentPrec, parentOp, position) {
+  if (!parentPrec) {
+    return false;
+  }
+  if (expr.type === "IfExpression" && parentPrec > IF_EXPRESSION_PRECEDENCE) {
+    return true;
+  }
+  const exprPrec = getExpressionPrecedence(expr);
+  if (exprPrec < parentPrec) {
+    return true;
+  }
+  if (exprPrec > parentPrec) {
+    return false;
+  }
+  if (expr.type !== "BinaryExpression" || !parentOp) {
+    return false;
+  }
+  if (RIGHT_ASSOCIATIVE.has(parentOp)) {
+    return position === "left";
+  }
+  return position === "right";
+}
+
+function printExpression(expr, parentPrec = 0, parentOp = null, position = null) {
+  const exprPrec = getExpressionPrecedence(expr);
+  let result;
   switch (expr.type) {
     case "Identifier":
-      return expr.name;
+      result = expr.name;
+      break;
     case "NumericLiteral":
-      return expr.raw ?? String(expr.value);
+      result = expr.raw ?? String(expr.value);
+      break;
     case "StringLiteral":
-      return expr.raw;
+      result = expr.raw;
+      break;
     case "InterpolatedString":
       if (expr.raw) {
-        return expr.raw;
+        result = expr.raw;
+        break;
       }
-      return `\`${expr.parts.map(printInterpolatedPart).join("")}\``;
+      result = `\`${expr.parts.map(printInterpolatedPart).join("")}\``;
+      break;
     case "BooleanLiteral":
-      return expr.value ? "true" : "false";
+      result = expr.value ? "true" : "false";
+      break;
     case "NilLiteral":
-      return "nil";
+      result = "nil";
+      break;
     case "VarargLiteral":
-      return "...";
-    case "UnaryExpression":
-      return `${expr.operator} ${printExpression(expr.argument)}`;
+      result = "...";
+      break;
+    case "UnaryExpression": {
+      const spacer = expr.operator === "not" ? " " : "";
+      result = `${expr.operator}${spacer}${printExpression(expr.argument, UNARY_PRECEDENCE)}`;
+      break;
+    }
     case "BinaryExpression":
-      return `${printExpression(expr.left)} ${expr.operator} ${printExpression(expr.right)}`;
+      result = `${printExpression(expr.left, exprPrec, expr.operator, "left")} ${expr.operator} ${printExpression(
+        expr.right,
+        exprPrec,
+        expr.operator,
+        "right",
+      )}`;
+      break;
     case "TypeAssertion":
-      return `${printExpression(expr.expression)} :: ${printType(expr.annotation)}`;
+      result = `${printExpression(expr.expression, POSTFIX_PRECEDENCE)} :: ${printType(expr.annotation)}`;
+      break;
     case "IfExpression": {
       const segments = [];
       expr.clauses.forEach((clause, idx) => {
@@ -177,20 +376,28 @@ function printExpression(expr) {
         segments.push(`${head} ${printExpression(clause.condition)} then ${printExpression(clause.value)}`);
       });
       segments.push(`else ${printExpression(expr.elseValue)}`);
-      return segments.join(" ");
+      result = segments.join(" ");
+      break;
     }
     case "GroupExpression":
-      return `(${printExpression(expr.expression)})`;
+      result = `(${printExpression(expr.expression)})`;
+      break;
     case "MemberExpression":
-      return `${printExpression(expr.base)}.${printIdentifier(expr.identifier)}`;
+      result = `${printExpression(expr.base, POSTFIX_PRECEDENCE)}.${printIdentifier(expr.identifier)}`;
+      break;
     case "IndexExpression":
-      return `${printExpression(expr.base)}[${printExpression(expr.index)}]`;
+      result = `${printExpression(expr.base, POSTFIX_PRECEDENCE)}[${printExpression(expr.index)}]`;
+      break;
     case "CallExpression":
-      return `${printExpression(expr.base)}(${expr.arguments.map(printExpression).join(", ")})`;
-    case "MethodCallExpression":
-      return `${printExpression(expr.base)}:${printIdentifier(expr.method)}(${expr.arguments
-        .map(printExpression)
+      result = `${printExpression(expr.base, POSTFIX_PRECEDENCE)}(${expr.arguments
+        .map((arg) => printExpression(arg))
         .join(", ")})`;
+      break;
+    case "MethodCallExpression":
+      result = `${printExpression(expr.base, POSTFIX_PRECEDENCE)}:${printIdentifier(expr.method)}(${expr.arguments
+        .map((arg) => printExpression(arg))
+        .join(", ")})`;
+      break;
     case "FunctionExpression": {
       const params = expr.parameters.map(printTypedIdentifier).join(", ");
       const args = buildVarargParams(params, expr.hasVararg, expr.varargAnnotation);
@@ -199,16 +406,28 @@ function printExpression(expr) {
       const attrPrefix = expr.attributes && expr.attributes.length
         ? `${expr.attributes.map(printAttribute).join(" ")} `
         : "";
-      const lines = [`${attrPrefix}function${typeParams}(${args})${returnType}`];
-      printBlock(expr.body.body, lines, 1);
-      lines.push("end");
-      return lines.join("\n");
+      if (COMPACT) {
+        const body = printBlockInline(expr.body.body);
+        const bodyText = body ? ` ${body} ` : " ";
+        result = `${attrPrefix}function${typeParams}(${args})${returnType}${bodyText}end`;
+      } else {
+        const lines = [`${attrPrefix}function${typeParams}(${args})${returnType}`];
+        printBlock(expr.body.body, lines, 1);
+        lines.push("end");
+        result = lines.join("\n");
+      }
+      break;
     }
     case "TableConstructorExpression":
-      return `{${expr.fields.map(printTableField).join(", ")}}`;
+      result = `{${expr.fields.map(printTableField).join(", ")}}`;
+      break;
     default:
-      throw new Error(`Unsupported expression: ${expr.type}`);
+      throw makeDiagnosticErrorFromNode(`Unsupported expression: ${expr.type}`, expr);
   }
+  if (needsParentheses(expr, parentPrec, parentOp, position)) {
+    return `(${result})`;
+  }
+  return result;
 }
 
 function printInterpolatedPart(part) {
@@ -240,7 +459,9 @@ function printType(type) {
   switch (type.type) {
     case "TypeReference": {
       const base = type.name.map(printIdentifier).join(".");
-      const args = type.typeArguments && type.typeArguments.length
+      const hasArgs = type.typeArguments && type.typeArguments.length;
+      const explicitArgs = type.typeArgumentsExplicit;
+      const args = hasArgs || explicitArgs
         ? `<${type.typeArguments.map(printType).join(", ")}>`
         : "";
       return `${base}${args}`;
@@ -277,7 +498,7 @@ function printType(type) {
     case "TypeParameter":
       return printTypeParameter(type);
     default:
-      throw new Error(`Unsupported type: ${type.type}`);
+      throw makeDiagnosticErrorFromNode(`Unsupported type: ${type.type}`, type);
   }
 }
 
@@ -331,13 +552,14 @@ function printTypeParameters(params) {
     return "";
   }
   const rendered = params.map((param) => {
+    let base = printIdentifier(param);
     if (param.isPack) {
-      return `...${printIdentifier(param)}`;
+      base = param.packStyle === "postfix" ? `${base}...` : `...${base}`;
     }
     if (param.default) {
-      return `${printIdentifier(param)} = ${printType(param.default)}`;
+      return `${base} = ${printType(param.default)}`;
     }
-    return printIdentifier(param);
+    return base;
   });
   return `<${rendered.join(", ")}>`;
 }

@@ -1,5 +1,7 @@
 const { walk } = require("./ast");
 const { decodeRawString } = require("./strings");
+const { makeDiagnosticErrorFromNode } = require("./custom/diagnostics");
+const { addSSAUsedNames, findSSAForNode } = require("./ssa-utils");
 
 const DEFAULT_MIN_STATEMENTS = 2;
 
@@ -75,6 +77,10 @@ const UNARY_OP_MAP = new Map([
   ["~", "BNOT"],
 ]);
 
+function raise(message, node = null) {
+  throw makeDiagnosticErrorFromNode(message, node);
+}
+
 function luaString(value) {
   const text = String(value);
   const escaped = text
@@ -84,6 +90,19 @@ function luaString(value) {
     .replace(/\t/g, "\\t")
     .replace(/"/g, "\\\"");
   return `"${escaped}"`;
+}
+
+function luaByteString(bytes) {
+  if (!bytes || !bytes.length) {
+    return "\"\"";
+  }
+  let out = "\"";
+  for (const value of bytes) {
+    const num = Math.max(0, Math.min(255, Number(value) || 0));
+    out += `\\${String(num).padStart(3, "0")}`;
+  }
+  out += "\"";
+  return out;
 }
 
 function buildOpcodeMap(rng, shuffle) {
@@ -96,6 +115,53 @@ function buildOpcodeMap(rng, shuffle) {
     mapping[name] = codes[idx];
   });
   return mapping;
+}
+
+function computeSeedFromPieces(pieces, bcLength, constCount) {
+  let seed = 0;
+  for (let i = 0; i < pieces.length; i += 1) {
+    const piece = pieces[i];
+    seed = (seed + piece) ^ ((piece << (i % 3)) & 0xff);
+    seed &= 0xff;
+  }
+  seed = (seed + bcLength + constCount) % 255;
+  return seed;
+}
+
+function buildSeedState(rng, bcLength, constCount) {
+  const pieceCount = rng.int(2, 4);
+  const pieces = Array.from({ length: pieceCount }, () => rng.int(5, 240));
+  const seed = computeSeedFromPieces(pieces, bcLength, constCount);
+  return { pieces, seed };
+}
+
+function buildKeySchedule(rng, seedState) {
+  const keyCount = rng.int(2, 4);
+  const base = seedState.pieces[0] || 0;
+  const keys = Array.from({ length: keyCount }, (_, idx) => (
+    ((seedState.seed + base + (idx + 1) * 17) % 255) + 1
+  ));
+  const maskPieces = [rng.int(1, 200), rng.int(1, 200)];
+  const mask = ((maskPieces[0] ^ maskPieces[1]) + seedState.seed) % 255 + 1;
+  const encoded = keys.map((key, idx) => key ^ ((mask + idx * 13) % 255));
+  return { encoded, maskPieces, keys };
+}
+
+function buildOpcodeEncoding(opcodeMap, rng, seedState) {
+  const keyPieces = [rng.int(1, 200), rng.int(1, 200)];
+  const key = ((keyPieces[0] + keyPieces[1] + seedState.seed) % 255) + 1;
+  const encoded = OPCODES.map((name, idx) => (
+    opcodeMap[name] ^ ((key + idx * 7) % 255)
+  ));
+  return { encoded, keyPieces };
+}
+
+function buildIndexExpression(index, rng) {
+  if (!rng) {
+    return String(index);
+  }
+  const salt = rng.int(1, 9);
+  return `(${index + salt} - ${salt})`;
 }
 
 function splitInstructions(instructions, rng) {
@@ -122,6 +188,73 @@ function splitInstructions(instructions, rng) {
   return { parts, offsets, order };
 }
 
+function encodeU32(value) {
+  const v = value >>> 0;
+  return [
+    v & 0xff,
+    (v >>> 8) & 0xff,
+    (v >>> 16) & 0xff,
+    (v >>> 24) & 0xff,
+  ];
+}
+
+function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
+  const keyPieces = [rng.int(1, 200), rng.int(1, 200)];
+  const seedValue = seedState ? seedState.seed : 0;
+  const key = ((keyPieces[0] + keyPieces[1] + seedValue) % 255) + 1;
+  const parts = splitInfo && Array.isArray(splitInfo.parts) && splitInfo.parts.length
+    ? splitInfo.parts
+    : [instructions];
+  const encodedParts = new Array(parts.length);
+  let offset = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    const bytes = [];
+    for (const inst of part) {
+      bytes.push(...encodeU32(inst[0] || 0));
+      bytes.push(...encodeU32(inst[1] || 0));
+      bytes.push(...encodeU32(inst[2] || 0));
+    }
+    const encoded = bytes.map((byte, idx) => (
+      byte ^ ((key + ((offset + idx) * 17)) % 256)
+    ));
+    encodedParts[i] = encoded;
+    offset += bytes.length;
+  }
+
+  let storageOrder = parts.map((_, idx) => idx + 1);
+  if (splitInfo && Array.isArray(splitInfo.order) && splitInfo.order.length === parts.length) {
+    storageOrder = splitInfo.order.slice();
+  } else if (parts.length > 1) {
+    rng.shuffle(storageOrder);
+  }
+
+  const storedParts = storageOrder.map((idx) => encodedParts[idx - 1]);
+  const order = new Array(parts.length);
+  storageOrder.forEach((partIndex, storageIndex) => {
+    order[partIndex - 1] = storageIndex + 1;
+  });
+
+  return {
+    keyPieces,
+    parts: storedParts,
+    order,
+    totalBytes: offset,
+  };
+}
+
+function bytesToLuaString(bytes, chunkSize = 60) {
+  if (!bytes.length) {
+    return "\"\"";
+  }
+  const chunks = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.slice(i, i + chunkSize);
+    chunks.push(`string.char(${slice.join(", ")})`);
+  }
+  return chunks.join(" .. ");
+}
+
 function ensureConst(program, value) {
   const idx = program.consts.findIndex((entry) => entry === value);
   if (idx >= 0) {
@@ -131,9 +264,12 @@ function ensureConst(program, value) {
   return program.consts.length;
 }
 
-function encodeConstPool(program, rng) {
+function encodeConstPool(program, rng, seedState) {
   const keyLength = rng.int(6, 14);
   const key = Array.from({ length: keyLength }, () => rng.int(1, 255));
+  const maskPieces = [rng.int(1, 200), rng.int(1, 200)];
+  const seedValue = seedState ? seedState.seed : 0;
+  const mask = ((maskPieces[0] ^ maskPieces[1]) + seedValue) % 255 + 1;
   const entries = program.consts.map((value) => {
     let tag = 4;
     let text = "";
@@ -157,7 +293,32 @@ function encodeConstPool(program, rng) {
     }
     return { tag, data: out };
   });
-  return { key, entries, count: program.consts.length };
+  const keyEncoded = key.map((value, idx) => value ^ ((mask + idx * 11) % 255));
+  return {
+    keyEncoded,
+    maskPieces,
+    entries,
+    count: program.consts.length,
+  };
+}
+
+function splitConstEntries(entries, rng, targetSize) {
+  if (!entries || entries.length <= targetSize) {
+    return [entries];
+  }
+  const minSize = Math.max(4, Math.floor(targetSize * 0.6));
+  const maxSize = Math.max(minSize, Math.floor(targetSize * 1.4));
+  const parts = [];
+  let index = 0;
+  while (index < entries.length) {
+    const remaining = entries.length - index;
+    const size = rng
+      ? Math.min(remaining, rng.int(minSize, maxSize))
+      : Math.min(remaining, targetSize);
+    parts.push(entries.slice(index, index + size));
+    index += size;
+  }
+  return parts;
 }
 
 function injectFakeInstructions(program, rng, probability) {
@@ -204,7 +365,7 @@ class Emitter {
     for (const entry of this.jumps) {
       const target = this.labels.get(entry.label);
       if (target === undefined) {
-        throw new Error(`Missing label ${entry.label}`);
+        raise(`Missing label ${entry.label}`);
       }
       this.instructions[entry.idx][1] = target + 1;
     }
@@ -418,7 +579,7 @@ class VmCompiler {
       case "ExportTypeFunctionStatement":
         return;
       default:
-        throw new Error(`Unsupported statement ${stmt.type}`);
+        raise(`Unsupported statement ${stmt.type}`, stmt);
     }
   }
 
@@ -500,11 +661,11 @@ class VmCompiler {
       return;
     }
     if (stmt.variable.type !== "Identifier") {
-      throw new Error("Compound assignment supports identifiers only");
+      raise("Compound assignment supports identifiers only", stmt.variable);
     }
     const opName = BINARY_OP_MAP.get(stmt.operator);
     if (!opName) {
-      throw new Error(`Unsupported compound operator ${stmt.operator}`);
+      raise(`Unsupported compound operator ${stmt.operator}`, stmt);
     }
     this.compileExpression(stmt.variable);
     this.compileExpression(stmt.value);
@@ -684,24 +845,40 @@ class VmCompiler {
     const ctrlIdx = this.nextTemp();
 
     const iterators = stmt.iterators || [];
-    if (iterators[0]) {
-      this.compileExpression(iterators[0]);
-    } else {
-      this.emit("PUSH_CONST", this.addConst(null), 0);
+    const slots = [fnIdx, stateIdx, ctrlIdx];
+    const isMultiReturn = (expr) => (
+      expr &&
+      (expr.type === "CallExpression" ||
+        expr.type === "MethodCallExpression" ||
+        expr.type === "TableCallExpression" ||
+        expr.type === "StringCallExpression")
+    );
+    let slotIndex = 0;
+    for (let i = 0; i < iterators.length && slotIndex < slots.length; i += 1) {
+      const expr = iterators[i];
+      const isLast = i === iterators.length - 1;
+      const remaining = slots.length - slotIndex;
+      if (expr && isLast && remaining > 1 && isMultiReturn(expr)) {
+        this.compileCallExpression(expr, remaining);
+        for (let j = remaining - 1; j >= 0; j -= 1) {
+          this.emit("SET_LOCAL", slots[slotIndex + j], 0);
+        }
+        slotIndex = slots.length;
+        break;
+      }
+      if (expr) {
+        this.compileExpression(expr);
+      } else {
+        this.emit("PUSH_CONST", this.addConst(null), 0);
+      }
+      this.emit("SET_LOCAL", slots[slotIndex], 0);
+      slotIndex += 1;
     }
-    this.emit("SET_LOCAL", fnIdx, 0);
-    if (iterators[1]) {
-      this.compileExpression(iterators[1]);
-    } else {
+    while (slotIndex < slots.length) {
       this.emit("PUSH_CONST", this.addConst(null), 0);
+      this.emit("SET_LOCAL", slots[slotIndex], 0);
+      slotIndex += 1;
     }
-    this.emit("SET_LOCAL", stateIdx, 0);
-    if (iterators[2]) {
-      this.compileExpression(iterators[2]);
-    } else {
-      this.emit("PUSH_CONST", this.addConst(null), 0);
-    }
-    this.emit("SET_LOCAL", ctrlIdx, 0);
 
     const variables = stmt.variables || [];
     const varLocals = variables.map((variable) => {
@@ -747,7 +924,7 @@ class VmCompiler {
   compileBreak() {
     const loop = this.loopStack[this.loopStack.length - 1];
     if (!loop) {
-      throw new Error("break outside loop");
+      raise("break outside loop");
     }
     this.emitJump("JMP", loop.breakLabel);
   }
@@ -755,7 +932,7 @@ class VmCompiler {
   compileContinue() {
     const loop = this.loopStack[this.loopStack.length - 1];
     if (!loop) {
-      throw new Error("continue outside loop");
+      raise("continue outside loop");
     }
     this.emitJump("JMP", loop.continueLabel);
   }
@@ -790,7 +967,7 @@ class VmCompiler {
       this.emit("SET_TABLE", 0, 0);
       return;
     }
-    throw new Error(`Unsupported assignment target ${target.type}`);
+    raise(`Unsupported assignment target ${target.type}`, target);
   }
 
   compileExpression(expr) {
@@ -820,11 +997,11 @@ class VmCompiler {
         return;
       }
       case "VarargLiteral":
-        throw new Error("vararg unsupported");
+        raise("vararg unsupported", expr);
       case "UnaryExpression": {
         const op = UNARY_OP_MAP.get(expr.operator);
         if (!op) {
-          throw new Error(`Unsupported unary ${expr.operator}`);
+          raise(`Unsupported unary ${expr.operator}`, expr);
         }
         this.compileExpression(expr.argument);
         this.emit(op, 0, 0);
@@ -840,7 +1017,7 @@ class VmCompiler {
         }
         const op = BINARY_OP_MAP.get(expr.operator);
         if (!op) {
-          throw new Error(`Unsupported binary ${expr.operator}`);
+          raise(`Unsupported binary ${expr.operator}`, expr);
         }
         this.compileExpression(expr.left);
         this.compileExpression(expr.right);
@@ -885,7 +1062,7 @@ class VmCompiler {
         this.compileInterpolated(expr);
         return;
       default:
-        throw new Error(`Unsupported expression ${expr.type}`);
+        raise(`Unsupported expression ${expr.type}`, expr);
     }
   }
 
@@ -1072,7 +1249,7 @@ class VmCompiler {
   }
 }
 
-function hasNestedFunction(ast, fnNode) {
+function hasNestedFunction(fnNode) {
   let found = false;
   walk(fnNode, (node) => {
     if (found || !node || !node.type) {
@@ -1123,7 +1300,7 @@ function getFunctionName(fnNode) {
 }
 
 function canVirtualizeFunction(fnNode, style) {
-  if (hasNestedFunction(null, fnNode)) {
+  if (hasNestedFunction(fnNode)) {
     return false;
   }
   if (hasVararg(fnNode, style)) {
@@ -1150,79 +1327,513 @@ function canVirtualizeFunction(fnNode, style) {
   return !unsupported;
 }
 
-function buildVmSource(program, opcodeMap, paramNames, runtimeKeySeed, bcInfo, constInfo) {
-  const opConst = OPCODES.map((name) => `local OP_${name} = ${opcodeMap[name]}`).join("\n");
+function buildBlockIds(count, rng) {
+  const ids = [];
+  const used = new Set();
+  const max = 0x3fffffff;
+  for (let i = 0; i < count; i += 1) {
+    let id = 0;
+    while (!id || used.has(id)) {
+      id = rng.int(1, max);
+    }
+    used.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
+
+function buildDispatchTree(blocks, rng, emitBlock, indent = "") {
+  if (!blocks.length) {
+    return [`${indent}pc = 0`];
+  }
+  if (blocks.length === 1) {
+    const lines = emitBlock(blocks[0]);
+    return lines.map((line) => `${indent}${line}`);
+  }
+  const mid = Math.floor(blocks.length / 2);
+  const left = blocks.slice(0, mid);
+  const right = blocks.slice(mid);
+  const lower = left[left.length - 1].id;
+  const upper = right[0].id;
+  const bound = lower + 1 <= upper ? rng.int(lower + 1, upper) : upper;
+  const lines = [];
+  lines.push(`${indent}if pc < ${bound} then`);
+  lines.push(...buildDispatchTree(left, rng, emitBlock, `${indent}  `));
+  lines.push(`${indent}else`);
+  lines.push(...buildDispatchTree(right, rng, emitBlock, `${indent}  `));
+  lines.push(`${indent}end`);
+  return lines;
+}
+
+function buildVmSource(
+  program,
+  opcodeInfo,
+  paramNames,
+  seedState,
+  keySchedule,
+  bcInfo,
+  constInfo,
+  rng,
+  vmOptions = {},
+  reservedNames = null
+) {
   const constCount = constInfo ? constInfo.count : program.consts.length;
+  const blockDispatch = Boolean(vmOptions.blockDispatch);
+  const useBytecodeStream = !blockDispatch && vmOptions.bytecodeEncrypt !== false;
   const localsInit = (paramNames || []).map((name) => (name ? name : "nil"));
   const localsTable = `{ ${localsInit.join(", ")} }`;
-
-  const keyLine = runtimeKeySeed
-    ? `local key = ((${runtimeKeySeed} + #bc + ${constCount}) % 255) + 1`
-    : `local key = 0`;
+  const seedPieces = seedState ? seedState.pieces : [];
+  const keyMaskPieces = keySchedule ? keySchedule.maskPieces : null;
+  const keyEncoded = keySchedule ? keySchedule.encoded : null;
+  const opEncoded = opcodeInfo ? opcodeInfo.encoded : null;
+  const opKeyPieces = opcodeInfo ? opcodeInfo.keyPieces : null;
+  const LUA_KEYWORDS = new Set([
+    "and",
+    "break",
+    "do",
+    "else",
+    "elseif",
+    "end",
+    "false",
+    "for",
+    "function",
+    "if",
+    "in",
+    "local",
+    "nil",
+    "not",
+    "or",
+    "repeat",
+    "return",
+    "then",
+    "true",
+    "until",
+    "while",
+  ]);
+  const RESERVED_NAMES = new Set([
+    "bc",
+    "seed",
+    "locals",
+    "stack",
+    "top",
+    "pc",
+    "env",
+    "pack",
+    "unpack",
+    "math",
+    "string",
+    "table",
+    "_G",
+    "_ENV",
+    "bit32",
+    "debug",
+    "utf8",
+  ]);
+  const nameUsed = new Set();
+  if (reservedNames && typeof reservedNames.forEach === "function") {
+    reservedNames.forEach((name) => {
+      if (name) {
+        nameUsed.add(name);
+      }
+    });
+  }
+  const firstAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const restAlphabet = `${firstAlphabet}0123456789`;
+  const makeName = () => {
+    let out = "";
+    while (!out || LUA_KEYWORDS.has(out) || RESERVED_NAMES.has(out) || nameUsed.has(out) || out.toLowerCase().includes("obf")) {
+      const length = rng.int(4, 8);
+      let name = firstAlphabet[rng.int(0, firstAlphabet.length - 1)];
+      for (let i = 1; i < length; i += 1) {
+        name += restAlphabet[rng.int(0, restAlphabet.length - 1)];
+      }
+      out = name;
+    }
+    nameUsed.add(out);
+    return out;
+  };
+  const bitNames = {
+    mod: makeName(),
+    bit: makeName(),
+    norm: makeName(),
+    u64: makeName(),
+    from: makeName(),
+    lo: makeName(),
+    add: makeName(),
+    modn: makeName(),
+    modSmall: makeName(),
+    bxor64: makeName(),
+    band64: makeName(),
+    bor64: makeName(),
+    bnot64: makeName(),
+    lshift64: makeName(),
+    rshift64: makeName(),
+    bxor32: makeName(),
+    band32: makeName(),
+    bor32: makeName(),
+    bnot32: makeName(),
+    lshift32: makeName(),
+    rshift32: makeName(),
+  };
+  const helperNames = {
+    getConst: makeName(),
+    getInst: makeName(),
+    byte: makeName(),
+    u32: makeName(),
+  };
+  const call = (fn, args) => `${fn}(${args.join(", ")})`;
+  const u64from = (v) => call(bitNames.from, [v]);
+  const u64lo = (v) => call(bitNames.lo, [v]);
+  const u64add = (a, b) => call(bitNames.add, [a, b]);
+  const u64mod = (a, m) => call(bitNames.modn, [a, m]);
+  const u64modSmall = (a) => call(bitNames.modSmall, [a]);
+  const bxor64 = (a, b) => call(bitNames.bxor64, [a, b]);
+  const band64 = (a, b) => call(bitNames.band64, [a, b]);
+  const bor64 = (a, b) => call(bitNames.bor64, [a, b]);
+  const lshift64 = (a, b) => call(bitNames.lshift64, [a, b]);
+  const rshift64 = (a, b) => call(bitNames.rshift64, [a, b]);
+  const bnot64 = (a) => call(bitNames.bnot64, [a]);
+  const bxor32 = (a, b) => call(bitNames.bxor32, [a, b]);
+  const band32 = (a, b) => call(bitNames.band32, [a, b]);
+  const bor32 = (a, b) => call(bitNames.bor32, [a, b]);
+  const lshift32 = (a, b) => call(bitNames.lshift32, [a, b]);
+  const rshift32 = (a, b) => call(bitNames.rshift32, [a, b]);
+  const bnot32 = (a) => call(bitNames.bnot32, [a]);
 
   const lines = [
     `do`,
-    opConst,
   ];
 
-  if (bcInfo && bcInfo.parts && bcInfo.parts.length > 1) {
-    const partStrings = bcInfo.parts.map((part) => {
-      const items = part
+  const bitNameBytes = [98, 105, 116, 51, 50];
+  const bitKey = rng.int(11, 200);
+  const bitEncoded = bitNameBytes.map((value) => (value - bitKey + 256) % 256);
+  lines.push(`local ${bitNames.mod} = 4294967296`);
+  lines.push(`local ${bitNames.bit}`);
+  lines.push(`do`);
+  lines.push(`  local k = ${bitKey}`);
+  lines.push(`  local d = { ${bitEncoded.join(", ")} }`);
+  lines.push(`  local out = {}`);
+  lines.push(`  for i = 1, #d do`);
+  lines.push(`    out[i] = string.char((d[i] + k) % 256)`);
+  lines.push(`  end`);
+  lines.push(`  local env`);
+  lines.push(`  local getf = getfenv`);
+  lines.push(`  if type(getf) == "function" then env = getf(1) end`);
+  lines.push(`  if type(env) ~= "table" then env = _G end`);
+  lines.push(`  ${bitNames.bit} = env[table.concat(out)]`);
+  lines.push(`end`);
+  lines.push(`if ${bitNames.bit} == nil then`);
+  lines.push(`  local function ${bitNames.norm}(x)`);
+  lines.push(`    x = x % ${bitNames.mod}`);
+  lines.push(`    if x < 0 then x = x + ${bitNames.mod} end`);
+  lines.push(`    return x`);
+  lines.push(`  end`);
+  lines.push(`  ${bitNames.bit} = {}`);
+  lines.push(`  function ${bitNames.bit}.band(a, b)`);
+  lines.push(`    a = ${bitNames.norm}(a)`);
+  lines.push(`    b = ${bitNames.norm}(b)`);
+  lines.push(`    local res = 0`);
+  lines.push(`    local bit = 1`);
+  lines.push(`    for i = 0, 31 do`);
+  lines.push(`      local abit = a % 2`);
+  lines.push(`      local bbit = b % 2`);
+  lines.push(`      if abit == 1 and bbit == 1 then res = res + bit end`);
+  lines.push(`      a = (a - abit) / 2`);
+  lines.push(`      b = (b - bbit) / 2`);
+  lines.push(`      bit = bit * 2`);
+  lines.push(`    end`);
+  lines.push(`    return res`);
+  lines.push(`  end`);
+  lines.push(`  function ${bitNames.bit}.bor(a, b)`);
+  lines.push(`    a = ${bitNames.norm}(a)`);
+  lines.push(`    b = ${bitNames.norm}(b)`);
+  lines.push(`    local res = 0`);
+  lines.push(`    local bit = 1`);
+  lines.push(`    for i = 0, 31 do`);
+  lines.push(`      local abit = a % 2`);
+  lines.push(`      local bbit = b % 2`);
+  lines.push(`      if abit == 1 or bbit == 1 then res = res + bit end`);
+  lines.push(`      a = (a - abit) / 2`);
+  lines.push(`      b = (b - bbit) / 2`);
+  lines.push(`      bit = bit * 2`);
+  lines.push(`    end`);
+  lines.push(`    return res`);
+  lines.push(`  end`);
+  lines.push(`  function ${bitNames.bit}.bxor(a, b)`);
+  lines.push(`    a = ${bitNames.norm}(a)`);
+  lines.push(`    b = ${bitNames.norm}(b)`);
+  lines.push(`    local res = 0`);
+  lines.push(`    local bit = 1`);
+  lines.push(`    for i = 0, 31 do`);
+  lines.push(`      local abit = a % 2`);
+  lines.push(`      local bbit = b % 2`);
+  lines.push(`      if abit + bbit == 1 then res = res + bit end`);
+  lines.push(`      a = (a - abit) / 2`);
+  lines.push(`      b = (b - bbit) / 2`);
+  lines.push(`      bit = bit * 2`);
+  lines.push(`    end`);
+  lines.push(`    return res`);
+  lines.push(`  end`);
+  lines.push(`  function ${bitNames.bit}.bnot(a)`);
+  lines.push(`    return ${bitNames.mod} - 1 - ${bitNames.norm}(a)`);
+  lines.push(`  end`);
+  lines.push(`  function ${bitNames.bit}.lshift(a, b)`);
+  lines.push(`    b = b % 32`);
+  lines.push(`    return (${bitNames.norm}(a) * (2 ^ b)) % ${bitNames.mod}`);
+  lines.push(`  end`);
+  lines.push(`  function ${bitNames.bit}.rshift(a, b)`);
+  lines.push(`    b = b % 32`);
+  lines.push(`    return math.floor(${bitNames.norm}(a) / (2 ^ b))`);
+  lines.push(`  end`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.u64}(hi, lo)`);
+  lines.push(`  return { hi, lo }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.from}(v)`);
+  lines.push(`  return { 0, v % ${bitNames.mod} }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.lo}(v)`);
+  lines.push(`  return v[2]`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.add}(a, b)`);
+  lines.push(`  local lo = a[2] + b[2]`);
+  lines.push(`  local carry = 0`);
+  lines.push(`  if lo >= ${bitNames.mod} then`);
+  lines.push(`    lo = lo - ${bitNames.mod}`);
+  lines.push(`    carry = 1`);
+  lines.push(`  end`);
+  lines.push(`  local hi = (a[1] + b[1] + carry) % ${bitNames.mod}`);
+  lines.push(`  return { hi, lo }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.modn}(a, m)`);
+  lines.push(`  local v = (a[1] % m) * (${bitNames.mod} % m) + (a[2] % m)`);
+  lines.push(`  return v % m`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.modSmall}(a)`);
+  lines.push(`  local v = (a[1] % 255) + (a[2] % 255)`);
+  lines.push(`  return v % 255`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.bxor64}(a, b)`);
+  lines.push(`  return { ${bitNames.bit}.bxor(a[1], b[1]), ${bitNames.bit}.bxor(a[2], b[2]) }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.band64}(a, b)`);
+  lines.push(`  return { ${bitNames.bit}.band(a[1], b[1]), ${bitNames.bit}.band(a[2], b[2]) }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.bor64}(a, b)`);
+  lines.push(`  return { ${bitNames.bit}.bor(a[1], b[1]), ${bitNames.bit}.bor(a[2], b[2]) }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.bnot64}(a)`);
+  lines.push(`  return { ${bitNames.bit}.bnot(a[1]), ${bitNames.bit}.bnot(a[2]) }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.lshift64}(a, b)`);
+  lines.push(`  b = b % 64`);
+  lines.push(`  if b == 0 then`);
+  lines.push(`    return { a[1], a[2] }`);
+  lines.push(`  end`);
+  lines.push(`  if b >= 32 then`);
+  lines.push(`    local hi = ${bitNames.bit}.lshift(a[2], b - 32)`);
+  lines.push(`    return { hi, 0 }`);
+  lines.push(`  end`);
+  lines.push(`  local hi = ${bitNames.bit}.bor(${bitNames.bit}.lshift(a[1], b), ${bitNames.bit}.rshift(a[2], 32 - b))`);
+  lines.push(`  local lo = ${bitNames.bit}.lshift(a[2], b)`);
+  lines.push(`  return { hi, lo }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.rshift64}(a, b)`);
+  lines.push(`  b = b % 64`);
+  lines.push(`  if b == 0 then`);
+  lines.push(`    return { a[1], a[2] }`);
+  lines.push(`  end`);
+  lines.push(`  if b >= 32 then`);
+  lines.push(`    local lo = ${bitNames.bit}.rshift(a[1], b - 32)`);
+  lines.push(`    return { 0, lo }`);
+  lines.push(`  end`);
+  lines.push(`  local hi = ${bitNames.bit}.rshift(a[1], b)`);
+  lines.push(`  local lo = ${bitNames.bit}.bor(${bitNames.bit}.rshift(a[2], b), ${bitNames.bit}.lshift(a[1], 32 - b))`);
+  lines.push(`  return { hi, lo }`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.bxor32}(a, b)`);
+  lines.push(`  return ${bitNames.bit}.bxor(a, b)`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.band32}(a, b)`);
+  lines.push(`  return ${bitNames.bit}.band(a, b)`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.bor32}(a, b)`);
+  lines.push(`  return ${bitNames.bit}.bor(a, b)`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.bnot32}(a)`);
+  lines.push(`  return ${bitNames.bit}.bnot(a)`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.lshift32}(a, b)`);
+  lines.push(`  return ${bitNames.bit}.lshift(a, b)`);
+  lines.push(`end`);
+  lines.push(`local function ${bitNames.rshift32}(a, b)`);
+  lines.push(`  return ${bitNames.bit}.rshift(a, b)`);
+  lines.push(`end`);
+
+  if (!blockDispatch && !useBytecodeStream) {
+    if (bcInfo && bcInfo.parts && bcInfo.parts.length > 1) {
+      const partStrings = bcInfo.parts.map((part) => {
+        const items = part
+          .map((inst) => `{ ${inst[0]}, ${inst[1] || 0}, ${inst[2] || 0} }`)
+          .join(", ");
+        return `{ ${items} }`;
+      });
+      lines.push(`local bc_parts = { ${partStrings.join(", ")} }`);
+      lines.push(`local bc_offsets = { ${bcInfo.offsets.join(", ")} }`);
+      lines.push(`local bc_order = { ${bcInfo.order.join(", ")} }`);
+      lines.push(`local bc = {}`);
+      lines.push(`for i = 1, #bc_order do`);
+      lines.push(`  local idx = bc_order[i]`);
+      lines.push(`  local part = bc_parts[idx]`);
+      lines.push(`  local offset = bc_offsets[idx]`);
+      lines.push(`  for j = 1, #part do`);
+      lines.push(`    bc[offset + j - 1] = part[j]`);
+      lines.push(`  end`);
+      lines.push(`end`);
+    } else {
+      const bc = program.instructions
         .map((inst) => `{ ${inst[0]}, ${inst[1] || 0}, ${inst[2] || 0} }`)
         .join(", ");
-      return `{ ${items} }`;
-    });
-    lines.push(`local bc_parts = { ${partStrings.join(", ")} }`);
-    lines.push(`local bc_offsets = { ${bcInfo.offsets.join(", ")} }`);
-    lines.push(`local bc_order = { ${bcInfo.order.join(", ")} }`);
-    lines.push(`local bc = {}`);
-    lines.push(`for i = 1, #bc_order do`);
-    lines.push(`  local idx = bc_order[i]`);
-    lines.push(`  local part = bc_parts[idx]`);
-    lines.push(`  local offset = bc_offsets[idx]`);
-    lines.push(`  for j = 1, #part do`);
-    lines.push(`    bc[offset + j - 1] = part[j]`);
-    lines.push(`  end`);
+      lines.push(`local bc = { ${bc} }`);
+    }
+  }
+
+  if (seedPieces.length) {
+    const bcLenExpr = !blockDispatch && !useBytecodeStream
+      ? "#bc"
+      : String(program.instructions.length);
+    lines.push(`local seed_pieces = { ${seedPieces.join(", ")} }`);
+    lines.push(`local seed = ${u64from("0")}`);
+    lines.push(`for i = 1, #seed_pieces do`);
+    lines.push(`  local v = seed_pieces[i]`);
+    lines.push(`  local v64 = ${u64from("v")}`);
+    lines.push(`  seed = ${bxor64(u64add("seed", "v64"), band64(lshift64("v64", "(i - 1) % 3"), u64from("0xff")))}`);
+    lines.push(`  seed = ${band64("seed", u64from("0xff"))}`);
     lines.push(`end`);
+    lines.push(`seed = ${u64modSmall(u64add("seed", u64from(`${bcLenExpr} + ${constCount}`)))}`);
   } else {
-    const bc = program.instructions
-      .map((inst) => `{ ${inst[0]}, ${inst[1] || 0}, ${inst[2] || 0} }`)
-      .join(", ");
-    lines.push(`local bc = { ${bc} }`);
+    lines.push(`local seed = 0`);
+  }
+
+  if (!blockDispatch && opEncoded && opKeyPieces) {
+    lines.push(`local op_data = { ${opEncoded.join(", ")} }`);
+    lines.push(`local op_key = ${opKeyPieces[0]} + ${opKeyPieces[1]} + seed`);
+    lines.push(`op_key = (op_key % 255) + 1`);
+    lines.push(`local op_map = {}`);
+    lines.push(`for i = 1, #op_data do`);
+    lines.push(`  local mix = i - 1`);
+    lines.push(`  mix = mix * 7`);
+    lines.push(`  mix = mix + op_key`);
+    lines.push(`  mix = mix % 255`);
+    lines.push(`  op_map[i] = ${bxor32("op_data[i]", "mix")}`);
+    lines.push(`end`);
+    const opConst = OPCODES.map((name, idx) => (
+      `local OP_${name} = op_map[${buildIndexExpression(idx + 1, rng)}]`
+    )).join("\n");
+    lines.push(opConst);
+  }
+
+  if (!blockDispatch && keyEncoded && keyMaskPieces) {
+    lines.push(`local bc_key_data = { ${keyEncoded.join(", ")} }`);
+    lines.push(`local bc_key_mask = ${bxor32(String(keyMaskPieces[0]), String(keyMaskPieces[1]))} + seed`);
+    lines.push(`bc_key_mask = (bc_key_mask % 255) + 1`);
+    lines.push(`local bc_keys = {}`);
+    lines.push(`for i = 1, #bc_key_data do`);
+    lines.push(`  local mix = i - 1`);
+    lines.push(`  mix = mix * 13`);
+    lines.push(`  mix = mix + bc_key_mask`);
+    lines.push(`  mix = mix % 255`);
+    lines.push(`  bc_keys[i] = ${bxor32("bc_key_data[i]", "mix")}`);
+    lines.push(`end`);
+    lines.push(`local bc_key_count = #bc_keys`);
+  } else {
+    lines.push(`local bc_keys = {}`);
+    lines.push(`local bc_key_count = 0`);
   }
 
   if (constInfo) {
-    const constEntries = constInfo.entries.map((entry) => {
+    const constEncoding = vmOptions.constsEncoding === "table" ? "table" : "string";
+    const renderConstEntry = (entry) => {
+      if (constEncoding === "string") {
+        return `{ ${entry.tag}, ${luaByteString(entry.data)} }`;
+      }
       const data = entry.data.join(", ");
       return `{ ${entry.tag}, { ${data} } }`;
-    });
-    lines.push(`local consts_data = { ${constEntries.join(", ")} }`);
-    lines.push(`local consts_key = { ${constInfo.key.join(", ")} }`);
-    lines.push(`local consts = {}`);
+    };
+    if (vmOptions.constsSplit && constInfo.entries.length > (vmOptions.constsSplitSize || 0)) {
+      const parts = splitConstEntries(constInfo.entries, rng, vmOptions.constsSplitSize || 24);
+      const order = parts.map((_, idx) => idx + 1);
+      rng.shuffle(order);
+      const partStrings = parts.map((part) => `{ ${part.map(renderConstEntry).join(", ")} }`);
+      lines.push(`local const_parts = { ${partStrings.join(", ")} }`);
+      lines.push(`local const_order = { ${order.join(", ")} }`);
+      lines.push(`local consts_data = {}`);
+      lines.push(`local const_index = 1`);
+      lines.push(`for i = 1, #const_order do`);
+      lines.push(`  local part = const_parts[const_order[i]]`);
+      lines.push(`  for j = 1, #part do`);
+      lines.push(`    consts_data[const_index] = part[j]`);
+      lines.push(`    const_index = const_index + 1`);
+      lines.push(`  end`);
+      lines.push(`end`);
+    } else {
+      const constEntries = constInfo.entries.map(renderConstEntry);
+      lines.push(`local consts_data = { ${constEntries.join(", ")} }`);
+    }
+    lines.push(`local consts_key_enc = { ${constInfo.keyEncoded.join(", ")} }`);
+    lines.push(`local consts_key = {}`);
+    lines.push(`local consts_cache = {}`);
+    lines.push(`local consts_ready = {}`);
+    lines.push(`local const_key_mask = ${bxor32(String(constInfo.maskPieces[0]), String(constInfo.maskPieces[1]))} + seed`);
+    lines.push(`const_key_mask = (const_key_mask % 255) + 1`);
+    lines.push(`for i = 1, #consts_key_enc do`);
+    lines.push(`  local mix = i - 1`);
+    lines.push(`  mix = mix * 11`);
+    lines.push(`  mix = mix + const_key_mask`);
+    lines.push(`  mix = mix % 255`);
+    lines.push(`  consts_key[i] = ${bxor32("consts_key_enc[i]", "mix")}`);
+    lines.push(`end`);
     lines.push(`local keyLen = #consts_key`);
-    lines.push(`for i = 1, ${constInfo.count} do`);
+    if (constEncoding === "string") {
+      lines.push(`local const_byte = string.byte`);
+    }
+    lines.push(`local function ${helperNames.getConst}(i)`);
+    lines.push(`  if consts_ready[i] then`);
+    lines.push(`    return consts_cache[i]`);
+    lines.push(`  end`);
+    lines.push(`  consts_ready[i] = true`);
     lines.push(`  local entry = consts_data[i]`);
+    lines.push(`  if not entry then`);
+    lines.push(`    return nil`);
+    lines.push(`  end`);
     lines.push(`  local tag = entry[1]`);
     lines.push(`  local data = entry[2]`);
     lines.push(`  local out = {}`);
     lines.push(`  for j = 1, #data do`);
     lines.push(`    local idx = (j - 1) % keyLen + 1`);
-    lines.push(`    local v = data[j] - consts_key[idx]`);
+    if (constEncoding === "string") {
+      lines.push(`    local v = const_byte(data, j) - consts_key[idx]`);
+    } else {
+      lines.push(`    local v = data[j] - consts_key[idx]`);
+    }
     lines.push(`    if v < 0 then v = v + 256 end`);
     lines.push(`    out[j] = string.char(v)`);
     lines.push(`  end`);
     lines.push(`  local s = table.concat(out)`);
+    lines.push(`  local value`);
     lines.push(`  if tag == 0 then`);
-    lines.push(`    consts[i] = nil`);
+    lines.push(`    value = nil`);
     lines.push(`  elseif tag == 1 then`);
-    lines.push(`    consts[i] = false`);
+    lines.push(`    value = false`);
     lines.push(`  elseif tag == 2 then`);
-    lines.push(`    consts[i] = true`);
+    lines.push(`    value = true`);
     lines.push(`  elseif tag == 3 then`);
-    lines.push(`    consts[i] = tonumber(s)`);
+    lines.push(`    value = tonumber(s)`);
     lines.push(`  else`);
-    lines.push(`    consts[i] = s`);
+    lines.push(`    value = s`);
     lines.push(`  end`);
+    lines.push(`  consts_cache[i] = value`);
+    lines.push(`  return value`);
     lines.push(`end`);
   } else {
     const consts = program.consts.map((value) => {
@@ -1239,247 +1850,644 @@ function buildVmSource(program, opcodeMap, paramNames, runtimeKeySeed, bcInfo, c
     });
     const constTable = `{ ${consts.join(", ")} }`;
     lines.push(`local consts = ${constTable}`);
+    lines.push(`local function ${helperNames.getConst}(i)`);
+    lines.push(`  return consts[i]`);
+    lines.push(`end`);
   }
 
   lines.push(
-    keyLine,
     `local locals = ${localsTable}`,
     `local stack = {}`,
     `local top = 0`,
-    `local pc = 1`,
-    `local env = _ENV`,
+    `local env`,
+    `local getf = getfenv`,
+    `if type(getf) == "function" then env = getf(1) end`,
+    `if type(env) ~= "table" then env = _G end`,
     `local pack = table.pack`,
-    `local unpack = table.unpack`,
-    `while true do`,
-    `  local inst = bc[pc]`,
-    `  local op = inst[1]`,
-    `  local a = inst[2]`,
-    `  local b = inst[3]`,
-    `  if key ~= 0 then`,
-    `    op = op ~ key`,
-    `    a = a ~ key`,
-    `    b = b ~ key`,
-    `  end`,
-    `  if op == OP_NOP then`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_PUSH_CONST then`,
-    `    top = top + 1`,
-    `    stack[top] = consts[a]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_PUSH_LOCAL then`,
-    `    top = top + 1`,
-    `    stack[top] = locals[a]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_SET_LOCAL then`,
-    `    locals[a] = stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_PUSH_GLOBAL then`,
-    `    top = top + 1`,
-    `    stack[top] = env[consts[a]]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_SET_GLOBAL then`,
-    `    env[consts[a]] = stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_NEW_TABLE then`,
-    `    top = top + 1`,
-    `    stack[top] = {}`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_DUP then`,
-    `    top = top + 1`,
-    `    stack[top] = stack[top - 1]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_SWAP then`,
-    `    stack[top], stack[top - 1] = stack[top - 1], stack[top]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_POP then`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_GET_TABLE then`,
-    `    local idx = stack[top]`,
-    `    stack[top] = nil`,
-    `    local base = stack[top - 1]`,
-    `    stack[top - 1] = base[idx]`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_SET_TABLE then`,
-    `    local val = stack[top]`,
-    `    stack[top] = nil`,
-    `    local key = stack[top - 1]`,
-    `    stack[top - 1] = nil`,
-    `    local base = stack[top - 2]`,
-    `    base[key] = val`,
-    `    top = top - 2`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_CALL then`,
-    `    local argc = a`,
-    `    local retc = b`,
-    `    local args = {}`,
-    `    for i = argc, 1, -1 do`,
-    `      args[i] = stack[top]`,
-    `      stack[top] = nil`,
-    `      top = top - 1`,
-    `    end`,
-    `    local fn = stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    local res = pack(fn(unpack(args, 1, argc)))`,
-    `    if retc == 1 then`,
-    `      top = top + 1`,
-    `      stack[top] = res[1]`,
-    `    elseif retc > 1 then`,
-    `      for i = 1, retc do`,
-    `        top = top + 1`,
-    `        stack[top] = res[i]`,
-    `      end`,
-    `    end`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_RETURN then`,
-    `    local count = a`,
-    `    if count == 0 then`,
-    `      return`,
-    `    elseif count == 1 then`,
-    `      return stack[top]`,
-    `    else`,
-    `      local out = {}`,
-    `      for i = count, 1, -1 do`,
-    `        out[i] = stack[top]`,
-    `        stack[top] = nil`,
-    `        top = top - 1`,
-    `      end`,
-    `      return unpack(out, 1, count)`,
-    `    end`,
-    `  elseif op == OP_JMP then`,
-    `    pc = a`,
-    `  elseif op == OP_JMP_IF_FALSE then`,
-    `    if not stack[top] then`,
-    `      pc = a`,
-    `    else`,
-    `      pc = pc + 1`,
-    `    end`,
-    `  elseif op == OP_JMP_IF_TRUE then`,
-    `    if stack[top] then`,
-    `      pc = a`,
-    `    else`,
-    `      pc = pc + 1`,
-    `    end`,
-    `  elseif op == OP_ADD then`,
-    `    stack[top - 1] = stack[top - 1] + stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_SUB then`,
-    `    stack[top - 1] = stack[top - 1] - stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_MUL then`,
-    `    stack[top - 1] = stack[top - 1] * stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_DIV then`,
-    `    stack[top - 1] = stack[top - 1] / stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_IDIV then`,
-    `    stack[top - 1] = stack[top - 1] // stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_MOD then`,
-    `    stack[top - 1] = stack[top - 1] % stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_POW then`,
-    `    stack[top - 1] = stack[top - 1] ^ stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_CONCAT then`,
-    `    stack[top - 1] = stack[top - 1] .. stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_EQ then`,
-    `    stack[top - 1] = stack[top - 1] == stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_NE then`,
-    `    stack[top - 1] = stack[top - 1] ~= stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_LT then`,
-    `    stack[top - 1] = stack[top - 1] < stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_LE then`,
-    `    stack[top - 1] = stack[top - 1] <= stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_GT then`,
-    `    stack[top - 1] = stack[top - 1] > stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_GE then`,
-    `    stack[top - 1] = stack[top - 1] >= stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_BAND then`,
-    `    stack[top - 1] = stack[top - 1] & stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_BOR then`,
-    `    stack[top - 1] = stack[top - 1] | stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_BXOR then`,
-    `    stack[top - 1] = stack[top - 1] ~ stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_SHL then`,
-    `    stack[top - 1] = stack[top - 1] << stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_SHR then`,
-    `    stack[top - 1] = stack[top - 1] >> stack[top]`,
-    `    stack[top] = nil`,
-    `    top = top - 1`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_UNM then`,
-    `    stack[top] = -stack[top]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_NOT then`,
-    `    stack[top] = not stack[top]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_LEN then`,
-    `    stack[top] = #stack[top]`,
-    `    pc = pc + 1`,
-    `  elseif op == OP_BNOT then`,
-    `    stack[top] = ~stack[top]`,
-    `    pc = pc + 1`,
-    `  else`,
-    `    return`,
-    `  end`,
+    `if pack == nil then`,
+    `  pack = function(...) return { n = select("#", ...), ... } end`,
     `end`,
+    `local unpack = table.unpack`,
+    `if unpack == nil then`,
+    `  local function unpack_fn(t, i, j)`,
+    `    i = i or 1`,
+    `    j = j or (t.n or #t)`,
+    `    if i > j then return end`,
+    `    return t[i], unpack_fn(t, i + 1, j)`,
+    `  end`,
+    `  unpack = unpack_fn`,
     `end`,
   );
+
+  if (useBytecodeStream) {
+    const stream = encodeBytecodeStream(program.instructions, rng, seedState, bcInfo);
+    const partStrings = stream.parts.map((part) => bytesToLuaString(part));
+    lines.push(`local bc_parts = { ${partStrings.join(", ")} }`);
+    lines.push(`local bc_order = { ${stream.order.join(", ")} }`);
+    lines.push(`local bc_build = {}`);
+    lines.push(`for i = 1, #bc_order do`);
+    lines.push(`  bc_build[i] = bc_parts[bc_order[i]]`);
+    lines.push(`end`);
+    lines.push(`local bc_str = table.concat(bc_build)`);
+    lines.push(`local bc_key = ${stream.keyPieces[0]} + ${stream.keyPieces[1]} + seed`);
+    lines.push(`bc_key = (bc_key % 255) + 1`);
+    lines.push(`local bc_byte = string.byte`);
+    lines.push(`local function ${helperNames.byte}(i)`);
+    lines.push(`  local b = bc_byte(bc_str, i)`);
+    lines.push(`  local mix = i - 1`);
+    lines.push(`  mix = mix * 17`);
+    lines.push(`  mix = mix + bc_key`);
+    lines.push(`  mix = mix % 256`);
+    lines.push(`  return ${bxor32("b", "mix")}`);
+    lines.push(`end`);
+    lines.push(`local function ${helperNames.u32}(pos)`);
+    lines.push(`  local b1 = ${helperNames.byte}(pos)`);
+    lines.push(`  local b2 = ${helperNames.byte}(pos + 1)`);
+    lines.push(`  local b3 = ${helperNames.byte}(pos + 2)`);
+    lines.push(`  local b4 = ${helperNames.byte}(pos + 3)`);
+    lines.push(`  return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216`);
+    lines.push(`end`);
+    lines.push(`local function ${helperNames.getInst}(pc)`);
+    lines.push(`  local base = pc - 1`);
+    lines.push(`  base = base * 12 + 1`);
+    lines.push(`  local op = ${helperNames.u32}(base)`);
+    lines.push(`  local a = ${helperNames.u32}(base + 4)`);
+    lines.push(`  local b = ${helperNames.u32}(base + 8)`);
+    lines.push(`  return op, a, b`);
+    lines.push(`end`);
+  }
+
+  if (blockDispatch) {
+    const ids = buildBlockIds(program.instructions.length, rng);
+    const idByIndex = new Map();
+    const blocks = program.instructions.map((inst, idx) => {
+      const entry = {
+        id: ids[idx],
+        index: idx + 1,
+        op: inst[0],
+        a: inst[1] || 0,
+        b: inst[2] || 0,
+      };
+      idByIndex.set(entry.index, entry.id);
+      return entry;
+    });
+    const entryId = ids[0] || 0;
+    const sorted = blocks.slice().sort((a, b) => a.id - b.id);
+    const emitBlock = (block) => {
+      const opName = typeof block.op === "string" ? block.op : (OPCODES[block.op - 1] || "NOP");
+      const a = block.a || 0;
+      const b = block.b || 0;
+      const nextId = idByIndex.get(block.index + 1) || 0;
+      const targetId = idByIndex.get(a) || 0;
+      switch (opName) {
+        case "NOP":
+          return [`pc = ${nextId}`];
+        case "PUSH_CONST":
+          return [
+            "top = top + 1",
+            `stack[top] = ${helperNames.getConst}(${a})`,
+            `pc = ${nextId}`,
+          ];
+        case "PUSH_LOCAL":
+          return [
+            "top = top + 1",
+            `stack[top] = locals[${a}]`,
+            `pc = ${nextId}`,
+          ];
+        case "SET_LOCAL":
+          return [
+            `locals[${a}] = stack[top]`,
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "PUSH_GLOBAL":
+          return [
+            "top = top + 1",
+            `stack[top] = env[${helperNames.getConst}(${a})]`,
+            `pc = ${nextId}`,
+          ];
+        case "SET_GLOBAL":
+          return [
+            `env[${helperNames.getConst}(${a})] = stack[top]`,
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "NEW_TABLE":
+          return [
+            "top = top + 1",
+            "stack[top] = {}",
+            `pc = ${nextId}`,
+          ];
+        case "DUP":
+          return [
+            "top = top + 1",
+            "stack[top] = stack[top - 1]",
+            `pc = ${nextId}`,
+          ];
+        case "SWAP":
+          return [
+            "stack[top], stack[top - 1] = stack[top - 1], stack[top]",
+            `pc = ${nextId}`,
+          ];
+        case "POP":
+          return [
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "GET_TABLE":
+          return [
+            "local idx = stack[top]",
+            "stack[top] = nil",
+            "local base = stack[top - 1]",
+            "stack[top - 1] = base[idx]",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "SET_TABLE":
+          return [
+            "local val = stack[top]",
+            "stack[top] = nil",
+            "local key = stack[top - 1]",
+            "stack[top - 1] = nil",
+            "local base = stack[top - 2]",
+            "base[key] = val",
+            "stack[top - 2] = nil",
+            "top = top - 3",
+            `pc = ${nextId}`,
+          ];
+        case "CALL":
+          return [
+            `local argc = ${a}`,
+            `local retc = ${b}`,
+            "local base = top - argc",
+            "local fn = stack[base]",
+            "if retc == 0 then",
+            "  fn(unpack(stack, base + 1, top))",
+            "  for i = top, base, -1 do",
+            "    stack[i] = nil",
+            "  end",
+            "  top = base - 1",
+            "else",
+            "  local res = pack(fn(unpack(stack, base + 1, top)))",
+            "  for i = top, base, -1 do",
+            "    stack[i] = nil",
+            "  end",
+            "  top = base - 1",
+            "  if retc == 1 then",
+            "    top = top + 1",
+            "    stack[top] = res[1]",
+            "  else",
+            "    for i = 1, retc do",
+            "      top = top + 1",
+            "      stack[top] = res[i]",
+            "    end",
+            "  end",
+            "end",
+            `pc = ${nextId}`,
+          ];
+        case "RETURN":
+          return [
+            `local count = ${a}`,
+            "if count == 0 then",
+            "  return",
+            "elseif count == 1 then",
+            "  return stack[top]",
+            "else",
+            "  local base = top - count + 1",
+            "  return unpack(stack, base, top)",
+            "end",
+          ];
+        case "JMP":
+          return [`pc = ${targetId}`];
+        case "JMP_IF_FALSE":
+          return [
+            "if not stack[top] then",
+            `  pc = ${targetId}`,
+            "else",
+            `  pc = ${nextId}`,
+            "end",
+          ];
+        case "JMP_IF_TRUE":
+          return [
+            "if stack[top] then",
+            `  pc = ${targetId}`,
+            "else",
+            `  pc = ${nextId}`,
+            "end",
+          ];
+        case "ADD":
+          return [
+            "stack[top - 1] = stack[top - 1] + stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "SUB":
+          return [
+            "stack[top - 1] = stack[top - 1] - stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "MUL":
+          return [
+            "stack[top - 1] = stack[top - 1] * stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "DIV":
+          return [
+            "stack[top - 1] = stack[top - 1] / stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "IDIV":
+          return [
+            "stack[top - 1] = math.floor(stack[top - 1] / stack[top])",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "MOD":
+          return [
+            "stack[top - 1] = stack[top - 1] % stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "POW":
+          return [
+            "stack[top - 1] = stack[top - 1] ^ stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "CONCAT":
+          return [
+            "stack[top - 1] = stack[top - 1] .. stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "EQ":
+          return [
+            "stack[top - 1] = stack[top - 1] == stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "NE":
+          return [
+            "stack[top - 1] = stack[top - 1] ~= stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "LT":
+          return [
+            "stack[top - 1] = stack[top - 1] < stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "LE":
+          return [
+            "stack[top - 1] = stack[top - 1] <= stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "GT":
+          return [
+            "stack[top - 1] = stack[top - 1] > stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "GE":
+          return [
+            "stack[top - 1] = stack[top - 1] >= stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "BAND":
+          return [
+            `stack[top - 1] = ${band32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "BOR":
+          return [
+            `stack[top - 1] = ${bor32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "BXOR":
+          return [
+            `stack[top - 1] = ${bxor32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "SHL":
+          return [
+            `stack[top - 1] = ${lshift32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "SHR":
+          return [
+            `stack[top - 1] = ${rshift32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            `pc = ${nextId}`,
+          ];
+        case "UNM":
+          return [
+            "stack[top] = -stack[top]",
+            `pc = ${nextId}`,
+          ];
+        case "NOT":
+          return [
+            "stack[top] = not stack[top]",
+            `pc = ${nextId}`,
+          ];
+        case "LEN":
+          return [
+            "stack[top] = #stack[top]",
+            `pc = ${nextId}`,
+          ];
+        case "BNOT":
+          return [
+            `stack[top] = ${bnot32("stack[top]")}`,
+            `pc = ${nextId}`,
+          ];
+        default:
+          return [`pc = ${nextId}`];
+      }
+    };
+
+    lines.push(`local pc = ${entryId}`);
+    lines.push(`while pc ~= 0 do`);
+    lines.push(...buildDispatchTree(sorted, rng, emitBlock, "  "));
+    lines.push("end");
+    lines.push("end");
+  } else {
+    const loopLines = [
+      `local pc = 1`,
+      `while true do`,
+    ];
+    if (useBytecodeStream) {
+      loopLines.push(`  local op, a, b = ${helperNames.getInst}(pc)`);
+    } else {
+      loopLines.push(`  local inst = bc[pc]`);
+      loopLines.push(`  local op = inst[1]`);
+      loopLines.push(`  local a = inst[2]`);
+      loopLines.push(`  local b = inst[3]`);
+    }
+    loopLines.push(
+      `  local key = 0`,
+      `  if bc_key_count > 0 then`,
+      `    local idx = pc + seed - 1`,
+      `    idx = idx % bc_key_count`,
+      `    idx = idx + 1`,
+      `    key = bc_keys[idx]`,
+      `    op = ${bxor32("op", "key")}`,
+      `    a = ${bxor32("a", "key")}`,
+      `    b = ${bxor32("b", "key")}`,
+      `  end`,
+      `  if op == OP_NOP then`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_PUSH_CONST then`,
+      `    top = top + 1`,
+      `    stack[top] = ${helperNames.getConst}(a)`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_PUSH_LOCAL then`,
+      `    top = top + 1`,
+      `    stack[top] = locals[a]`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_SET_LOCAL then`,
+      `    locals[a] = stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_PUSH_GLOBAL then`,
+      `    top = top + 1`,
+      `    stack[top] = env[${helperNames.getConst}(a)]`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_SET_GLOBAL then`,
+      `    env[${helperNames.getConst}(a)] = stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_NEW_TABLE then`,
+      `    top = top + 1`,
+      `    stack[top] = {}`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_DUP then`,
+      `    top = top + 1`,
+      `    stack[top] = stack[top - 1]`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_SWAP then`,
+      `    stack[top], stack[top - 1] = stack[top - 1], stack[top]`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_POP then`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_GET_TABLE then`,
+      `    local idx = stack[top]`,
+      `    stack[top] = nil`,
+      `    local base = stack[top - 1]`,
+      `    stack[top - 1] = base[idx]`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_SET_TABLE then`,
+      `    local val = stack[top]`,
+      `    stack[top] = nil`,
+      `    local key = stack[top - 1]`,
+      `    stack[top - 1] = nil`,
+      `    local base = stack[top - 2]`,
+      `    base[key] = val`,
+      `    stack[top - 2] = nil`,
+      `    top = top - 3`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_CALL then`,
+      `    local argc = a`,
+      `    local retc = b`,
+      `    local base = top - argc`,
+      `    local fn = stack[base]`,
+      `    if retc == 0 then`,
+      `      fn(unpack(stack, base + 1, top))`,
+      `      for i = top, base, -1 do`,
+      `        stack[i] = nil`,
+      `      end`,
+      `      top = base - 1`,
+      `    else`,
+      `      local res = pack(fn(unpack(stack, base + 1, top)))`,
+      `      for i = top, base, -1 do`,
+      `        stack[i] = nil`,
+      `      end`,
+      `      top = base - 1`,
+      `      if retc == 1 then`,
+      `        top = top + 1`,
+      `        stack[top] = res[1]`,
+      `      else`,
+      `        for i = 1, retc do`,
+      `          top = top + 1`,
+      `          stack[top] = res[i]`,
+      `        end`,
+      `      end`,
+      `    end`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_RETURN then`,
+      `    local count = a`,
+      `    if count == 0 then`,
+      `      return`,
+      `    elseif count == 1 then`,
+      `      return stack[top]`,
+      `    else`,
+      `      local base = top - count + 1`,
+      `      return unpack(stack, base, top)`,
+      `    end`,
+      `  elseif op == OP_JMP then`,
+      `    pc = a`,
+      `  elseif op == OP_JMP_IF_FALSE then`,
+      `    if not stack[top] then`,
+      `      pc = a`,
+      `    else`,
+      `      pc = pc + 1`,
+      `    end`,
+      `  elseif op == OP_JMP_IF_TRUE then`,
+      `    if stack[top] then`,
+      `      pc = a`,
+      `    else`,
+      `      pc = pc + 1`,
+      `    end`,
+      `  elseif op == OP_ADD then`,
+      `    stack[top - 1] = stack[top - 1] + stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_SUB then`,
+      `    stack[top - 1] = stack[top - 1] - stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_MUL then`,
+      `    stack[top - 1] = stack[top - 1] * stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_DIV then`,
+      `    stack[top - 1] = stack[top - 1] / stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_IDIV then`,
+      `    stack[top - 1] = math.floor(stack[top - 1] / stack[top])`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_MOD then`,
+      `    stack[top - 1] = stack[top - 1] % stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_POW then`,
+      `    stack[top - 1] = stack[top - 1] ^ stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_CONCAT then`,
+      `    stack[top - 1] = stack[top - 1] .. stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_EQ then`,
+      `    stack[top - 1] = stack[top - 1] == stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_NE then`,
+      `    stack[top - 1] = stack[top - 1] ~= stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_LT then`,
+      `    stack[top - 1] = stack[top - 1] < stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_LE then`,
+      `    stack[top - 1] = stack[top - 1] <= stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_GT then`,
+      `    stack[top - 1] = stack[top - 1] > stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_GE then`,
+      `    stack[top - 1] = stack[top - 1] >= stack[top]`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_BAND then`,
+      `    stack[top - 1] = ${band32("stack[top - 1]", "stack[top]")}`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_BOR then`,
+      `    stack[top - 1] = ${bor32("stack[top - 1]", "stack[top]")}`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_BXOR then`,
+      `    stack[top - 1] = ${bxor32("stack[top - 1]", "stack[top]")}`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_SHL then`,
+      `    stack[top - 1] = ${lshift32("stack[top - 1]", "stack[top]")}`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_SHR then`,
+      `    stack[top - 1] = ${rshift32("stack[top - 1]", "stack[top]")}`,
+      `    stack[top] = nil`,
+      `    top = top - 1`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_UNM then`,
+      `    stack[top] = -stack[top]`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_NOT then`,
+      `    stack[top] = not stack[top]`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_LEN then`,
+      `    stack[top] = #stack[top]`,
+      `    pc = pc + 1`,
+      `  elseif op == OP_BNOT then`,
+      `    stack[top] = ${bnot32("stack[top]")}`,
+      `    pc = pc + 1`,
+      `  else`,
+      `    return`,
+      `  end`,
+      `end`,
+      `end`,
+    );
+    lines.push(...loopLines);
+  }
 
   return lines.join("\n");
 }
@@ -1493,14 +2501,35 @@ function replaceFunctionBody(fnNode, vmAst, style) {
   fnNode.body = body;
 }
 
+function markVmNodes(vmAst) {
+  if (!vmAst || typeof vmAst !== "object") {
+    return;
+  }
+  vmAst.__obf_vm = true;
+  walk(vmAst, (node) => {
+    node.__obf_vm = true;
+  });
+}
+
 function virtualizeLuau(ast, ctx) {
   const style = ctx.options.luauParser === "custom" ? "custom" : "luaparse";
   const layers = Math.max(1, ctx.options.vm?.layers || 1);
+  const ssaRoot = ctx && typeof ctx.getSSA === "function" ? ctx.getSSA() : null;
   for (let layer = 0; layer < layers; layer += 1) {
     const minStatements = ctx.options.vm?.minStatements ?? DEFAULT_MIN_STATEMENTS;
 
     walk(ast, (node) => {
+      if (node && node.__obf_vm) {
+        return;
+      }
+      if (node && node.__obf_skip_vm) {
+        return;
+      }
       if (!node || (node.type !== "FunctionDeclaration" && node.type !== "FunctionExpression")) {
+        return;
+      }
+      const fnName = getFunctionName(node);
+      if (fnName && fnName.startsWith("__obf_")) {
         return;
       }
       if (!shouldVirtualizeFunction(node, ctx.options)) {
@@ -1516,50 +2545,90 @@ function virtualizeLuau(ast, ctx) {
         return;
       }
 
-    const compiler = new VmCompiler({ style, options: ctx.options });
-    let program;
-    try {
-      program = compiler.compileFunction(node);
-    } catch (err) {
-      return;
-    }
+      const compiler = new VmCompiler({ style, options: ctx.options });
+      let program;
+      try {
+        program = compiler.compileFunction(node);
+      } catch (err) {
+        const debug = Boolean(ctx.options.vm?.debug) || process.env.JS_OBF_VM_DEBUG === "1";
+        if (debug) {
+          const name = getFunctionName(node) || "<anonymous>";
+          const message = err && err.message ? err.message : String(err);
+          console.warn(`[js-obf] luau-vm skipped ${name}: ${message}`);
+        }
+        return;
+      }
 
-    injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
+      injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
 
-    const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false);
-    program.instructions = program.instructions.map((inst) => [
-      opcodeMap[inst[0]],
-      inst[1] || 0,
-      inst[2] || 0,
-    ]);
+      const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
+      const seedState = buildSeedState(ctx.rng, program.instructions.length, program.consts.length);
+      let opcodeInfo = null;
+      let keySchedule = null;
+      let bcInfo = null;
 
-    const runtimeKeySeed = ctx.options.vm?.runtimeKey === false ? 0 : ctx.rng.int(1, 255);
-    if (runtimeKeySeed) {
-      const keyValue = ((runtimeKeySeed + program.instructions.length + program.consts.length) % 255) + 1;
-      program.instructions = program.instructions.map((inst) => [
-        inst[0] ^ keyValue,
-        (inst[1] || 0) ^ keyValue,
-        (inst[2] || 0) ^ keyValue,
-      ]);
-    }
+      if (!blockDispatch) {
+        const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false);
+        opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState);
 
-    const bcInfo = ctx.options.vm?.runtimeSplit === false
-      ? null
-      : splitInstructions(program.instructions, ctx.rng);
-    const constInfo = ctx.options.vm?.constsEncrypt === false
-      ? null
-      : encodeConstPool(program, ctx.rng);
-    const vmSource = buildVmSource(
-      program,
-      opcodeMap,
-      program.paramNames,
-      runtimeKeySeed || 0,
-      bcInfo,
-      constInfo
-    );
-    const vmAst = ctx.options.luauParser === "custom"
-      ? ctx.parseCustom(vmSource)
-      : ctx.parseLuaparse(vmSource);
+        program.instructions = program.instructions.map((inst) => [
+          opcodeMap[inst[0]],
+          inst[1] || 0,
+          inst[2] || 0,
+        ]);
+
+        keySchedule = ctx.options.vm?.runtimeKey === false
+          ? null
+          : buildKeySchedule(ctx.rng, seedState);
+        if (keySchedule) {
+          const keyCount = keySchedule.keys.length;
+          const seedValue = seedState.seed;
+          program.instructions = program.instructions.map((inst, idx) => {
+            const key = keyCount
+              ? keySchedule.keys[(idx + seedValue) % keyCount]
+              : 0;
+            if (!key) {
+              return inst;
+            }
+            return [
+              inst[0] ^ key,
+              (inst[1] || 0) ^ key,
+              (inst[2] || 0) ^ key,
+            ];
+          });
+        }
+
+        bcInfo = ctx.options.vm?.runtimeSplit === false
+          ? null
+          : splitInstructions(program.instructions, ctx.rng);
+      }
+
+      const constInfo = ctx.options.vm?.constsEncrypt === false
+        ? null
+        : encodeConstPool(program, ctx.rng, seedState);
+      const reservedNames = new Set();
+      if (ssaRoot) {
+        const ssa = findSSAForNode(ssaRoot, node);
+        if (ssa) {
+          addSSAUsedNames(ssa, reservedNames);
+        }
+      }
+      const vmSource = buildVmSource(
+        program,
+        opcodeInfo,
+        program.paramNames,
+        seedState,
+        keySchedule,
+        bcInfo,
+        constInfo,
+        ctx.rng,
+        ctx.options.vm,
+        reservedNames
+      );
+      const vmAst = ctx.options.luauParser === "custom"
+        ? ctx.parseCustom(vmSource)
+        : ctx.parseLuaparse(vmSource);
+      markVmNodes(vmAst);
       replaceFunctionBody(node, vmAst, style);
     });
   }

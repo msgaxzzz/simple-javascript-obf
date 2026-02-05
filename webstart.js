@@ -92,9 +92,6 @@ function buildCliArgs(options = {}) {
   if (options.lang) {
     args.push("--lang", String(options.lang));
   }
-  if (options.luauParser) {
-    args.push("--luau-parser", String(options.luauParser));
-  }
   if (options.rename === false) {
     args.push("--no-rename");
   }
@@ -113,6 +110,11 @@ function buildCliArgs(options = {}) {
       args.push("--rename-homoglyphs");
     } else if (options.renameOptions.homoglyphs === false) {
       args.push("--no-rename-homoglyphs");
+    }
+    if (options.renameOptions.maskGlobals === true) {
+      args.push("--mask-globals");
+    } else if (options.renameOptions.maskGlobals === false) {
+      args.push("--no-mask-globals");
     }
   }
   if (options.strings === false) {
@@ -145,6 +147,30 @@ function buildCliArgs(options = {}) {
     args.push("--no-strings-template-chunks");
   } else if (stringsOptions.encodeTemplateChunks === true) {
     args.push("--strings-template-chunks");
+  }
+  if (options.wrap) {
+    args.push("--wrap");
+  }
+  if (options.wrapOptions && options.wrapOptions.iterations) {
+    args.push("--wrap-iterations", String(options.wrapOptions.iterations));
+  }
+  if (options.proxifyLocals) {
+    args.push("--proxify-locals");
+  }
+  if (options.numbers === true) {
+    args.push("--numbers-expr");
+  } else if (options.numbers === false) {
+    args.push("--no-numbers-expr");
+  }
+  if (options.constArray === true) {
+    args.push("--const-array");
+  } else if (options.constArray === false) {
+    args.push("--no-const-array");
+  }
+  if (options.padFooter === true) {
+    args.push("--pad-footer");
+  } else if (options.padFooter === false) {
+    args.push("--no-pad-footer");
   }
 
   if (options.cff === false) {
@@ -194,6 +220,17 @@ function buildCliArgs(options = {}) {
   } else if (vm.constsEncrypt === true) {
     args.push("--vm-consts");
   }
+  if (vm.constsSplit === false) {
+    args.push("--no-vm-consts-split");
+  } else if (vm.constsSplit === true) {
+    args.push("--vm-consts-split");
+  }
+  if (vm.constsSplitSize !== undefined && vm.constsSplitSize !== null && vm.constsSplitSize !== "") {
+    args.push("--vm-consts-split-size", String(vm.constsSplitSize));
+  }
+  if (vm.constsEncoding) {
+    args.push("--vm-consts-encoding", String(vm.constsEncoding));
+  }
   if (vm.runtimeKey === false) {
     args.push("--no-vm-runtime-key");
   } else if (vm.runtimeKey === true) {
@@ -203,6 +240,11 @@ function buildCliArgs(options = {}) {
     args.push("--no-vm-runtime-split");
   } else if (vm.runtimeSplit === true) {
     args.push("--vm-runtime-split");
+  }
+  if (vm.blockDispatch === true) {
+    args.push("--vm-block-dispatch");
+  } else if (vm.blockDispatch === false) {
+    args.push("--no-vm-block-dispatch");
   }
   if (vm.downlevel) {
     args.push("--vm-downlevel");

@@ -2,6 +2,7 @@ const KEYWORDS = new Set([
   "and",
   "break",
   "do",
+  "declare",
   "else",
   "elseif",
   "end",
@@ -58,6 +59,20 @@ class Tokenizer {
     this.peeked = null;
   }
 
+  makeToken(type, value, startIndex, startLine, startColumn) {
+    return {
+      type,
+      value,
+      line: startLine,
+      column: startColumn,
+      range: [startIndex, this.index],
+      loc: {
+        start: { line: startLine, column: startColumn },
+        end: { line: this.line, column: this.column },
+      },
+    };
+  }
+
   peek() {
     if (!this.peeked) {
       this.peeked = this.next();
@@ -73,7 +88,7 @@ class Tokenizer {
     }
     this.skipWhitespace();
     if (this.index >= this.length) {
-      return { type: "eof", value: "", line: this.line, column: this.column };
+      return this.makeToken("eof", "", this.index, this.line, this.column);
     }
 
     const ch = this.source[this.index];
@@ -136,6 +151,28 @@ class Tokenizer {
     this.column += count;
   }
 
+  advanceTo(index) {
+    const slice = this.source.slice(this.index, index);
+    for (let i = 0; i < slice.length; i += 1) {
+      const ch = slice[i];
+      if (ch === "\r") {
+        if (slice[i + 1] === "\n") {
+          i += 1;
+        }
+        this.line += 1;
+        this.column = 1;
+        continue;
+      }
+      if (ch === "\n") {
+        this.line += 1;
+        this.column = 1;
+        continue;
+      }
+      this.column += 1;
+    }
+    this.index = index;
+  }
+
   isIdentifierStart(ch) {
     return /[A-Za-z_]/.test(ch);
   }
@@ -166,9 +203,9 @@ class Tokenizer {
     }
     const value = this.source.slice(start, this.index);
     if (KEYWORDS.has(value)) {
-      return { type: "keyword", value, line, column };
+      return this.makeToken("keyword", value, start, line, column);
     }
-    return { type: "identifier", value, line, column };
+    return this.makeToken("identifier", value, start, line, column);
   }
 
   readNumber() {
@@ -210,7 +247,7 @@ class Tokenizer {
         break;
       }
       const value = this.source.slice(start, this.index);
-      return { type: "number", value, line, column };
+      return this.makeToken("number", value, start, line, column);
     }
 
     if (first === "0" && (next === "b" || next === "B")) {
@@ -224,7 +261,7 @@ class Tokenizer {
         break;
       }
       const value = this.source.slice(start, this.index);
-      return { type: "number", value, line, column };
+      return this.makeToken("number", value, start, line, column);
     }
 
     while (this.index < this.length) {
@@ -264,17 +301,31 @@ class Tokenizer {
       }
     }
     const value = this.source.slice(start, this.index);
-    return { type: "number", value, line, column };
+    return this.makeToken("number", value, start, line, column);
   }
 
   readQuotedString() {
     const quote = this.source[this.index];
     const line = this.line;
     const column = this.column;
+    const start = this.index;
     let i = this.index + 1;
     while (i < this.length) {
       const ch = this.source[i];
       if (ch === "\\") {
+        const next = this.source[i + 1];
+        if (next === "z") {
+          i += 2;
+          while (i < this.length) {
+            const ws = this.source[i];
+            if (ws === " " || ws === "\t" || ws === "\v" || ws === "\f" || ws === "\r" || ws === "\n") {
+              i += 1;
+              continue;
+            }
+            break;
+          }
+          continue;
+        }
         i += 2;
         continue;
       }
@@ -288,17 +339,39 @@ class Tokenizer {
       i += 1;
     }
     const raw = this.source.slice(this.index, i);
-    this.advance(i - this.index);
-    return { type: "string", value: raw, line, column };
+    this.advanceTo(i);
+    return this.makeToken("string", raw, start, line, column);
   }
 
   readInterpolatedString() {
     const line = this.line;
     const column = this.column;
+    const start = this.index;
     let i = this.index + 1;
     while (i < this.length) {
       const ch = this.source[i];
-      if (ch === "\\\\") {
+      if (ch === "\\") {
+        const next = this.source[i + 1];
+        if (next === "z") {
+          i += 2;
+          while (i < this.length) {
+            const ws = this.source[i];
+            if (ws === " " || ws === "\t" || ws === "\v" || ws === "\f" || ws === "\r" || ws === "\n") {
+              i += 1;
+              continue;
+            }
+            break;
+          }
+          continue;
+        }
+        if (next === "\r") {
+          i += this.source[i + 2] === "\n" ? 3 : 2;
+          continue;
+        }
+        if (next === "\n") {
+          i += 2;
+          continue;
+        }
         i += 2;
         continue;
       }
@@ -312,13 +385,14 @@ class Tokenizer {
       i += 1;
     }
     const raw = this.source.slice(this.index, i);
-    this.advance(i - this.index);
-    return { type: "interpString", value: raw, line, column };
+    this.advanceTo(i);
+    return this.makeToken("interpString", raw, start, line, column);
   }
 
   readLongString() {
     const line = this.line;
     const column = this.column;
+    const start = this.index;
     let i = this.index + 1;
     let equalsCount = 0;
     while (this.source[i] === "=") {
@@ -335,8 +409,8 @@ class Tokenizer {
       return null;
     }
     const raw = this.source.slice(this.index, end + close.length);
-    this.advance(end + close.length - this.index);
-    return { type: "string", value: raw, line, column };
+    this.advanceTo(end + close.length);
+    return this.makeToken("string", raw, start, line, column);
   }
 
   readComment() {
@@ -355,15 +429,16 @@ class Tokenizer {
   readSymbol() {
     const line = this.line;
     const column = this.column;
+    const start = this.index;
     for (const symbol of MULTI_SYMBOLS) {
       if (this.source.startsWith(symbol, this.index)) {
         this.advance(symbol.length);
-        return { type: "symbol", value: symbol, line, column };
+        return this.makeToken("symbol", symbol, start, line, column);
       }
     }
     const value = this.source[this.index];
     this.advance(1);
-    return { type: "symbol", value, line, column };
+    return this.makeToken("symbol", value, start, line, column);
   }
 }
 

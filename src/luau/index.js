@@ -1,66 +1,178 @@
 const { RNG } = require("../utils/rng");
-const { extractDirectives, generateLuau, parseLuau } = require("./ast");
+const { extractDirectives } = require("./ast");
 const {
   parseLuau: parseLuauCustom,
   generateLuau: generateLuauCustom,
+  validate: validateLuau,
+  buildCFG: buildLuauCFG,
+  buildSSA: buildLuauSSA,
+  buildIR: buildLuauIR,
+  buildIRSSA: buildLuauIRSSA,
+  traverse: traverseLuau,
+  buildScope: buildLuauScope,
+  factory: luauFactory,
+  diagnostics: luauDiagnostics,
 } = require("./custom");
 const { stringEncode: stringEncodeCustom } = require("./custom/strings");
 const { stringEncode } = require("./strings");
+const { splitStringsLuau } = require("./splitStrings");
 const { controlFlowFlatten } = require("./cff");
+const { numbersToExpressions } = require("./numbersToExpressions");
+const { constantArrayLuau } = require("./constArray");
 const { renameLuau } = require("./rename");
+const { maskGlobalsLuau } = require("./maskGlobals");
 const { virtualizeLuau } = require("./vm");
 const { antiHookLuau } = require("./antiHook");
 const { encodeMembers } = require("./encodeMembers");
 const { injectDeadCode } = require("./dead");
 const { entryLuau } = require("./entry");
+const { wrapInFunction } = require("./wrap");
+const { proxifyLocals } = require("./proxifyLocals");
+const { padFooterLuau } = require("./padFooter");
 
 async function obfuscateLuau(source, options) {
   const rng = new RNG(options.seed);
   const directives = extractDirectives(source);
-  const useCustom = options.luauParser === "custom";
+  const useCustom = true;
   const vmEnabled = options.vm === true || (options.vm && options.vm.enabled);
   const cffMode = options.cffOptions && options.cffOptions.mode
     ? options.cffOptions.mode
     : "vm";
   const useVmCff = Boolean(options.cff && cffMode === "vm");
-  const parseOptions = useCustom ? null : { ...options, luaVersion: options.luaVersion || "5.3" };
-  const vmParseOptions = useCustom ? null : { ...parseOptions, luaVersion: "5.3" };
-  const ast = useCustom ? parseLuauCustom(source) : parseLuau(source, parseOptions);
+  const ast = parseLuauCustom(source);
+  const validateAst = options.validateAst === true;
+  if (validateAst) {
+    validateLuau(ast, { throw: true });
+  }
+
+  const analysis = {
+    scope: null,
+    cfg: null,
+    ssa: null,
+    ir: null,
+    irSSA: null,
+  };
+  const getScope = () => {
+    if (!analysis.scope) {
+      analysis.scope = buildLuauScope(ast, { includeTypes: true });
+    }
+    return analysis.scope;
+  };
+  const getCFG = () => {
+    if (!analysis.cfg) {
+      analysis.cfg = buildLuauCFG(ast);
+    }
+    return analysis.cfg;
+  };
+  const getSSA = () => {
+    if (!analysis.ssa) {
+      analysis.ssa = buildLuauSSA(getCFG());
+    }
+    return analysis.ssa;
+  };
+  const getIR = () => {
+    if (!analysis.ir) {
+      analysis.ir = buildLuauIR(ast);
+    }
+    return analysis.ir;
+  };
+  const getIRSSA = () => {
+    if (!analysis.irSSA) {
+      analysis.irSSA = buildLuauIRSSA(getIR());
+    }
+    return analysis.irSSA;
+  };
+  const invalidateAnalysis = () => {
+    analysis.scope = null;
+    analysis.cfg = null;
+    analysis.ssa = null;
+    analysis.ir = null;
+    analysis.irSSA = null;
+  };
 
   const ctx = {
     options,
     rng,
     parseCustom: parseLuauCustom,
-    parseLuaparse: (source) => parseLuau(
-      source,
-      vmEnabled && vmParseOptions ? vmParseOptions : (parseOptions || options)
-    ),
+    parseLuaparse: parseLuauCustom,
+    traverse: traverseLuau,
+    buildScope: buildLuauScope,
+    buildCFG: buildLuauCFG,
+    buildSSA: buildLuauSSA,
+    buildIR: buildLuauIR,
+    buildIRSSA: buildLuauIRSSA,
+    factory: luauFactory,
+    diagnostics: luauDiagnostics,
+    validate: validateLuau,
+    getScope,
+    getCFG,
+    getSSA,
+    getIR,
+    getIRSSA,
+    invalidateAnalysis,
+    raise: (message, node, expected) =>
+      luauDiagnostics.makeDiagnosticErrorFromNode
+        ? luauDiagnostics.makeDiagnosticErrorFromNode(message, node, expected)
+        : luauDiagnostics.makeDiagnosticError(message, node, expected),
   };
 
-  try {
-    entryLuau(ast, ctx);
-  } catch (err) {
-    const message = err && err.message ? err.message : String(err);
-    const wrapped = new Error(`[js-obf] plugin luau-entry failed: ${message}`);
-    if (err && err.stack) {
-      wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-    }
-    wrapped.cause = err;
-    throw wrapped;
-  }
+  const timingEnabled = options.timing !== false;
+  const logTiming = timingEnabled
+    ? (name, durationMs) => {
+        const seconds = (durationMs / 1000).toFixed(3);
+        process.stderr.write(`[js-obf] ${name} ${seconds}s\n`);
+      }
+    : null;
 
-  if (vmEnabled && !useVmCff) {
+  const runLuauPlugin = (name, fn) => {
+    const start = timingEnabled ? process.hrtime.bigint() : null;
     try {
-      virtualizeLuau(ast, ctx);
+      const result = fn();
+      if (validateAst) {
+        validateLuau(ast, { throw: true });
+      }
+      invalidateAnalysis();
+      return result;
     } catch (err) {
       const message = err && err.message ? err.message : String(err);
-      const wrapped = new Error(`[js-obf] plugin luau-vm failed: ${message}`);
+      const wrapped = new Error(`[js-obf] plugin ${name} failed: ${message}`);
       if (err && err.stack) {
         wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
       }
       wrapped.cause = err;
+      if (err && err.diagnostic) {
+        wrapped.diagnostic = err.diagnostic;
+      }
       throw wrapped;
+    } finally {
+      if (timingEnabled) {
+        const end = process.hrtime.bigint();
+        const durationMs = Number(end - start) / 1e6;
+        logTiming(`plugin ${name}`, durationMs);
+      }
     }
+  };
+
+  runLuauPlugin("luau-entry", () => entryLuau(ast, ctx));
+
+  if (options.wrap) {
+    runLuauPlugin("luau-wrap", () => wrapInFunction(ast, ctx));
+  }
+
+  if (options.constArray) {
+    runLuauPlugin("luau-const-array", () => constantArrayLuau(ast, ctx));
+  }
+
+  if (options.stringsOptions && options.stringsOptions.split && !options.strings) {
+    runLuauPlugin("luau-split-strings", () => splitStringsLuau(ast, ctx));
+  }
+
+  if (options.numbers) {
+    runLuauPlugin("luau-numbers", () => numbersToExpressions(ast, ctx));
+  }
+
+  if (vmEnabled && !useVmCff) {
+    runLuauPlugin("luau-vm", () => virtualizeLuau(ast, ctx));
   }
 
   if (options.cff) {
@@ -70,107 +182,65 @@ async function obfuscateLuau(source, options) {
         vmOptions.layers = 1;
       }
       const vmCtx = { ...ctx, options: { ...options, vm: vmOptions } };
-      try {
-        virtualizeLuau(ast, vmCtx);
-      } catch (err) {
-        const message = err && err.message ? err.message : String(err);
-        const wrapped = new Error(`[js-obf] plugin luau-vm-cff failed: ${message}`);
-        if (err && err.stack) {
-          wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-        }
-        wrapped.cause = err;
-        throw wrapped;
-      }
+      runLuauPlugin("luau-vm-cff", () => virtualizeLuau(ast, vmCtx));
     } else {
-      try {
-        controlFlowFlatten(ast, ctx);
-      } catch (err) {
-        const message = err && err.message ? err.message : String(err);
-        const wrapped = new Error(`[js-obf] plugin luau-cff failed: ${message}`);
-        if (err && err.stack) {
-          wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-        }
-        wrapped.cause = err;
-        throw wrapped;
-      }
+      runLuauPlugin("luau-cff", () => controlFlowFlatten(ast, ctx));
     }
   }
 
   if (options.strings) {
-    try {
-      encodeMembers(ast, ctx);
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      const wrapped = new Error(`[js-obf] plugin luau-encodeMembers failed: ${message}`);
-      if (err && err.stack) {
-        wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-      }
-      wrapped.cause = err;
-      throw wrapped;
-    }
+    runLuauPlugin("luau-encodeMembers", () => encodeMembers(ast, ctx));
   }
 
+  if (options.proxifyLocals) {
+    runLuauPlugin("luau-proxifyLocals", () => proxifyLocals(ast, ctx));
+  }
+
+  runLuauPlugin("luau-maskGlobals", () => maskGlobalsLuau(ast, ctx));
+
   if (options.strings) {
-    try {
+    runLuauPlugin("luau-strings", () => {
       if (useCustom) {
         stringEncodeCustom(ast, options, rng);
       } else {
         stringEncode(ast, ctx);
       }
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      const wrapped = new Error(`[js-obf] plugin luau-strings failed: ${message}`);
-      if (err && err.stack) {
-        wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-      }
-      wrapped.cause = err;
-      throw wrapped;
-    }
+    });
   }
 
   if (options.dead) {
-    try {
-      injectDeadCode(ast, ctx);
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      const wrapped = new Error(`[js-obf] plugin luau-dead failed: ${message}`);
-      if (err && err.stack) {
-        wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-      }
-      wrapped.cause = err;
-      throw wrapped;
-    }
+    runLuauPlugin("luau-dead", () => injectDeadCode(ast, ctx));
   }
 
   if (options.antiHook && options.antiHook.enabled) {
-    try {
-      antiHookLuau(ast, ctx);
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      const wrapped = new Error(`[js-obf] plugin luau-antiHook failed: ${message}`);
-      if (err && err.stack) {
-        wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-      }
-      wrapped.cause = err;
-      throw wrapped;
-    }
+    runLuauPlugin("luau-antiHook", () => antiHookLuau(ast, ctx));
   }
 
   if (options.rename) {
-    try {
-      renameLuau(ast, { ...ctx, options });
-    } catch (err) {
-      const message = err && err.message ? err.message : String(err);
-      const wrapped = new Error(`[js-obf] plugin luau-rename failed: ${message}`);
-      if (err && err.stack) {
-        wrapped.stack = `${wrapped.message}\nCaused by: ${err.stack}`;
-      }
-      wrapped.cause = err;
-      throw wrapped;
-    }
+    runLuauPlugin("luau-rename", () => renameLuau(ast, { ...ctx, options }));
   }
 
-  let code = useCustom ? generateLuauCustom(ast) : generateLuau(ast);
+  if (options.padFooter) {
+    runLuauPlugin("luau-pad-footer", () => padFooterLuau(ast, ctx));
+  }
+
+  let cfg = null;
+  if (options.cfg === true) {
+    cfg = getCFG();
+  }
+  let ssa = null;
+  if (options.ssa === true) {
+    ssa = getSSA();
+  }
+  let ir = null;
+  if (options.ir === true) {
+    ir = getIR();
+  }
+  let irSSA = null;
+  if (options.irSSA === true) {
+    irSSA = getIRSSA();
+  }
+  let code = generateLuauCustom(ast, { compact: options.compact });
   if (directives) {
     code = `${directives}\n${code}`;
   }
@@ -178,6 +248,10 @@ async function obfuscateLuau(source, options) {
   return {
     code,
     map: null,
+    cfg,
+    ssa,
+    ir,
+    irSSA,
   };
 }
 

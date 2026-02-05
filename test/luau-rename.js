@@ -1,7 +1,6 @@
 const assert = require("assert");
 const { obfuscateLuau } = require("../src/luau");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
-const { parseLuau: parseLuaparse } = require("../src/luau/ast");
 const { walk } = require("../src/luau/ast");
 
 const source = [
@@ -74,6 +73,7 @@ async function runCustom() {
     rename: true,
     strings: false,
     cff: false,
+    renameOptions: { maskGlobals: false },
     seed: "rename-custom",
   });
   const ast = parseCustom(code);
@@ -84,26 +84,8 @@ async function runCustom() {
   assert.ok(hasPrintCall(ast), "custom: print call should remain global");
 }
 
-async function runLuaparse() {
-  const { code } = await obfuscateLuau(source, {
-    lang: "luau",
-    luauParser: "luaparse",
-    rename: true,
-    strings: false,
-    cff: false,
-    seed: "rename-luaparse",
-  });
-  const ast = parseLuaparse(code, {});
-  const locals = collectLocalNames(ast);
-  assert.ok(!locals.has("a"), "luaparse: local a should be renamed");
-  assert.ok(!locals.has("b"), "luaparse: local b should be renamed");
-  assert.ok(hasTableKeyA(ast), "luaparse: table key 'a' should remain");
-  assert.ok(hasPrintCall(ast), "luaparse: print call should remain global");
-}
-
 (async () => {
   await runCustom();
-  await runLuaparse();
   console.log("luau-rename: ok");
 })().catch((err) => {
   console.error(err);

@@ -1,4 +1,5 @@
 const { walk } = require("./ast");
+const { addSSAUsedNames, findSSAForNode } = require("./ssa-utils");
 
 const CONFUSING_CHARS = ["l", "I", "1"];
 
@@ -119,6 +120,7 @@ function injectDeadCode(ast, ctx) {
     return;
   }
   const probability = options.deadCodeOptions?.probability ?? 0.15;
+  const ssaRoot = ctx && typeof ctx.getSSA === "function" ? ctx.getSSA() : null;
 
   walk(ast, (node) => {
     if (!node || (node.type !== "FunctionDeclaration" && node.type !== "FunctionExpression")) {
@@ -133,6 +135,12 @@ function injectDeadCode(ast, ctx) {
     }
     const { statements, style } = info;
     const used = collectIdentifierNames(node);
+    if (ssaRoot) {
+      const ssa = findSSAForNode(ssaRoot, node);
+      if (ssa) {
+        addSSAUsedNames(ssa, used);
+      }
+    }
     const count = rng.int(1, 2);
     const noise = buildNoiseStatements(rng, used, style, count);
     const next = [...noise, ...statements];

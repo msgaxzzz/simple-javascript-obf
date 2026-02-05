@@ -25,7 +25,16 @@ function buildPipeline({ t, traverse, options }) {
     state: {},
   };
 
+  const timingEnabled = Boolean(options.timing);
+  const logTiming = timingEnabled
+    ? (name, durationMs) => {
+        const seconds = (durationMs / 1000).toFixed(3);
+        process.stderr.write(`[js-obf] ${name} ${seconds}s\n`);
+      }
+    : null;
+
   const wrapPlugin = (name, plugin) => (ast) => {
+    const start = timingEnabled ? process.hrtime.bigint() : null;
     try {
       plugin(ast, ctx);
     } catch (err) {
@@ -36,6 +45,12 @@ function buildPipeline({ t, traverse, options }) {
       }
       wrapped.cause = err;
       throw wrapped;
+    } finally {
+      if (timingEnabled) {
+        const end = process.hrtime.bigint();
+        const durationMs = Number(end - start) / 1e6;
+        logTiming(`plugin ${name}`, durationMs);
+      }
     }
   };
 
