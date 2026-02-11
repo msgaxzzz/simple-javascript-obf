@@ -190,7 +190,7 @@ function shouldMask(name, scope, reserved) {
   return !isDefined(scope, name);
 }
 
-function maskExpression(expr, scope, envAlias, reserved) {
+function maskExpression(expr, scope, envAlias, reserved, ctx) {
   if (!expr || typeof expr !== "object") {
     return expr;
   }
@@ -202,50 +202,50 @@ function maskExpression(expr, scope, envAlias, reserved) {
       return expr;
     case "BinaryExpression":
     case "LogicalExpression":
-      expr.left = maskExpression(expr.left, scope, envAlias, reserved);
-      expr.right = maskExpression(expr.right, scope, envAlias, reserved);
+      expr.left = maskExpression(expr.left, scope, envAlias, reserved, ctx);
+      expr.right = maskExpression(expr.right, scope, envAlias, reserved, ctx);
       return expr;
     case "UnaryExpression":
-      expr.argument = maskExpression(expr.argument, scope, envAlias, reserved);
+      expr.argument = maskExpression(expr.argument, scope, envAlias, reserved, ctx);
       return expr;
     case "GroupExpression":
-      expr.expression = maskExpression(expr.expression, scope, envAlias, reserved);
+      expr.expression = maskExpression(expr.expression, scope, envAlias, reserved, ctx);
       return expr;
     case "IndexExpression":
-      expr.base = maskExpression(expr.base, scope, envAlias, reserved);
-      expr.index = maskExpression(expr.index, scope, envAlias, reserved);
+      expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
+      expr.index = maskExpression(expr.index, scope, envAlias, reserved, ctx);
       return expr;
     case "MemberExpression":
-      expr.base = maskExpression(expr.base, scope, envAlias, reserved);
+      expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
       return expr;
     case "CallExpression":
-      expr.base = maskExpression(expr.base, scope, envAlias, reserved);
-      expr.arguments = (expr.arguments || []).map((arg) => maskExpression(arg, scope, envAlias, reserved));
+      expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
+      expr.arguments = (expr.arguments || []).map((arg) => maskExpression(arg, scope, envAlias, reserved, ctx));
       return expr;
     case "MethodCallExpression":
-      expr.base = maskExpression(expr.base, scope, envAlias, reserved);
-      expr.arguments = (expr.arguments || []).map((arg) => maskExpression(arg, scope, envAlias, reserved));
+      expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
+      expr.arguments = (expr.arguments || []).map((arg) => maskExpression(arg, scope, envAlias, reserved, ctx));
       return expr;
     case "TableCallExpression":
-      expr.base = maskExpression(expr.base, scope, envAlias, reserved);
-      expr.arguments = maskExpression(expr.arguments, scope, envAlias, reserved);
+      expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
+      expr.arguments = maskExpression(expr.arguments, scope, envAlias, reserved, ctx);
       return expr;
     case "StringCallExpression":
-      expr.base = maskExpression(expr.base, scope, envAlias, reserved);
-      expr.argument = maskExpression(expr.argument, scope, envAlias, reserved);
+      expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
+      expr.argument = maskExpression(expr.argument, scope, envAlias, reserved, ctx);
       return expr;
     case "TableConstructorExpression":
-      expr.fields.forEach((field) => maskTableField(field, scope, envAlias, reserved));
+      expr.fields.forEach((field) => maskTableField(field, scope, envAlias, reserved, ctx));
       return expr;
     case "IfExpression":
       expr.clauses.forEach((clause) => {
-        clause.condition = maskExpression(clause.condition, scope, envAlias, reserved);
-        clause.value = maskExpression(clause.value, scope, envAlias, reserved);
+        clause.condition = maskExpression(clause.condition, scope, envAlias, reserved, ctx);
+        clause.value = maskExpression(clause.value, scope, envAlias, reserved, ctx);
       });
-      expr.elseValue = maskExpression(expr.elseValue, scope, envAlias, reserved);
+      expr.elseValue = maskExpression(expr.elseValue, scope, envAlias, reserved, ctx);
       return expr;
     case "TypeAssertion":
-      expr.expression = maskExpression(expr.expression, scope, envAlias, reserved);
+      expr.expression = maskExpression(expr.expression, scope, envAlias, reserved, ctx);
       return expr;
     case "InterpolatedString":
       if (expr.parts && Array.isArray(expr.parts)) {
@@ -253,69 +253,69 @@ function maskExpression(expr, scope, envAlias, reserved) {
           if (part && part.type === "InterpolatedStringText") {
             return part;
           }
-          return maskExpression(part, scope, envAlias, reserved);
+          return maskExpression(part, scope, envAlias, reserved, ctx);
         });
       }
       return expr;
     case "FunctionDeclaration":
     case "FunctionExpression":
-      maskFunctionExpression(expr, scope, envAlias, reserved);
+      maskFunctionExpression(expr, scope, envAlias, reserved, ctx);
       return expr;
     default:
       return expr;
   }
 }
 
-function maskTableField(field, scope, envAlias, reserved) {
+function maskTableField(field, scope, envAlias, reserved, ctx) {
   if (!field || typeof field !== "object") {
     return;
   }
   if (field.type === "TableKey") {
-    field.key = maskExpression(field.key, scope, envAlias, reserved);
-    field.value = maskExpression(field.value, scope, envAlias, reserved);
+    field.key = maskExpression(field.key, scope, envAlias, reserved, ctx);
+    field.value = maskExpression(field.value, scope, envAlias, reserved, ctx);
     return;
   }
   if (field.type === "TableKeyString") {
-    field.value = maskExpression(field.value, scope, envAlias, reserved);
+    field.value = maskExpression(field.value, scope, envAlias, reserved, ctx);
     return;
   }
   if (field.type === "TableValue") {
-    field.value = maskExpression(field.value, scope, envAlias, reserved);
+    field.value = maskExpression(field.value, scope, envAlias, reserved, ctx);
     return;
   }
   if (field.kind === "index") {
-    field.key = maskExpression(field.key, scope, envAlias, reserved);
-    field.value = maskExpression(field.value, scope, envAlias, reserved);
+    field.key = maskExpression(field.key, scope, envAlias, reserved, ctx);
+    field.value = maskExpression(field.value, scope, envAlias, reserved, ctx);
   } else if (field.kind === "name") {
-    field.value = maskExpression(field.value, scope, envAlias, reserved);
+    field.value = maskExpression(field.value, scope, envAlias, reserved, ctx);
   } else if (field.kind === "list") {
-    field.value = maskExpression(field.value, scope, envAlias, reserved);
+    field.value = maskExpression(field.value, scope, envAlias, reserved, ctx);
   }
 }
 
-function maskAssignmentTarget(target, scope, envAlias, reserved) {
+function maskAssignmentTarget(target, scope, envAlias, reserved, ctx) {
   if (!target || typeof target !== "object") {
     return target;
   }
   if (target.type === "MemberExpression") {
-    target.base = maskExpression(target.base, scope, envAlias, reserved);
+    target.base = maskExpression(target.base, scope, envAlias, reserved, ctx);
     return target;
   }
   if (target.type === "IndexExpression") {
-    target.base = maskExpression(target.base, scope, envAlias, reserved);
-    target.index = maskExpression(target.index, scope, envAlias, reserved);
+    target.base = maskExpression(target.base, scope, envAlias, reserved, ctx);
+    target.index = maskExpression(target.index, scope, envAlias, reserved, ctx);
     return target;
   }
   return target;
 }
 
-function maskStatementList(body, scope, envAlias, reserved) {
+function maskStatementList(body, scope, envAlias, reserved, ctx) {
   for (const stmt of body) {
-    maskStatement(stmt, scope, envAlias, reserved);
+    maskStatement(stmt, scope, envAlias, reserved, ctx);
   }
 }
 
-function maskStatement(stmt, scope, envAlias, reserved) {
+function maskStatement(stmt, scope, envAlias, reserved, ctx) {
   if (!stmt || typeof stmt !== "object") {
     return;
   }
@@ -325,7 +325,7 @@ function maskStatement(stmt, scope, envAlias, reserved) {
   switch (stmt.type) {
     case "LocalStatement":
       if (stmt.init && stmt.init.length) {
-        stmt.init = stmt.init.map((expr) => maskExpression(expr, scope, envAlias, reserved));
+        stmt.init = stmt.init.map((expr) => maskExpression(expr, scope, envAlias, reserved, ctx));
       }
       stmt.variables.forEach((variable) => {
         if (variable && variable.type === "Identifier") {
@@ -334,61 +334,61 @@ function maskStatement(stmt, scope, envAlias, reserved) {
       });
       return;
     case "AssignmentStatement":
-      stmt.init = stmt.init.map((expr) => maskExpression(expr, scope, envAlias, reserved));
-      stmt.variables = stmt.variables.map((variable) => maskAssignmentTarget(variable, scope, envAlias, reserved));
+      stmt.init = stmt.init.map((expr) => maskExpression(expr, scope, envAlias, reserved, ctx));
+      stmt.variables = stmt.variables.map((variable) => maskAssignmentTarget(variable, scope, envAlias, reserved, ctx));
       return;
     case "CompoundAssignmentStatement":
-      stmt.value = maskExpression(stmt.value, scope, envAlias, reserved);
-      stmt.variable = maskAssignmentTarget(stmt.variable, scope, envAlias, reserved);
+      stmt.value = maskExpression(stmt.value, scope, envAlias, reserved, ctx);
+      stmt.variable = maskAssignmentTarget(stmt.variable, scope, envAlias, reserved, ctx);
       return;
     case "CallStatement":
-      stmt.expression = maskExpression(stmt.expression, scope, envAlias, reserved);
+      stmt.expression = maskExpression(stmt.expression, scope, envAlias, reserved, ctx);
       return;
     case "ReturnStatement":
-      stmt.arguments = stmt.arguments.map((expr) => maskExpression(expr, scope, envAlias, reserved));
+      stmt.arguments = stmt.arguments.map((expr) => maskExpression(expr, scope, envAlias, reserved, ctx));
       return;
     case "IfStatement":
-      maskIfStatement(stmt, scope, envAlias, reserved);
+      maskIfStatement(stmt, scope, envAlias, reserved, ctx);
       return;
     case "WhileStatement":
-      stmt.condition = maskExpression(stmt.condition, scope, envAlias, reserved);
-      maskScopedBody(stmt.body, scope, envAlias, reserved);
+      stmt.condition = maskExpression(stmt.condition, scope, envAlias, reserved, ctx);
+      maskScopedBody(stmt.body, scope, envAlias, reserved, ctx);
       return;
     case "RepeatStatement": {
       const repeatScope = createScope(scope);
-      maskScopedBody(stmt.body, repeatScope, envAlias, reserved);
-      stmt.condition = maskExpression(stmt.condition, repeatScope, envAlias, reserved);
+      maskScopedBody(stmt.body, repeatScope, envAlias, reserved, ctx);
+      stmt.condition = maskExpression(stmt.condition, repeatScope, envAlias, reserved, ctx);
       return;
     }
     case "ForNumericStatement": {
-      stmt.start = maskExpression(stmt.start, scope, envAlias, reserved);
-      stmt.end = maskExpression(stmt.end, scope, envAlias, reserved);
+      stmt.start = maskExpression(stmt.start, scope, envAlias, reserved, ctx);
+      stmt.end = maskExpression(stmt.end, scope, envAlias, reserved, ctx);
       if (stmt.step) {
-        stmt.step = maskExpression(stmt.step, scope, envAlias, reserved);
+        stmt.step = maskExpression(stmt.step, scope, envAlias, reserved, ctx);
       }
       const loopScope = createScope(scope);
       if (stmt.variable && stmt.variable.type === "Identifier") {
         defineName(loopScope, stmt.variable.name);
       }
-      maskScopedBody(stmt.body, loopScope, envAlias, reserved);
+      maskScopedBody(stmt.body, loopScope, envAlias, reserved, ctx);
       return;
     }
     case "ForGenericStatement": {
-      stmt.iterators = stmt.iterators.map((expr) => maskExpression(expr, scope, envAlias, reserved));
+      stmt.iterators = stmt.iterators.map((expr) => maskExpression(expr, scope, envAlias, reserved, ctx));
       const loopScope = createScope(scope);
       stmt.variables.forEach((variable) => {
         if (variable && variable.type === "Identifier") {
           defineName(loopScope, variable.name);
         }
       });
-      maskScopedBody(stmt.body, loopScope, envAlias, reserved);
+      maskScopedBody(stmt.body, loopScope, envAlias, reserved, ctx);
       return;
     }
     case "DoStatement":
-      maskScopedBody(stmt.body, scope, envAlias, reserved);
+      maskScopedBody(stmt.body, scope, envAlias, reserved, ctx);
       return;
     case "FunctionDeclaration":
-      maskFunctionDeclaration(stmt, scope, envAlias, reserved);
+      maskFunctionDeclaration(stmt, scope, envAlias, reserved, ctx);
       return;
     case "BreakStatement":
     case "ContinueStatement":
@@ -404,7 +404,7 @@ function maskStatement(stmt, scope, envAlias, reserved) {
   }
 }
 
-function maskFunctionDeclaration(stmt, scope, envAlias, reserved) {
+function maskFunctionDeclaration(stmt, scope, envAlias, reserved, ctx) {
   const fnScope = createScope(scope);
 
   let isLocal = Boolean(stmt.isLocal);
@@ -434,14 +434,14 @@ function maskFunctionDeclaration(stmt, scope, envAlias, reserved) {
 
   if (stmt.body) {
     if (Array.isArray(stmt.body)) {
-      maskStatementList(stmt.body, fnScope, envAlias, reserved);
+      maskStatementList(stmt.body, fnScope, envAlias, reserved, ctx);
     } else if (stmt.body.body && Array.isArray(stmt.body.body)) {
-      maskStatementList(stmt.body.body, fnScope, envAlias, reserved);
+      maskStatementList(stmt.body.body, fnScope, envAlias, reserved, ctx);
     }
   }
 }
 
-function maskFunctionExpression(expr, scope, envAlias, reserved) {
+function maskFunctionExpression(expr, scope, envAlias, reserved, ctx) {
   const fnScope = createScope(scope);
 
   if (expr.identifier && expr.identifier.type === "Identifier") {
@@ -458,14 +458,14 @@ function maskFunctionExpression(expr, scope, envAlias, reserved) {
 
   if (expr.body) {
     if (Array.isArray(expr.body)) {
-      maskStatementList(expr.body, fnScope, envAlias, reserved);
+      maskStatementList(expr.body, fnScope, envAlias, reserved, ctx);
     } else if (expr.body.body && Array.isArray(expr.body.body)) {
-      maskStatementList(expr.body.body, fnScope, envAlias, reserved);
+      maskStatementList(expr.body.body, fnScope, envAlias, reserved, ctx);
     }
   }
 }
 
-function maskIfStatement(stmt, scope, envAlias, reserved) {
+function maskIfStatement(stmt, scope, envAlias, reserved, ctx) {
   if (!stmt.clauses || !stmt.clauses.length) {
     return;
   }
@@ -473,36 +473,36 @@ function maskIfStatement(stmt, scope, envAlias, reserved) {
   if (firstClause && typeof firstClause.type === "string") {
     stmt.clauses.forEach((clause) => {
       if (clause.type !== "ElseClause") {
-        clause.condition = maskExpression(clause.condition, scope, envAlias, reserved);
+        clause.condition = maskExpression(clause.condition, scope, envAlias, reserved, ctx);
       }
       const clauseScope = createScope(scope);
-      maskStatementList(clause.body, clauseScope, envAlias, reserved);
+      maskStatementList(clause.body, clauseScope, envAlias, reserved, ctx);
     });
     return;
   }
   stmt.clauses.forEach((clause) => {
-    clause.condition = maskExpression(clause.condition, scope, envAlias, reserved);
+    clause.condition = maskExpression(clause.condition, scope, envAlias, reserved, ctx);
     const clauseScope = createScope(scope);
     if (clause.body && clause.body.body) {
-      maskStatementList(clause.body.body, clauseScope, envAlias, reserved);
+      maskStatementList(clause.body.body, clauseScope, envAlias, reserved, ctx);
     }
   });
   if (stmt.elseBody) {
     const elseScope = createScope(scope);
     if (stmt.elseBody.body) {
-      maskStatementList(stmt.elseBody.body, elseScope, envAlias, reserved);
+      maskStatementList(stmt.elseBody.body, elseScope, envAlias, reserved, ctx);
     }
   }
 }
 
-function maskScopedBody(body, parentScope, envAlias, reserved) {
+function maskScopedBody(body, parentScope, envAlias, reserved, ctx) {
   const scope = createScope(parentScope);
   if (Array.isArray(body)) {
-    maskStatementList(body, scope, envAlias, reserved);
+    maskStatementList(body, scope, envAlias, reserved, ctx);
     return;
   }
   if (body && Array.isArray(body.body)) {
-    maskStatementList(body.body, scope, envAlias, reserved);
+    maskStatementList(body.body, scope, envAlias, reserved, ctx);
   }
 }
 
@@ -537,7 +537,7 @@ function maskGlobalsLuau(ast, ctx) {
     reserved.add(getfAlias);
   }
   if (Array.isArray(ast.body)) {
-    maskStatementList(ast.body, rootScope, envAlias, reserved);
+    maskStatementList(ast.body, rootScope, envAlias, reserved, ctx);
   }
 }
 

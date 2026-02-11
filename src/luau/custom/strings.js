@@ -274,6 +274,7 @@ function stringEncode(ast, options, rng) {
   const splitEnabled = Boolean(options.stringsOptions.split);
   const splitMin = options.stringsOptions.splitMin ?? 12;
   const splitMaxParts = options.stringsOptions.splitMaxParts ?? 3;
+  const encodeValueFallback = options.stringsOptions.encodeValueFallback !== false;
 
   const usedNames = collectIdentifierNames(ast);
   const nameFor = makeNameFactory(rng, usedNames);
@@ -383,11 +384,15 @@ function stringEncode(ast, options, rng) {
     if (node.type !== "StringLiteral") {
       return;
     }
-    const decoded = decodeRawString(node.raw);
+    const raw = typeof node.raw === "string" ? node.raw : null;
+    let decoded = raw ? decodeRawString(raw) : null;
+    if (decoded == null && encodeValueFallback && typeof node.value === "string") {
+      decoded = node.value;
+    }
     if (decoded == null) {
       return;
     }
-    const replacement = encodeStringValue(decoded, node.raw);
+    const replacement = encodeStringValue(decoded, raw);
     if (!replacement || !parent || key === null || key === undefined) {
       return;
     }

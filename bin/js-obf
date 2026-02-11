@@ -27,6 +27,8 @@ Options:
   --strings-split-min <n>    Minimum length to split (Luau, default 12)
   --strings-split-max-parts <n>  Max fragments (Luau, default 3)
   --strings-segment-size <n>    Max entries per Luau string pool (default 120)
+  --strings-value-fallback      Encode StringLiteral.value when raw is missing (Luau, default on)
+  --no-strings-value-fallback   Disable value fallback for string encoding (Luau)
   --const-array              Extract constants into a table (Luau)
   --no-const-array           Disable constant extraction (Luau)
   --const-array-threshold <0-1>  Constant extraction probability (default 1)
@@ -65,6 +67,8 @@ Options:
   --no-dead                  Disable dead code injection
   --vm                       Enable VM virtualization (see README limits)
   --vm-layers <n>            VM layers (Luau, default 1)
+  --vm-top-level             Virtualize Luau top-level chunk
+  --no-vm-top-level          Do not virtualize Luau top-level chunk (default)
   --vm-include <a,b,c>        Only virtualize specified function names
   --vm-opcode-shuffle        Enable VM opcode shuffle (default: on)
   --no-vm-opcode-shuffle     Disable VM opcode shuffle
@@ -81,6 +85,17 @@ Options:
   --no-vm-runtime-key        Disable runtime key for Luau VM bytecode
   --vm-runtime-split         Split Luau VM bytecode into parts (default: on)
   --no-vm-runtime-split      Disable runtime bytecode split
+  --vm-decoy-runtime         Inject fake VM/runtime bait blocks (default: on)
+  --no-vm-decoy-runtime      Disable fake VM/runtime bait blocks
+  --vm-decoy-probability <0-1>  Probability of decoy VM bait insertion (default: 0.85)
+  --vm-decoy-strings <n>     Number of fake decoy VM strings (default: 12)
+  --vm-numeric-style <plain|mixed|chaos>  Numeric literal style for Luau VM output
+  --vm-dispatch-graph <auto|tree|sparse>  Luau VM dispatch graph style
+  --vm-stack-protocol <auto|direct|api>   Luau VM stack protocol style
+  --vm-isa-polymorph         Enable polymorphic Luau VM ISA variants
+  --no-vm-isa-polymorph      Disable polymorphic Luau VM ISA variants
+  --vm-fake-edges            Enable fake edges in sparse Luau dispatch graph
+  --no-vm-fake-edges         Disable fake edges in sparse Luau dispatch graph
   --vm-block-dispatch         Use block-dispatch VM (Luau, hides bytecode table)
   --no-vm-block-dispatch      Use table-driven VM (default)
   --vm-downlevel             Allow VM to downlevel let/const to var
@@ -183,6 +198,14 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--vm-top-level") {
+      options.vmTopLevel = true;
+      continue;
+    }
+    if (arg === "--no-vm-top-level") {
+      options.vmTopLevel = false;
+      continue;
+    }
     if (arg === "--vm-include") {
       options.vmInclude = (args[i + 1] || "").split(",").filter(Boolean);
       i += 1;
@@ -251,6 +274,50 @@ function parseArgs(argv) {
       options.vmRuntimeSplit = false;
       continue;
     }
+    if (arg === "--vm-decoy-runtime") {
+      options.vmDecoyRuntime = true;
+      continue;
+    }
+    if (arg === "--no-vm-decoy-runtime") {
+      options.vmDecoyRuntime = false;
+      continue;
+    }
+    if (arg === "--vm-decoy-probability") {
+      options.vmDecoyProbability = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-decoy-strings") {
+      options.vmDecoyStrings = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-dispatch-graph") {
+      options.vmDispatchGraph = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-stack-protocol") {
+      options.vmStackProtocol = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-isa-polymorph") {
+      options.vmIsaPolymorph = true;
+      continue;
+    }
+    if (arg === "--no-vm-isa-polymorph") {
+      options.vmIsaPolymorph = false;
+      continue;
+    }
+    if (arg === "--vm-fake-edges") {
+      options.vmFakeEdges = true;
+      continue;
+    }
+    if (arg === "--no-vm-fake-edges") {
+      options.vmFakeEdges = false;
+      continue;
+    }
     if (arg === "--vm-block-dispatch") {
       options.vmBlockDispatch = true;
       continue;
@@ -265,6 +332,11 @@ function parseArgs(argv) {
     }
     if (arg === "--vm-debug") {
       options.vmDebug = true;
+      continue;
+    }
+    if (arg === "--vm-numeric-style") {
+      options.vmNumericStyle = args[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--no-rename") {
@@ -328,6 +400,14 @@ function parseArgs(argv) {
     if (arg === "--strings-segment-size") {
       options.stringsSegmentSize = args[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === "--strings-value-fallback") {
+      options.stringsValueFallback = true;
+      continue;
+    }
+    if (arg === "--no-strings-value-fallback") {
+      options.stringsValueFallback = false;
       continue;
     }
     if (arg === "--const-array") {
@@ -552,6 +632,7 @@ async function main() {
       splitMin: options.stringsSplitMin,
       splitMaxParts: options.stringsSplitMaxParts,
       segmentSize: options.stringsSegmentSize,
+      encodeValueFallback: options.stringsValueFallback,
     },
     constArray: options.constArray,
     constArrayOptions: {
@@ -594,6 +675,7 @@ async function main() {
       enabled: Boolean(options.vm),
       include: options.vmInclude,
       layers: options.vmLayers,
+      topLevel: options.vmTopLevel,
       opcodeShuffle: options.vmOpcodeShuffle,
       fakeOpcodes: options.vmFakeOpcodes,
       bytecodeEncrypt: options.vmBytecode,
@@ -603,7 +685,15 @@ async function main() {
       constsSplitSize: options.vmConstsSplitSize,
       runtimeKey: options.vmRuntimeKey,
       runtimeSplit: options.vmRuntimeSplit,
+      decoyRuntime: options.vmDecoyRuntime,
+      decoyProbability: options.vmDecoyProbability,
+      decoyStrings: options.vmDecoyStrings,
       blockDispatch: options.vmBlockDispatch,
+      dispatchGraph: options.vmDispatchGraph,
+      stackProtocol: options.vmStackProtocol,
+      isaPolymorph: options.vmIsaPolymorph,
+      fakeEdges: options.vmFakeEdges,
+      numericStyle: options.vmNumericStyle,
       downlevel: options.vmDownlevel,
       debug: options.vmDebug,
     },

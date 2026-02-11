@@ -340,6 +340,48 @@
 
     .muted { color: var(--muted); font-size: 12px; }
 
+    .lang-group {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffaf3;
+      padding: 10px 12px;
+      margin-top: 12px;
+    }
+
+    .lang-group[open] {
+      background: #fff6ea;
+    }
+
+    .lang-group > summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--accent-2);
+      user-select: none;
+    }
+
+    .lang-group > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .lang-group > summary::before {
+      content: "\25B8";
+      display: inline-block;
+      margin-right: 8px;
+      transition: transform 0.2s ease;
+    }
+
+    .lang-group[open] > summary::before {
+      transform: rotate(90deg);
+    }
+
+    .lang-group-body {
+      margin-top: 10px;
+    }
+
     .divider {
       height: 1px;
       background: var(--line);
@@ -428,7 +470,6 @@
           <input id="seed" type="text" value="js-obf" />
         </div>
       </div>
-      <div class="divider"></div>
       <div class="row two">
         <div>
           <label for="lang">Language</label>
@@ -436,13 +477,6 @@
             <option value="js">JavaScript</option>
             <option value="luau">Luau</option>
           </select>
-        </div>
-      </div>
-      <div class="divider"></div>
-      <div class="row two">
-        <div>
-          <label for="ecma">ECMA Target</label>
-          <input id="ecma" type="number" min="5" max="2024" value="2020" />
         </div>
         <div>
           <label for="include">VM Include (comma)</label>
@@ -455,82 +489,141 @@
           <label class="checkbox"><input id="optRename" type="checkbox" checked /> Rename identifiers</label>
           <label class="checkbox"><input id="optStrings" type="checkbox" checked /> Encrypt strings</label>
           <label class="checkbox"><input id="optCff" type="checkbox" checked /> Control-flow flattening</label>
-          <label class="checkbox"><input id="optCffDownlevel" type="checkbox" /> CFF downlevel let/const</label>
           <label class="checkbox"><input id="optDead" type="checkbox" checked /> Dead-code injection</label>
+          <label class="checkbox"><input id="optVm" type="checkbox" /> VM virtualization</label>
         </div>
         <div>
-          <label class="checkbox"><input id="optVm" type="checkbox" /> VM virtualization</label>
           <label class="checkbox"><input id="optAntiHook" type="checkbox" /> Anti-hook guard</label>
           <label class="checkbox"><input id="optAntiHookLock" type="checkbox" /> Lock built-ins (anti-hook)</label>
           <label class="checkbox"><input id="optSourceMap" type="checkbox" /> Emit source map</label>
-          <label class="checkbox"><input id="optMinify" type="checkbox" checked /> Minify output (Terser)</label>
-          <label class="checkbox"><input id="optBeautify" type="checkbox" /> Beautify output (requires minify)</label>
           <label class="checkbox"><input id="optCompact" type="checkbox" /> Compact output (JS) / one line (Luau)</label>
+          <label class="checkbox"><input id="optTiming" type="checkbox" checked /> Print plugin timings</label>
         </div>
       </div>
-      <div class="divider"></div>
-      <div class="row two">
-        <div>
-          <label class="chip">String options</label>
-          <label class="checkbox"><input id="optStringsObjectKeys" type="checkbox" checked /> Encode object keys</label>
-          <label class="checkbox"><input id="optStringsJsxAttrs" type="checkbox" checked /> Encode JSX attrs</label>
-          <label class="checkbox"><input id="optStringsTemplate" type="checkbox" checked /> Encode template chunks</label>
-          <label class="checkbox"><input id="optStringsSplit" type="checkbox" /> Split long strings</label>
-          <label for="optStringsSplitMin">Split min length</label>
-          <input id="optStringsSplitMin" type="number" min="2" value="12" />
-          <label for="optStringsSplitMax">Split max parts</label>
-          <input id="optStringsSplitMax" type="number" min="2" max="6" value="3" />
+
+      <details id="groupJsOptions" class="lang-group" open>
+        <summary>JavaScript Options</summary>
+        <div class="lang-group-body row two">
+          <div>
+            <label for="ecma">ECMA Target</label>
+            <input id="ecma" type="number" min="5" max="2024" value="2020" />
+            <label class="checkbox"><input id="optMinify" type="checkbox" checked /> Minify output (Terser)</label>
+            <label class="checkbox"><input id="optBeautify" type="checkbox" /> Beautify output (requires minify)</label>
+            <label class="checkbox"><input id="optCffDownlevel" type="checkbox" /> CFF downlevel let/const</label>
+          </div>
+          <div>
+            <label class="chip">String Options (JS)</label>
+            <label class="checkbox"><input id="optStringsObjectKeys" type="checkbox" checked /> Encode object keys</label>
+            <label class="checkbox"><input id="optStringsJsxAttrs" type="checkbox" checked /> Encode JSX attrs</label>
+            <label class="checkbox"><input id="optStringsTemplate" type="checkbox" checked /> Encode template chunks</label>
+          </div>
         </div>
-        <div>
-          <label class="chip">VM options</label>
-          <label class="checkbox"><input id="optVmOpcode" type="checkbox" checked /> Opcode shuffle</label>
-          <label class="checkbox"><input id="optVmBytecode" type="checkbox" checked /> Bytecode decrypt</label>
-          <label class="checkbox"><input id="optVmConsts" type="checkbox" checked /> Consts decrypt</label>
-          <label class="checkbox"><input id="optVmConstsSplit" type="checkbox" checked /> Consts split (Luau)</label>
-          <label for="optVmConstsSplitSize">Consts split size (Luau)</label>
-          <input id="optVmConstsSplitSize" type="number" min="4" max="200" value="24" />
-          <label for="optVmConstsEncoding">Consts encoding (Luau)</label>
-          <select id="optVmConstsEncoding">
-            <option value="table">table</option>
-            <option value="string">string</option>
-          </select>
-          <label class="checkbox"><input id="optVmRuntimeKey" type="checkbox" checked /> Runtime key (Luau)</label>
-          <label class="checkbox"><input id="optVmRuntimeSplit" type="checkbox" checked /> Runtime split (Luau)</label>
-          <label class="checkbox"><input id="optVmBlockDispatch" type="checkbox" /> Block dispatch (Luau)</label>
-          <label class="checkbox"><input id="optVmDownlevel" type="checkbox" /> Downlevel let/const</label>
-          <label for="optVmLayers">VM layers (Luau)</label>
-          <input id="optVmLayers" type="number" min="1" max="3" value="1" />
-          <label>Fake opcode ratio (0-1)</label>
-          <input id="optVmFake" type="number" min="0" max="1" step="0.01" value="0.15" />
+      </details>
+
+      <details id="groupLuauOptions" class="lang-group">
+        <summary>Luau Options</summary>
+        <div class="lang-group-body row two">
+          <div>
+            <label class="chip">String + CFF (Luau)</label>
+            <label class="checkbox"><input id="optStringsSplit" type="checkbox" /> Split long strings</label>
+            <label for="optStringsSplitMin">Split min length</label>
+            <input id="optStringsSplitMin" type="number" min="2" value="12" />
+            <label for="optStringsSplitMax">Split max parts</label>
+            <input id="optStringsSplitMax" type="number" min="2" max="6" value="3" />
+            <label for="optStringsSegmentSize">Segment size</label>
+            <input id="optStringsSegmentSize" type="number" min="1" value="120" />
+            <label class="checkbox"><input id="optStringsValueFallback" type="checkbox" checked /> Encode value-fallback literals</label>
+            <label for="optCffMode">CFF mode</label>
+            <select id="optCffMode">
+              <option value="vm">vm</option>
+              <option value="classic">classic</option>
+            </select>
+            <label class="checkbox"><input id="optCffOpaque" type="checkbox" checked /> Opaque predicates</label>
+
+            <label class="chip">Rename + Extras (Luau)</label>
+            <label class="checkbox"><input id="optRenameGlobals" type="checkbox" /> Rename globals</label>
+            <label class="checkbox"><input id="optRenameMembers" type="checkbox" /> Rename members</label>
+            <label class="checkbox"><input id="optRenameHomoglyphs" type="checkbox" /> Homoglyph alphabet</label>
+            <label class="checkbox"><input id="optMaskGlobals" type="checkbox" checked /> Mask globals via _ENV</label>
+            <label class="checkbox"><input id="optWrap" type="checkbox" /> Wrap in function</label>
+            <label for="optWrapIterations">Wrap iterations</label>
+            <input id="optWrapIterations" type="number" min="1" max="6" value="1" />
+            <label class="checkbox"><input id="optProxifyLocals" type="checkbox" /> Proxify locals</label>
+            <label class="checkbox"><input id="optNumbers" type="checkbox" checked /> Numbers to expressions</label>
+            <label for="optNumbersThreshold">Numbers threshold (0-1)</label>
+            <input id="optNumbersThreshold" type="number" min="0" max="1" step="0.01" value="1" />
+            <label for="optNumbersInner">Numbers inner chance (0-1)</label>
+            <input id="optNumbersInner" type="number" min="0" max="1" step="0.01" value="0.2" />
+            <label for="optNumbersDepth">Numbers max depth</label>
+            <input id="optNumbersDepth" type="number" min="1" max="12" value="6" />
+            <label class="checkbox"><input id="optConstArray" type="checkbox" checked /> Constant array</label>
+            <label for="optConstArrayThreshold">Const-array threshold (0-1)</label>
+            <input id="optConstArrayThreshold" type="number" min="0" max="1" step="0.01" value="1" />
+            <label class="checkbox"><input id="optConstArrayStringsOnly" type="checkbox" /> Const-array strings only</label>
+            <label class="checkbox"><input id="optConstArrayShuffle" type="checkbox" checked /> Const-array shuffle</label>
+            <label class="checkbox"><input id="optConstArrayRotate" type="checkbox" checked /> Const-array rotate</label>
+            <label class="checkbox"><input id="optConstArrayWrapper" type="checkbox" checked /> Const-array wrapper</label>
+            <label for="optConstArrayEncoding">Const-array encoding</label>
+            <select id="optConstArrayEncoding">
+              <option value="base64">base64</option>
+              <option value="none">none</option>
+            </select>
+            <label class="checkbox"><input id="optPadFooter" type="checkbox" checked /> Pad footer noise</label>
+            <label for="optPadFooterBlocks">Pad footer blocks</label>
+            <input id="optPadFooterBlocks" type="number" min="1" max="8" value="2" />
+          </div>
+
+          <div>
+            <label class="chip">VM (Luau)</label>
+            <label class="checkbox"><input id="optVmOpcode" type="checkbox" checked /> Opcode shuffle</label>
+            <label class="checkbox"><input id="optVmBytecode" type="checkbox" checked /> Bytecode decrypt</label>
+            <label class="checkbox"><input id="optVmConsts" type="checkbox" checked /> Consts decrypt</label>
+            <label class="checkbox"><input id="optVmConstsSplit" type="checkbox" checked /> Consts split</label>
+            <label for="optVmConstsSplitSize">Consts split size</label>
+            <input id="optVmConstsSplitSize" type="number" min="4" max="200" value="24" />
+            <label for="optVmConstsEncoding">Consts encoding</label>
+            <select id="optVmConstsEncoding">
+              <option value="table">table</option>
+              <option value="string">string</option>
+            </select>
+            <label class="checkbox"><input id="optVmRuntimeKey" type="checkbox" checked /> Runtime key</label>
+            <label class="checkbox"><input id="optVmRuntimeSplit" type="checkbox" checked /> Runtime split</label>
+            <label class="checkbox"><input id="optVmTopLevel" type="checkbox" /> Top-level VM</label>
+            <label class="checkbox"><input id="optVmBlockDispatch" type="checkbox" checked /> Block dispatch</label>
+            <label class="checkbox"><input id="optVmDownlevel" type="checkbox" /> Downlevel let/const</label>
+            <label class="checkbox"><input id="optVmDecoyRuntime" type="checkbox" checked /> Decoy runtime</label>
+            <label class="checkbox"><input id="optVmIsaPolymorph" type="checkbox" checked /> ISA polymorph</label>
+            <label class="checkbox"><input id="optVmFakeEdges" type="checkbox" checked /> Fake dispatch edges</label>
+            <label class="checkbox"><input id="optVmDebug" type="checkbox" /> VM debug logs</label>
+            <label for="optVmLayers">VM layers</label>
+            <input id="optVmLayers" type="number" min="1" max="3" value="1" />
+            <label for="optVmFake">Fake opcode ratio (0-1)</label>
+            <input id="optVmFake" type="number" min="0" max="1" step="0.01" value="0.15" />
+            <label for="optVmDecoyProbability">Decoy probability (0-1)</label>
+            <input id="optVmDecoyProbability" type="number" min="0" max="1" step="0.01" value="0.85" />
+            <label for="optVmDecoyStrings">Decoy string count</label>
+            <input id="optVmDecoyStrings" type="number" min="4" max="96" value="12" />
+            <label for="optVmDispatchGraph">Dispatch graph</label>
+            <select id="optVmDispatchGraph">
+              <option value="auto">auto</option>
+              <option value="tree">tree</option>
+              <option value="sparse">sparse</option>
+            </select>
+            <label for="optVmStackProtocol">Stack protocol</label>
+            <select id="optVmStackProtocol">
+              <option value="auto">auto</option>
+              <option value="direct">direct</option>
+              <option value="api">api</option>
+            </select>
+            <label for="optVmNumericStyle">Numeric style</label>
+            <select id="optVmNumericStyle">
+              <option value="chaos">chaos</option>
+              <option value="mixed">mixed</option>
+              <option value="plain">plain</option>
+            </select>
+          </div>
         </div>
-      </div>
-      <div class="divider"></div>
-      <div class="row two">
-        <div>
-          <label class="chip">Rename options</label>
-          <label class="checkbox"><input id="optRenameGlobals" type="checkbox" /> Rename globals (Luau)</label>
-          <label class="checkbox"><input id="optRenameMembers" type="checkbox" /> Rename members (Luau)</label>
-          <label class="checkbox"><input id="optRenameHomoglyphs" type="checkbox" /> Homoglyph alphabet (Luau)</label>
-          <label class="checkbox"><input id="optMaskGlobals" type="checkbox" checked /> Mask globals via _ENV (Luau)</label>
-          <label class="chip">Luau extras</label>
-          <label class="checkbox"><input id="optWrap" type="checkbox" /> Wrap in function</label>
-          <label for="optWrapIterations">Wrap iterations</label>
-          <input id="optWrapIterations" type="number" min="1" max="6" value="1" />
-          <label class="checkbox"><input id="optProxifyLocals" type="checkbox" /> Proxify locals</label>
-          <label class="checkbox"><input id="optNumbers" type="checkbox" checked /> Numbers to expressions</label>
-          <label class="checkbox"><input id="optConstArray" type="checkbox" checked /> Constant array</label>
-          <label class="checkbox"><input id="optPadFooter" type="checkbox" checked /> Pad footer noise</label>
-        </div>
-        <div>
-          <label class="chip">CFF options</label>
-          <label for="optCffMode">CFF mode (Luau)</label>
-          <select id="optCffMode">
-            <option value="vm">vm</option>
-            <option value="classic">classic</option>
-          </select>
-          <label class="checkbox"><input id="optCffOpaque" type="checkbox" checked /> Opaque predicates</label>
-        </div>
-      </div>
+      </details>
         </section>
       </div>
 
@@ -587,6 +680,7 @@
     const optMinify = document.getElementById("optMinify");
     const optBeautify = document.getElementById("optBeautify");
     const optCompact = document.getElementById("optCompact");
+    const optTiming = document.getElementById("optTiming");
 
     const optStringsObjectKeys = document.getElementById("optStringsObjectKeys");
     const optStringsJsxAttrs = document.getElementById("optStringsJsxAttrs");
@@ -594,6 +688,8 @@
     const optStringsSplit = document.getElementById("optStringsSplit");
     const optStringsSplitMin = document.getElementById("optStringsSplitMin");
     const optStringsSplitMax = document.getElementById("optStringsSplitMax");
+    const optStringsSegmentSize = document.getElementById("optStringsSegmentSize");
+    const optStringsValueFallback = document.getElementById("optStringsValueFallback");
 
     const optVmOpcode = document.getElementById("optVmOpcode");
     const optVmBytecode = document.getElementById("optVmBytecode");
@@ -603,10 +699,20 @@
     const optVmConstsEncoding = document.getElementById("optVmConstsEncoding");
     const optVmRuntimeKey = document.getElementById("optVmRuntimeKey");
     const optVmRuntimeSplit = document.getElementById("optVmRuntimeSplit");
+    const optVmTopLevel = document.getElementById("optVmTopLevel");
     const optVmBlockDispatch = document.getElementById("optVmBlockDispatch");
     const optVmDownlevel = document.getElementById("optVmDownlevel");
     const optVmFake = document.getElementById("optVmFake");
     const optVmLayers = document.getElementById("optVmLayers");
+    const optVmDecoyRuntime = document.getElementById("optVmDecoyRuntime");
+    const optVmDecoyProbability = document.getElementById("optVmDecoyProbability");
+    const optVmDecoyStrings = document.getElementById("optVmDecoyStrings");
+    const optVmDispatchGraph = document.getElementById("optVmDispatchGraph");
+    const optVmStackProtocol = document.getElementById("optVmStackProtocol");
+    const optVmIsaPolymorph = document.getElementById("optVmIsaPolymorph");
+    const optVmFakeEdges = document.getElementById("optVmFakeEdges");
+    const optVmNumericStyle = document.getElementById("optVmNumericStyle");
+    const optVmDebug = document.getElementById("optVmDebug");
 
     const optRenameGlobals = document.getElementById("optRenameGlobals");
     const optRenameMembers = document.getElementById("optRenameMembers");
@@ -616,13 +722,25 @@
     const optWrapIterations = document.getElementById("optWrapIterations");
     const optProxifyLocals = document.getElementById("optProxifyLocals");
     const optNumbers = document.getElementById("optNumbers");
+    const optNumbersThreshold = document.getElementById("optNumbersThreshold");
+    const optNumbersInner = document.getElementById("optNumbersInner");
+    const optNumbersDepth = document.getElementById("optNumbersDepth");
     const optConstArray = document.getElementById("optConstArray");
+    const optConstArrayThreshold = document.getElementById("optConstArrayThreshold");
+    const optConstArrayStringsOnly = document.getElementById("optConstArrayStringsOnly");
+    const optConstArrayShuffle = document.getElementById("optConstArrayShuffle");
+    const optConstArrayRotate = document.getElementById("optConstArrayRotate");
+    const optConstArrayWrapper = document.getElementById("optConstArrayWrapper");
+    const optConstArrayEncoding = document.getElementById("optConstArrayEncoding");
     const optPadFooter = document.getElementById("optPadFooter");
+    const optPadFooterBlocks = document.getElementById("optPadFooterBlocks");
     const optCffMode = document.getElementById("optCffMode");
     const optCffOpaque = document.getElementById("optCffOpaque");
 
     const fileInput = document.getElementById("fileInput");
     const dropZone = document.getElementById("dropZone");
+    const groupJsOptions = document.getElementById("groupJsOptions");
+    const groupLuauOptions = document.getElementById("groupLuauOptions");
 
     let lastResult = null;
 
@@ -633,6 +751,7 @@
         cff: true,
         dead: true,
         vm: false,
+        proxifyLocals: true,
         numbers: true,
         constArray: true,
         padFooter: true
@@ -643,6 +762,7 @@
         cff: true,
         dead: false,
         vm: false,
+        proxifyLocals: false,
         numbers: false,
         constArray: false,
         padFooter: false
@@ -653,6 +773,7 @@
         cff: false,
         dead: false,
         vm: false,
+        proxifyLocals: false,
         numbers: false,
         constArray: false,
         padFooter: false
@@ -700,6 +821,7 @@
       optCffDownlevel.checked = false;
       optDead.checked = defaults.dead;
       optVm.checked = defaults.vm;
+      optProxifyLocals.checked = Boolean(defaults.proxifyLocals);
       optNumbers.checked = Boolean(defaults.numbers);
       optConstArray.checked = Boolean(defaults.constArray);
       optPadFooter.checked = Boolean(defaults.padFooter);
@@ -708,7 +830,16 @@
 
     function updateOptionStates() {
       const stringsEnabled = optStrings.checked;
-      [optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate, optStringsSplit, optStringsSplitMin, optStringsSplitMax].forEach((el) => {
+      [
+        optStringsObjectKeys,
+        optStringsJsxAttrs,
+        optStringsTemplate,
+        optStringsSplit,
+        optStringsSplitMin,
+        optStringsSplitMax,
+        optStringsSegmentSize,
+        optStringsValueFallback
+      ].forEach((el) => {
         el.disabled = !stringsEnabled;
       });
 
@@ -722,10 +853,20 @@
         optVmConstsEncoding,
         optVmRuntimeKey,
         optVmRuntimeSplit,
+        optVmTopLevel,
         optVmBlockDispatch,
         optVmDownlevel,
         optVmFake,
-        optVmLayers
+        optVmLayers,
+        optVmDecoyRuntime,
+        optVmDecoyProbability,
+        optVmDecoyStrings,
+        optVmDispatchGraph,
+        optVmStackProtocol,
+        optVmIsaPolymorph,
+        optVmFakeEdges,
+        optVmNumericStyle,
+        optVmDebug
       ].forEach((el) => {
         el.disabled = !vmEnabled;
       });
@@ -737,6 +878,10 @@
       }
 
       const isLuau = langEl.value === "luau";
+      if (groupJsOptions && groupLuauOptions) {
+        groupJsOptions.open = !isLuau;
+        groupLuauOptions.open = isLuau;
+      }
       optCffDownlevel.disabled = !cffEnabled || isLuau;
       optCffMode.disabled = !cffEnabled || !isLuau;
       optCffOpaque.disabled = !cffEnabled || !isLuau;
@@ -752,22 +897,44 @@
       optWrapIterations.disabled = !isLuau || !optWrap.checked;
       optProxifyLocals.disabled = !isLuau;
       optNumbers.disabled = !isLuau;
+      optNumbersThreshold.disabled = !isLuau || !optNumbers.checked;
+      optNumbersInner.disabled = !isLuau || !optNumbers.checked;
+      optNumbersDepth.disabled = !isLuau || !optNumbers.checked;
       optConstArray.disabled = !isLuau;
+      optConstArrayThreshold.disabled = !isLuau || !optConstArray.checked;
+      optConstArrayStringsOnly.disabled = !isLuau || !optConstArray.checked;
+      optConstArrayShuffle.disabled = !isLuau || !optConstArray.checked;
+      optConstArrayRotate.disabled = !isLuau || !optConstArray.checked;
+      optConstArrayWrapper.disabled = !isLuau || !optConstArray.checked;
+      optConstArrayEncoding.disabled = !isLuau || !optConstArray.checked;
       optPadFooter.disabled = !isLuau;
+      optPadFooterBlocks.disabled = !isLuau || !optPadFooter.checked;
 
       optStringsJsxAttrs.disabled = !stringsEnabled || isLuau;
       optStringsTemplate.disabled = !stringsEnabled || isLuau;
       optStringsSplit.disabled = !stringsEnabled || !isLuau;
       optStringsSplitMin.disabled = !stringsEnabled || !isLuau;
       optStringsSplitMax.disabled = !stringsEnabled || !isLuau;
+      optStringsSegmentSize.disabled = !stringsEnabled || !isLuau;
+      optStringsValueFallback.disabled = !stringsEnabled || !isLuau;
 
       optVmRuntimeKey.disabled = !vmEnabled || !isLuau;
       optVmRuntimeSplit.disabled = !vmEnabled || !isLuau;
+      optVmTopLevel.disabled = !vmEnabled || !isLuau;
       optVmConstsSplit.disabled = !vmEnabled || !isLuau;
       optVmConstsSplitSize.disabled = !vmEnabled || !isLuau || !optVmConstsSplit.checked;
       optVmConstsEncoding.disabled = !vmEnabled || !isLuau;
       optVmBlockDispatch.disabled = !vmEnabled || !isLuau;
       optVmLayers.disabled = !vmEnabled || !isLuau;
+      optVmDecoyRuntime.disabled = !vmEnabled || !isLuau;
+      optVmDecoyProbability.disabled = !vmEnabled || !isLuau || !optVmDecoyRuntime.checked;
+      optVmDecoyStrings.disabled = !vmEnabled || !isLuau || !optVmDecoyRuntime.checked;
+      optVmDispatchGraph.disabled = !vmEnabled || !isLuau;
+      optVmStackProtocol.disabled = !vmEnabled || !isLuau;
+      optVmIsaPolymorph.disabled = !vmEnabled || !isLuau;
+      optVmFakeEdges.disabled = !vmEnabled || !isLuau;
+      optVmNumericStyle.disabled = !vmEnabled || !isLuau;
+      optVmDebug.disabled = !vmEnabled || !isLuau;
 
       const ecmaEl = document.getElementById("ecma");
       ecmaEl.disabled = isLuau;
@@ -781,7 +948,7 @@
 
       optAntiHookLock.disabled = !optAntiHook.checked;
 
-      const minifyEnabled = optMinify.checked;
+      const minifyEnabled = optMinify.checked && !isLuau;
       optBeautify.disabled = !minifyEnabled;
       if (!minifyEnabled) {
         optBeautify.checked = false;
@@ -826,10 +993,18 @@
       const ecmaValue = document.getElementById("ecma").value.trim();
       const vmFakeValue = optVmFake.value.trim();
       const vmLayersValue = optVmLayers.value.trim();
+      const vmDecoyProbabilityValue = optVmDecoyProbability.value.trim();
+      const vmDecoyStringsValue = optVmDecoyStrings.value.trim();
       const vmConstsSplitSizeValue = optVmConstsSplitSize.value.trim();
       const splitMinValue = optStringsSplitMin.value.trim();
       const splitMaxValue = optStringsSplitMax.value.trim();
+      const stringsSegmentSizeValue = optStringsSegmentSize.value.trim();
       const wrapIterationsValue = optWrapIterations.value.trim();
+      const numbersThresholdValue = optNumbersThreshold.value.trim();
+      const numbersInnerValue = optNumbersInner.value.trim();
+      const numbersDepthValue = optNumbersDepth.value.trim();
+      const constArrayThresholdValue = optConstArrayThreshold.value.trim();
+      const padFooterBlocksValue = optPadFooterBlocks.value.trim();
 
       const options = {
         preset: presetEl.value === "custom" ? "high" : presetEl.value,
@@ -849,13 +1024,16 @@
         minify: optMinify.checked,
         beautify: optBeautify.checked,
         compact: optCompact.checked,
+        timing: optTiming.checked,
         stringsOptions: {
           encodeObjectKeys: optStringsObjectKeys.checked,
           encodeJSXAttributes: optStringsJsxAttrs.checked,
           encodeTemplateChunks: optStringsTemplate.checked,
           split: optStringsSplit.checked,
           splitMin: splitMinValue === "" ? undefined : Number(splitMinValue),
-          splitMaxParts: splitMaxValue === "" ? undefined : Number(splitMaxValue)
+          splitMaxParts: splitMaxValue === "" ? undefined : Number(splitMaxValue),
+          segmentSize: stringsSegmentSizeValue === "" ? undefined : Number(stringsSegmentSizeValue),
+          encodeValueFallback: optStringsValueFallback.checked
         },
         wrap: optWrap.checked,
         wrapOptions: {
@@ -863,8 +1041,24 @@
         },
         proxifyLocals: optProxifyLocals.checked,
         numbers: optNumbers.checked,
+        numbersOptions: {
+          probability: numbersThresholdValue === "" ? undefined : Number(numbersThresholdValue),
+          innerProbability: numbersInnerValue === "" ? undefined : Number(numbersInnerValue),
+          maxDepth: numbersDepthValue === "" ? undefined : Number(numbersDepthValue)
+        },
         constArray: optConstArray.checked,
+        constArrayOptions: {
+          probability: constArrayThresholdValue === "" ? undefined : Number(constArrayThresholdValue),
+          stringsOnly: optConstArrayStringsOnly.checked,
+          shuffle: optConstArrayShuffle.checked,
+          rotate: optConstArrayRotate.checked,
+          encoding: optConstArrayEncoding.value,
+          wrapper: optConstArrayWrapper.checked
+        },
         padFooter: optPadFooter.checked,
+        padFooterOptions: {
+          blocks: padFooterBlocksValue === "" ? undefined : Number(padFooterBlocksValue)
+        },
         vm: {
           enabled: optVm.checked,
           include: includeText ? includeText.split(",").map((v) => v.trim()).filter(Boolean) : [],
@@ -876,10 +1070,20 @@
           constsEncoding: optVmConstsEncoding.value,
           runtimeKey: optVmRuntimeKey.checked,
           runtimeSplit: optVmRuntimeSplit.checked,
+          topLevel: optVmTopLevel.checked,
           blockDispatch: optVmBlockDispatch.checked,
+          dispatchGraph: optVmDispatchGraph.value,
+          stackProtocol: optVmStackProtocol.value,
+          isaPolymorph: optVmIsaPolymorph.checked,
+          fakeEdges: optVmFakeEdges.checked,
+          numericStyle: optVmNumericStyle.value,
+          decoyRuntime: optVmDecoyRuntime.checked,
+          decoyProbability: vmDecoyProbabilityValue === "" ? undefined : Number(vmDecoyProbabilityValue),
+          decoyStrings: vmDecoyStringsValue === "" ? undefined : Number(vmDecoyStringsValue),
           downlevel: optVmDownlevel.checked,
           fakeOpcodes: vmFakeValue === "" ? undefined : Number(vmFakeValue),
-          layers: vmLayersValue === "" ? undefined : Number(vmLayersValue)
+          layers: vmLayersValue === "" ? undefined : Number(vmLayersValue),
+          debug: optVmDebug.checked
         },
         antiHook: {
           enabled: optAntiHook.checked,
@@ -1003,7 +1207,7 @@
       }
     });
 
-    [optRename, optStrings, optCff, optDead, optVm, optVmConstsSplit, optMinify, optWrap].forEach((el) => {
+    [optRename, optStrings, optCff, optDead, optVm, optVmConstsSplit, optMinify, optWrap, optNumbers, optConstArray, optPadFooter, optVmDecoyRuntime].forEach((el) => {
       el.addEventListener("change", () => {
         markCustomPreset();
         updateOptionStates();
@@ -1011,13 +1215,16 @@
     });
 
     [optCffDownlevel, optStringsObjectKeys, optStringsJsxAttrs, optStringsTemplate,
-      optStringsSplit, optStringsSplitMin, optStringsSplitMax,
+      optStringsSplit, optStringsSplitMin, optStringsSplitMax, optStringsSegmentSize,
       optVmOpcode, optVmBytecode, optVmConsts, optVmConstsSplit, optVmConstsSplitSize, optVmConstsEncoding,
-      optVmRuntimeKey, optVmRuntimeSplit, optVmBlockDispatch,
-      optVmDownlevel, optVmFake, optVmLayers,
-      optAntiHook, optAntiHookLock, optSourceMap, optBeautify, optMinify, optCompact,
+      optVmRuntimeKey, optVmRuntimeSplit, optVmTopLevel, optVmBlockDispatch,
+      optVmDownlevel, optVmFake, optVmLayers, optVmDecoyRuntime, optVmDecoyProbability, optVmDecoyStrings,
+      optVmDispatchGraph, optVmStackProtocol, optVmIsaPolymorph, optVmFakeEdges, optVmNumericStyle, optVmDebug,
+      optAntiHook, optAntiHookLock, optSourceMap, optBeautify, optMinify, optCompact, optTiming,
       optRenameGlobals, optRenameMembers, optRenameHomoglyphs,
-      optWrap, optWrapIterations, optProxifyLocals, optNumbers, optConstArray, optPadFooter,
+      optWrap, optWrapIterations, optProxifyLocals, optNumbers, optNumbersThreshold, optNumbersInner, optNumbersDepth,
+      optConstArray, optConstArrayThreshold, optConstArrayStringsOnly, optConstArrayShuffle, optConstArrayRotate, optConstArrayWrapper, optConstArrayEncoding,
+      optPadFooter, optPadFooterBlocks,
       optCffMode, optCffOpaque
     ].forEach((el) => {
       el.addEventListener("change", markCustomPreset);
@@ -1058,6 +1265,7 @@
       }
     });
 
+    applyPreset(presetEl.value);
     updateOptionStates();
     log("Ready.");
   </script>

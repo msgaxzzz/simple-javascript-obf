@@ -29,6 +29,11 @@ const { entryLuau } = require("./entry");
 const { wrapInFunction } = require("./wrap");
 const { proxifyLocals } = require("./proxifyLocals");
 const { padFooterLuau } = require("./padFooter");
+const { stylizeNumericLiteralsLuau } = require("./literalStyle");
+const { version: PACKAGE_VERSION } = require("../../package.json");
+
+const WATERMARK_URL = "https://github.com/msgaxzzz/simple-javascript-obf";
+const LUAU_WATERMARK = `-- This file was protected using simple-javascript-obfuscator v${PACKAGE_VERSION} [${WATERMARK_URL}]`;
 
 async function obfuscateLuau(source, options) {
   const rng = new RNG(options.seed);
@@ -224,6 +229,8 @@ async function obfuscateLuau(source, options) {
     runLuauPlugin("luau-pad-footer", () => padFooterLuau(ast, ctx));
   }
 
+  runLuauPlugin("luau-literal-style", () => stylizeNumericLiteralsLuau(ast, ctx));
+
   let cfg = null;
   if (options.cfg === true) {
     cfg = getCFG();
@@ -242,7 +249,9 @@ async function obfuscateLuau(source, options) {
   }
   let code = generateLuauCustom(ast, { compact: options.compact });
   if (directives) {
-    code = `${directives}\n${code}`;
+    code = `${directives}\n${LUAU_WATERMARK}\n${code}`;
+  } else {
+    code = `${LUAU_WATERMARK}\n${code}`;
   }
 
   return {
