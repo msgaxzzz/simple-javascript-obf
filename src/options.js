@@ -172,6 +172,7 @@ function normalizeOptions(userOptions = {}) {
       split: Boolean(stringsUserOptions.split),
       splitMin,
       splitMaxParts,
+      encodeValueFallback: stringsUserOptions.encodeValueFallback !== false,
       poolEncoding: stringsPoolEncoding,
       encodeConsole: stringsUserOptions.encodeConsole !== false,
       encodeObjectKeys: stringsUserOptions.encodeObjectKeys !== false,
@@ -220,6 +221,20 @@ function normalizeOptions(userOptions = {}) {
   const vmConstsSplit = vmOptions.constsSplit !== false;
   const vmConstsSplitSize = normalizeCount(vmOptions.constsSplitSize, 24, { min: 4, max: 200 });
   const vmBlockDispatch = vmOptions.blockDispatch ?? (lang === "luau" && Boolean(vmOptions.enabled));
+  const vmDispatchGraph = typeof vmOptions.dispatchGraph === "string"
+    ? vmOptions.dispatchGraph.toLowerCase()
+    : null;
+  const vmStackProtocol = typeof vmOptions.stackProtocol === "string"
+    ? vmOptions.stackProtocol.toLowerCase()
+    : null;
+  const vmIsaPolymorph = vmOptions.isaPolymorph;
+  const vmFakeEdges = vmOptions.fakeEdges;
+  const vmNumericStyle = typeof vmOptions.numericStyle === "string"
+    ? vmOptions.numericStyle.toLowerCase()
+    : null;
+  const vmDecoyRuntime = vmOptions.decoyRuntime;
+  const vmDecoyProbability = normalizeProbability(vmOptions.decoyProbability, 0.85);
+  const vmDecoyStrings = normalizeCount(vmOptions.decoyStrings, 12, { min: 4, max: 96 });
   let fakeOpcodes = vmOptions.fakeOpcodes;
   if (fakeOpcodes === undefined || fakeOpcodes === true) {
     fakeOpcodes = 0.15;
@@ -237,6 +252,7 @@ function normalizeOptions(userOptions = {}) {
     include: vmOptions.include || [],
     all: Boolean(vmOptions.all),
     layers: vmLayers,
+    topLevel: Boolean(vmOptions.topLevel),
     opcodeShuffle: vmOptions.opcodeShuffle !== false,
     runtimeKey: vmRuntimeKey,
     runtimeSplit: vmRuntimeSplit,
@@ -247,6 +263,14 @@ function normalizeOptions(userOptions = {}) {
     constsSplit: Boolean(vmConstsSplit),
     constsSplitSize: vmConstsSplitSize,
     blockDispatch: Boolean(vmBlockDispatch),
+    dispatchGraph: vmDispatchGraph || (lang === "luau" && Boolean(vmOptions.enabled) ? "sparse" : "tree"),
+    stackProtocol: vmStackProtocol || "auto",
+    isaPolymorph: vmIsaPolymorph === undefined ? (lang === "luau" && Boolean(vmOptions.enabled)) : vmIsaPolymorph,
+    fakeEdges: vmFakeEdges === undefined ? true : Boolean(vmFakeEdges),
+    numericStyle: vmNumericStyle || (lang === "luau" && Boolean(vmOptions.enabled) ? "chaos" : "plain"),
+    decoyRuntime: vmDecoyRuntime === undefined ? (lang === "luau" && Boolean(vmOptions.enabled)) : Boolean(vmDecoyRuntime),
+    decoyProbability: vmDecoyProbability,
+    decoyStrings: vmDecoyStrings,
     downlevel: Boolean(vmOptions.downlevel),
     debug: Boolean(vmOptions.debug),
   };

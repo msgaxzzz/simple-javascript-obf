@@ -181,34 +181,44 @@ function resolveName(scope, name) {
   return null;
 }
 
-function getStringLiteralValue(node) {
-  if (!node || node.type !== "StringLiteral") {
-    return null;
+function isEnvAliasIdentifier(node, scope, ctx) {
+  if (!node || node.type !== "Identifier") {
+    return false;
   }
-  if (typeof node.value === "string") {
-    return node.value;
+  if (ctx && ctx.envAliasName && node.name === ctx.envAliasName) {
+    return true;
   }
-  if (typeof node.raw === "string") {
-    const raw = node.raw;
-    if ((raw.startsWith("\"") && raw.endsWith("\"")) || (raw.startsWith("'") && raw.endsWith("'"))) {
-      return raw.slice(1, -1);
-    }
+  if (node.name === "_ENV" || node.name === "_G") {
+    return !resolveName(scope, node.name);
   }
-  return null;
+  return false;
 }
 
-function isBuiltinLibBase(expr, scope) {
+function isEnvAliasLookup(expr, scope, ctx) {
+  if (!expr || typeof expr !== "object") {
+    return false;
+  }
+  if (expr.type === "IndexExpression") {
+    if (isEnvAliasIdentifier(expr.base, scope, ctx)) {
+      return true;
+    }
+    return isEnvAliasLookup(expr.base, scope, ctx);
+  }
+  if (expr.type === "MemberExpression") {
+    return isEnvAliasLookup(expr.base, scope, ctx);
+  }
+  return false;
+}
+
+function isBuiltinLibBase(expr, scope, ctx) {
   if (!expr || typeof expr !== "object") {
     return false;
   }
   if (expr.type === "Identifier") {
     return BUILTIN_LIBS.has(expr.name) && !resolveName(scope, expr.name);
   }
-  if (expr.type === "IndexExpression") {
-    if (expr.base && expr.base.type === "Identifier" && (expr.base.name === "_ENV" || expr.base.name === "_G")) {
-      const value = getStringLiteralValue(expr.index);
-      return value ? BUILTIN_LIBS.has(value) : false;
-    }
+  if (isEnvAliasLookup(expr, scope, ctx)) {
+    return true;
   }
   return false;
 }
@@ -316,7 +326,7 @@ function renameExpression(expr, scope, ctx) {
       renameExpression(expr.index, scope, ctx);
       return;
     case "MemberExpression":
-      const skipMemberRename = isBuiltinLibBase(expr.base, scope);
+      const skipMemberRename = isBuiltinLibBase(expr.base, scope, ctx);
       renameExpression(expr.base, scope, ctx);
       if (!skipMemberRename) {
         renameMemberName(expr.identifier, ctx);
@@ -327,7 +337,7 @@ function renameExpression(expr, scope, ctx) {
       expr.arguments.forEach((arg) => renameExpression(arg, scope, ctx));
       return;
     case "MethodCallExpression":
-      const skipMethodRename = isBuiltinLibBase(expr.base, scope);
+      const skipMethodRename = isBuiltinLibBase(expr.base, scope, ctx);
       renameExpression(expr.base, scope, ctx);
       if (!skipMethodRename) {
         renameMemberName(expr.method, ctx);
@@ -557,7 +567,7 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
 
   if (fnMember) {
     if (fnMember.type === "FunctionName") {
-      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope);
+      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope, ctx);
       renameIdentifier(fnMember.base, scope, ctx);
       if (ctx.renameMembers && Array.isArray(fnMember.members) && !skipMemberRename) {
         fnMember.members.forEach((member) => renameMemberName(member, ctx));
@@ -566,7 +576,7 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
         renameMemberName(fnMember.method, ctx);
       }
     } else if (fnMember.type === "MemberExpression") {
-      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope);
+      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope, ctx);
       renameExpression(fnMember.base, scope, ctx);
       if (!skipMemberRename) {
         renameMemberName(fnMember.identifier, ctx);
@@ -661,6 +671,7 @@ function renameLuau(ast, ctx) {
   const renameGlobals = Boolean(ctx.options.renameOptions?.renameGlobals);
   const renameMembers = Boolean(ctx.options.renameOptions?.renameMembers);
   const globalDeclared = renameGlobals ? collectGlobalBindings(ast) : new Set();
+  const envAliasName = ast && typeof ast.__obf_env_alias_name === "string" ? ast.__obf_env_alias_name : null;
   const state = {
     generator,
     reserved,
@@ -671,6 +682,7 @@ function renameLuau(ast, ctx) {
     renameMembers,
     memberMap: new Map(),
     readNames,
+    envAliasName,
   };
   const rootScope = createScope(null);
   if (Array.isArray(ast.body)) {

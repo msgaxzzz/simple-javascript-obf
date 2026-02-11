@@ -3,7 +3,7 @@ const { decodeRawString } = require("./strings");
 const { makeDiagnosticErrorFromNode } = require("./custom/diagnostics");
 const { addSSAUsedNames, findSSAForNode } = require("./ssa-utils");
 
-const DEFAULT_MIN_STATEMENTS = 2;
+const DEFAULT_MIN_STATEMENTS = 1;
 
 const OPCODES = [
   "NOP",
@@ -105,13 +105,13 @@ function luaByteString(bytes) {
   return out;
 }
 
-function buildOpcodeMap(rng, shuffle) {
-  const codes = OPCODES.map((_, idx) => idx + 1);
+function buildOpcodeMap(rng, shuffle, opcodeList = OPCODES) {
+  const codes = opcodeList.map((_, idx) => idx + 1);
   if (shuffle && rng) {
     rng.shuffle(codes);
   }
   const mapping = {};
-  OPCODES.forEach((name, idx) => {
+  opcodeList.forEach((name, idx) => {
     mapping[name] = codes[idx];
   });
   return mapping;
@@ -147,10 +147,10 @@ function buildKeySchedule(rng, seedState) {
   return { encoded, maskPieces, keys };
 }
 
-function buildOpcodeEncoding(opcodeMap, rng, seedState) {
+function buildOpcodeEncoding(opcodeMap, rng, seedState, opcodeList = OPCODES) {
   const keyPieces = [rng.int(1, 200), rng.int(1, 200)];
   const key = ((keyPieces[0] + keyPieces[1] + seedState.seed) % 255) + 1;
-  const encoded = OPCODES.map((name, idx) => (
+  const encoded = opcodeList.map((name, idx) => (
     opcodeMap[name] ^ ((key + idx * 7) % 255)
   ));
   return { encoded, keyPieces };
@@ -188,6 +188,67 @@ function splitInstructions(instructions, rng) {
   return { parts, offsets, order };
 }
 
+const ISA_XOR_VARIANT_OPS = new Set([
+  "PUSH_CONST",
+  "PUSH_LOCAL",
+  "SET_LOCAL",
+  "PUSH_GLOBAL",
+  "SET_GLOBAL",
+  "JMP",
+  "JMP_IF_FALSE",
+  "JMP_IF_TRUE",
+  "CALL",
+]);
+
+function normalizeVmMode(value, allowed, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = value.toLowerCase();
+  if (allowed.has(normalized)) {
+    return normalized;
+  }
+  return fallback;
+}
+
+function applyPolymorphicBlockISA(program, rng, vmOptions = {}) {
+  let isaMode = "auto";
+  if (typeof vmOptions.isaPolymorph === "boolean") {
+    isaMode = vmOptions.isaPolymorph ? "on" : "off";
+  } else {
+    isaMode = normalizeVmMode(vmOptions.isaPolymorph, new Set(["off", "on", "auto"]), "auto");
+  }
+  const enabled = isaMode === "on" || (isaMode === "auto" && rng.bool(0.85));
+  const stackModeRaw = normalizeVmMode(vmOptions.stackProtocol, new Set(["auto", "direct", "api"]), "auto");
+  const stackProtocol = stackModeRaw === "auto" ? (rng.bool(0.5) ? "api" : "direct") : stackModeRaw;
+  const dispatchGraph = normalizeVmMode(vmOptions.dispatchGraph, new Set(["auto", "tree", "sparse"]), "auto");
+  const fakeEdges = vmOptions.fakeEdges !== false;
+  const profile = {
+    enabled,
+    keyA: rng.int(1, 255),
+    keyB: rng.int(1, 255),
+    stackProtocol,
+    dispatchGraph,
+    fakeEdges,
+  };
+  if (!enabled || !program || !Array.isArray(program.instructions)) {
+    return profile;
+  }
+  program.instructions = program.instructions.map((inst) => {
+    const op = inst[0];
+    const a = inst[1] || 0;
+    const b = inst[2] || 0;
+    if (!ISA_XOR_VARIANT_OPS.has(op) || !rng.bool(0.72)) {
+      return inst;
+    }
+    if (op === "CALL") {
+      return [`${op}_X`, a ^ profile.keyA, b ^ profile.keyB];
+    }
+    return [`${op}_X`, a ^ profile.keyA, b];
+  });
+  return profile;
+}
+
 function encodeU32(value) {
   const v = value >>> 0;
   return [
@@ -196,6 +257,18 @@ function encodeU32(value) {
     (v >>> 16) & 0xff,
     (v >>> 24) & 0xff,
   ];
+}
+
+function escapeRegexLiteral(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function replaceIdentifierToken(source, from, to) {
+  if (!source || from === to) {
+    return source;
+  }
+  const pattern = new RegExp(`\\b${escapeRegexLiteral(from)}\\b`, "g");
+  return source.replace(pattern, to);
 }
 
 function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
@@ -321,6 +394,41 @@ function splitConstEntries(entries, rng, targetSize) {
   return parts;
 }
 
+function buildDecoyVmStrings(rng, count) {
+  const heads = [
+    "vm",
+    "dispatch",
+    "trace",
+    "handler",
+    "opcode",
+    "const",
+    "seed",
+    "stack",
+    "guard",
+    "decrypt",
+  ];
+  const tails = [
+    "probe",
+    "state",
+    "route",
+    "graph",
+    "flow",
+    "node",
+    "mask",
+    "table",
+    "core",
+    "stub",
+  ];
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    const left = rng.pick(heads);
+    const right = rng.pick(tails);
+    const stamp = rng.int(0x1000, 0xffff).toString(16);
+    out.push(`${left}_${right}_${stamp}`);
+  }
+  return out;
+}
+
 function injectFakeInstructions(program, rng, probability) {
   if (!probability || probability <= 0) {
     return;
@@ -405,6 +513,7 @@ class VmCompiler {
     this.scope = new Scope();
     this.loopStack = [];
     this.tempCount = 0;
+    this.userLabelNames = new Map();
   }
 
   nextTemp() {
@@ -461,6 +570,21 @@ class VmCompiler {
     this.emitter.label(name);
   }
 
+  getUserLabelName(labelNode) {
+    const raw = labelNode && labelNode.type === "Identifier"
+      ? labelNode.name
+      : (typeof labelNode === "string" ? labelNode : null);
+    if (!raw) {
+      raise("Invalid goto/label target", labelNode || null);
+    }
+    let name = this.userLabelNames.get(raw);
+    if (!name) {
+      name = this.makeLabel(`user_${raw}`);
+      this.userLabelNames.set(raw, name);
+    }
+    return name;
+  }
+
   compileFunction(node) {
     const params = this.getFunctionParams(node);
     this.enterScope();
@@ -482,6 +606,33 @@ class VmCompiler {
       localCount: this.localCount,
       paramCount: params.length,
       paramNames: params,
+    };
+  }
+
+  compileChunk(node, {
+    statements = null,
+    preboundLocals = null,
+  } = {}) {
+    const body = Array.isArray(statements)
+      ? statements
+      : (node && Array.isArray(node.body) ? node.body : []);
+    const locals = Array.isArray(preboundLocals)
+      ? preboundLocals.filter((name) => typeof name === "string" && name.length > 0)
+      : [];
+    this.enterScope();
+    locals.forEach((name) => {
+      this.defineLocal(name);
+    });
+    this.compileStatements(body);
+    this.emit("RETURN", 0, 0);
+    this.emitter.patch();
+    this.exitScope();
+    return {
+      instructions: this.emitter.instructions,
+      consts: this.consts,
+      localCount: this.localCount,
+      paramCount: locals.length,
+      paramNames: locals,
     };
   }
 
@@ -573,6 +724,12 @@ class VmCompiler {
       case "ContinueStatement":
         this.compileContinue();
         return;
+      case "LabelStatement":
+        this.compileLabelStatement(stmt);
+        return;
+      case "GotoStatement":
+        this.compileGotoStatement(stmt);
+        return;
       case "TypeAliasStatement":
       case "ExportTypeStatement":
       case "TypeFunctionStatement":
@@ -660,17 +817,59 @@ class VmCompiler {
     if (!stmt || !stmt.variable) {
       return;
     }
-    if (stmt.variable.type !== "Identifier") {
-      raise("Compound assignment supports identifiers only", stmt.variable);
-    }
-    const opName = BINARY_OP_MAP.get(stmt.operator);
+    const normalizedOperator = typeof stmt.operator === "string" && stmt.operator.endsWith("=")
+      ? stmt.operator.slice(0, -1)
+      : stmt.operator;
+    const opName = BINARY_OP_MAP.get(normalizedOperator);
     if (!opName) {
       raise(`Unsupported compound operator ${stmt.operator}`, stmt);
     }
-    this.compileExpression(stmt.variable);
-    this.compileExpression(stmt.value);
-    this.emit(opName, 0, 0);
-    this.compileAssignTarget(stmt.variable);
+    const target = stmt.variable;
+    if (target.type === "Identifier") {
+      this.compileExpression(target);
+      this.compileExpression(stmt.value);
+      this.emit(opName, 0, 0);
+      this.compileAssignTarget(target);
+      return;
+    }
+    if (target.type === "MemberExpression") {
+      const baseTmp = this.nextTemp();
+      const valueTmp = this.nextTemp();
+      this.compileExpression(target.base);
+      this.emit("SET_LOCAL", baseTmp, 0);
+      this.emit("PUSH_LOCAL", baseTmp, 0);
+      this.emit("PUSH_CONST", this.addConst(target.identifier.name), 0);
+      this.emit("GET_TABLE", 0, 0);
+      this.compileExpression(stmt.value);
+      this.emit(opName, 0, 0);
+      this.emit("SET_LOCAL", valueTmp, 0);
+      this.emit("PUSH_LOCAL", baseTmp, 0);
+      this.emit("PUSH_CONST", this.addConst(target.identifier.name), 0);
+      this.emit("PUSH_LOCAL", valueTmp, 0);
+      this.emit("SET_TABLE", 0, 0);
+      return;
+    }
+    if (target.type === "IndexExpression") {
+      const baseTmp = this.nextTemp();
+      const indexTmp = this.nextTemp();
+      const valueTmp = this.nextTemp();
+      this.compileExpression(target.base);
+      this.emit("SET_LOCAL", baseTmp, 0);
+      this.compileExpression(target.index);
+      this.emit("SET_LOCAL", indexTmp, 0);
+      this.emit("PUSH_LOCAL", baseTmp, 0);
+      this.emit("PUSH_LOCAL", indexTmp, 0);
+      this.emit("GET_TABLE", 0, 0);
+      this.compileExpression(stmt.value);
+      this.emit(opName, 0, 0);
+      this.emit("SET_LOCAL", valueTmp, 0);
+      this.emit("PUSH_LOCAL", baseTmp, 0);
+      this.emit("PUSH_LOCAL", indexTmp, 0);
+      this.emit("PUSH_LOCAL", valueTmp, 0);
+      this.emit("SET_TABLE", 0, 0);
+      return;
+    }
+    raise("Compound assignment supports identifiers/member/index targets only", target);
   }
 
   compileCallStatement(stmt) {
@@ -935,6 +1134,16 @@ class VmCompiler {
       raise("continue outside loop");
     }
     this.emitJump("JMP", loop.continueLabel);
+  }
+
+  compileLabelStatement(stmt) {
+    const label = stmt && (stmt.label || stmt.name) ? (stmt.label || stmt.name) : null;
+    this.label(this.getUserLabelName(label));
+  }
+
+  compileGotoStatement(stmt) {
+    const label = stmt && (stmt.label || stmt.name) ? (stmt.label || stmt.name) : null;
+    this.emitJump("JMP", this.getUserLabelName(label));
   }
 
   compileAssignTarget(target) {
@@ -1299,6 +1508,345 @@ function getFunctionName(fnNode) {
   return null;
 }
 
+function cloneAst(node) {
+  if (node === null || node === undefined) {
+    return node;
+  }
+  return JSON.parse(JSON.stringify(node));
+}
+
+function makeIdentifierNode(name) {
+  return {
+    type: "Identifier",
+    name,
+  };
+}
+
+function makeFunctionNameNode(name) {
+  return {
+    type: "FunctionName",
+    base: makeIdentifierNode(name),
+    members: [],
+    method: null,
+  };
+}
+
+function makeNilLiteralNode() {
+  return {
+    type: "NilLiteral",
+    value: null,
+    raw: "nil",
+  };
+}
+
+function walkAny(node, visitor, parent = null, key = null) {
+  if (node === null || node === undefined) {
+    return;
+  }
+  visitor(node, parent, key);
+  if (Array.isArray(node)) {
+    node.forEach((item) => walkAny(item, visitor, parent, key));
+    return;
+  }
+  if (typeof node !== "object") {
+    return;
+  }
+  Object.keys(node).forEach((childKey) => {
+    const child = node[childKey];
+    if (Array.isArray(child)) {
+      child.forEach((item) => walkAny(item, visitor, node, childKey));
+      return;
+    }
+    walkAny(child, visitor, node, childKey);
+  });
+}
+
+function isFunctionNode(node) {
+  return Boolean(node && (node.type === "FunctionDeclaration" || node.type === "FunctionExpression"));
+}
+
+function getFunctionBodyStatementsByStyle(fnNode, style) {
+  if (!isFunctionNode(fnNode)) {
+    return [];
+  }
+  if (style === "custom") {
+    return fnNode.body && Array.isArray(fnNode.body.body) ? fnNode.body.body : [];
+  }
+  return Array.isArray(fnNode.body) ? fnNode.body : [];
+}
+
+function isTaskCallbackCall(node) {
+  if (!node || node.type !== "CallExpression" || !node.base) {
+    return false;
+  }
+  const base = node.base;
+  if (base.type !== "MemberExpression" || base.indexer !== ".") {
+    return false;
+  }
+  if (!base.base || base.base.type !== "Identifier" || base.base.name !== "task") {
+    return false;
+  }
+  const method = base.identifier && base.identifier.name;
+  return method === "spawn" || method === "defer" || method === "delay";
+}
+
+function getTaskCallbackArgIndex(node) {
+  if (!isTaskCallbackCall(node)) {
+    return -1;
+  }
+  const method = node.base && node.base.identifier ? node.base.identifier.name : "";
+  if (method === "delay") {
+    return 1;
+  }
+  return 0;
+}
+
+function isReferenceIdentifier(node, parent, key) {
+  if (!node || node.type !== "Identifier" || !parent) {
+    return true;
+  }
+  if ((parent.type === "FunctionDeclaration" || parent.type === "FunctionExpression") && key === "parameters") {
+    return false;
+  }
+  if (parent.type === "FunctionName") {
+    return false;
+  }
+  if (parent.type === "LocalStatement" && key === "variables") {
+    return false;
+  }
+  if (parent.type === "ForNumericStatement" && key === "variable") {
+    return false;
+  }
+  if (parent.type === "ForGenericStatement" && key === "variables") {
+    return false;
+  }
+  if (parent.type === "MemberExpression" && key === "identifier") {
+    return false;
+  }
+  return true;
+}
+
+function collectFunctionLocalNames(fnNode) {
+  const names = new Set();
+  const params = Array.isArray(fnNode.parameters) ? fnNode.parameters : [];
+  params.forEach((param) => {
+    if (param && param.type === "Identifier" && param.name) {
+      names.add(param.name);
+    }
+  });
+  walkAny(fnNode, (node, parent, key) => {
+    if (!node || typeof node !== "object" || !node.type) {
+      return;
+    }
+    if (node.type === "Identifier" && parent) {
+      if (parent.type === "LocalStatement" && key === "variables" && node.name) {
+        names.add(node.name);
+        return;
+      }
+      if (parent.type === "ForNumericStatement" && key === "variable" && node.name) {
+        names.add(node.name);
+        return;
+      }
+      if (parent.type === "ForGenericStatement" && key === "variables" && node.name) {
+        names.add(node.name);
+      }
+      return;
+    }
+    if (node.type === "FunctionDeclaration" && node.isLocal) {
+      const fnName = getFunctionName(node);
+      if (fnName && !fnName.includes(".")) {
+        names.add(fnName);
+      }
+    }
+  });
+  return names;
+}
+
+function collectDeclaredNamesInFunction(fnNode) {
+  return collectFunctionLocalNames(fnNode);
+}
+
+function collectUsedIdentifierOrder(fnNode) {
+  const names = [];
+  const seen = new Set();
+  walkAny(fnNode, (node, parent, key) => {
+    if (!node || node.type !== "Identifier" || !node.name) {
+      return;
+    }
+    if (!isReferenceIdentifier(node, parent, key)) {
+      return;
+    }
+    if (seen.has(node.name)) {
+      return;
+    }
+    seen.add(node.name);
+    names.push(node.name);
+  });
+  return names;
+}
+
+function buildLiftedLocalFunction(name, fnExpr, captureNames = []) {
+  const originalParams = Array.isArray(fnExpr.parameters)
+    ? fnExpr.parameters.filter((param) => param && param.type === "Identifier")
+    : [];
+  return {
+    type: "FunctionDeclaration",
+    name: makeFunctionNameNode(name),
+    parameters: [
+      ...cloneAst(originalParams),
+      ...captureNames.map((capture) => makeIdentifierNode(capture)),
+    ],
+    hasVararg: false,
+    varargAnnotation: null,
+    returnType: null,
+    typeParameters: [],
+    isLocal: true,
+    body: cloneAst(fnExpr.body),
+  };
+}
+
+function liftNestedVmCallbacksInFunction(fnNode, style, makeHelperName) {
+  const lifted = [];
+  const hostLocals = collectFunctionLocalNames(fnNode);
+  const body = getFunctionBodyStatementsByStyle(fnNode, style);
+  if (!body.length) {
+    return lifted;
+  }
+
+  const visitNode = (node, depth) => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+
+    const isCall = node.type === "CallExpression" || node.type === "MethodCallExpression";
+    if (depth === 0 && isCall && Array.isArray(node.arguments) && isTaskCallbackCall(node)) {
+      const callbackArgIndex = getTaskCallbackArgIndex(node);
+      if (callbackArgIndex < 0) {
+        return;
+      }
+      for (let argIndex = 0; argIndex < node.arguments.length; argIndex += 1) {
+        const arg = node.arguments[argIndex];
+        if (argIndex !== callbackArgIndex || !arg || arg.type !== "FunctionExpression") {
+          continue;
+        }
+        if (arg.hasVararg) {
+          continue;
+        }
+        if (!canVirtualizeFunction(arg, style)) {
+          continue;
+        }
+
+        const declared = collectDeclaredNamesInFunction(arg);
+        const used = collectUsedIdentifierOrder(arg);
+        const captures = [];
+        const captureSet = new Set();
+        used.forEach((name) => {
+          if (declared.has(name) || !hostLocals.has(name) || captureSet.has(name)) {
+            return;
+          }
+          captureSet.add(name);
+          captures.push(name);
+        });
+
+        const helperName = makeHelperName();
+        const helperFn = buildLiftedLocalFunction(helperName, arg, captures);
+        lifted.push(helperFn);
+
+        node.arguments[argIndex] = makeIdentifierNode(helperName);
+        if (captures.length > 0) {
+          const declaredParamCount = Array.isArray(arg.parameters) ? arg.parameters.length : 0;
+          const existingArgCount = Math.max(0, node.arguments.length - (callbackArgIndex + 1));
+          const paddingCount = Math.max(0, declaredParamCount - existingArgCount);
+          const padding = [];
+          for (let i = 0; i < paddingCount; i += 1) {
+            padding.push(makeNilLiteralNode());
+          }
+          node.arguments.push(
+            ...padding,
+            ...captures.map((capture) => makeIdentifierNode(capture))
+          );
+        }
+      }
+    }
+
+    Object.keys(node).forEach((childKey) => {
+      const child = node[childKey];
+      if (Array.isArray(child)) {
+        child.forEach((item) => {
+          if (!item || typeof item !== "object") {
+            return;
+          }
+          visitNode(item, depth + (isFunctionNode(item) ? 1 : 0));
+        });
+        return;
+      }
+      if (child && typeof child === "object") {
+        visitNode(child, depth + (isFunctionNode(child) ? 1 : 0));
+      }
+    });
+  };
+
+  body.forEach((stmt) => visitNode(stmt, 0));
+  return lifted;
+}
+
+function liftNestedVmCallbacks(ast, ctx, style) {
+  const usedNames = new Set();
+  walk(ast, (node) => {
+    if (node && node.type === "Identifier" && node.name) {
+      usedNames.add(node.name);
+    }
+  });
+
+  const makeHelperName = () => {
+    let name = "";
+    while (!name || usedNames.has(name)) {
+      const rand = ctx && ctx.rng && typeof ctx.rng.int === "function"
+        ? ctx.rng.int(1, 1_000_000_000)
+        : Math.floor(Math.random() * 1_000_000_000) + 1;
+      name = `__vm_lift_${rand}`;
+    }
+    usedNames.add(name);
+    return name;
+  };
+
+  const inserts = [];
+  walk(ast, (node, parent, key, index) => {
+    if (!isFunctionNode(node)) {
+      return;
+    }
+    if (!parent || key === null || key === undefined || index === null || index === undefined) {
+      return;
+    }
+    const container = parent[key];
+    if (!Array.isArray(container)) {
+      return;
+    }
+    const lifted = liftNestedVmCallbacksInFunction(node, style, makeHelperName);
+    if (!lifted.length) {
+      return;
+    }
+    inserts.push({
+      container,
+      index,
+      nodes: lifted,
+    });
+  });
+
+  const groups = new Map();
+  inserts.forEach((entry) => {
+    const existing = groups.get(entry.container) || [];
+    existing.push(entry);
+    groups.set(entry.container, existing);
+  });
+  groups.forEach((entries, container) => {
+    entries.sort((a, b) => b.index - a.index);
+    entries.forEach((entry) => {
+      container.splice(entry.index, 0, ...entry.nodes);
+    });
+  });
+}
+
 function canVirtualizeFunction(fnNode, style) {
   if (hasNestedFunction(fnNode)) {
     return false;
@@ -1315,8 +1863,6 @@ function canVirtualizeFunction(fnNode, style) {
       return;
     }
     switch (node.type) {
-      case "GotoStatement":
-      case "LabelStatement":
       case "VarargLiteral":
         unsupported = true;
         return;
@@ -1365,6 +1911,82 @@ function buildDispatchTree(blocks, rng, emitBlock, indent = "") {
   return lines;
 }
 
+function buildSparseDispatch(blocks, rng, emitBlock, indent = "", { fakeEdges = true } = {}) {
+  if (!blocks.length) {
+    return [`${indent}pc = 0`];
+  }
+  const blockIds = new Set(blocks.map((block) => block.id));
+  const bucketCount = Math.max(3, Math.min(11, Math.floor(Math.sqrt(blocks.length)) + 1));
+  const salt = rng.int(9, 251);
+  const buckets = Array.from({ length: bucketCount }, () => []);
+  for (const block of blocks) {
+    const idx = (block.id + salt) % bucketCount;
+    buckets[idx].push(block);
+  }
+  buckets.forEach((bucket) => rng.shuffle(bucket));
+
+  const fakeEntries = Array.from({ length: bucketCount }, (_, idx) => {
+    let fakeId = 0;
+    while (!fakeId || blockIds.has(fakeId)) {
+      fakeId = rng.int(1, 0x3fffffff);
+    }
+    const fallback = buckets[idx].length
+      ? rng.pick(buckets[idx]).id
+      : blocks[0].id;
+    return { id: fakeId, fallback };
+  });
+  const noiseSeed = rng.int(100, 0x7fff);
+  const makeDispatchName = () => `d${rng.int(1, 0x3fffffff).toString(36)}`;
+  const saltName = makeDispatchName();
+  const bucketCountName = makeDispatchName();
+  const noiseName = makeDispatchName();
+  const bucketName = makeDispatchName();
+
+  const lines = [];
+  lines.push(`${indent}local ${saltName} = ${salt}`);
+  lines.push(`${indent}local ${bucketCountName} = ${bucketCount}`);
+  lines.push(`${indent}local ${noiseName} = ${noiseSeed}`);
+  lines.push(`${indent}while pc ~= 0 do`);
+  lines.push(`${indent}  local ${bucketName} = ((pc + ${saltName}) % ${bucketCountName}) + 1`);
+  lines.push(`${indent}  ${noiseName} = (${noiseName} + ${bucketName} + top + 1) % 2147483647`);
+
+  for (let i = 0; i < bucketCount; i += 1) {
+    const prefix = i === 0 ? "if" : "elseif";
+    lines.push(`${indent}  ${prefix} ${bucketName} == ${i + 1} then`);
+    if (fakeEdges) {
+      lines.push(`${indent}    if ${noiseName} < 0 then`);
+      lines.push(`${indent}      pc = ${fakeEntries[i].id}`);
+      lines.push(`${indent}    end`);
+    }
+    const bucket = buckets[i];
+    if (!bucket.length) {
+      lines.push(`${indent}    if pc == ${fakeEntries[i].id} then`);
+      lines.push(`${indent}      pc = ${fakeEntries[i].fallback}`);
+      lines.push(`${indent}    else`);
+      lines.push(`${indent}      pc = 0`);
+      lines.push(`${indent}    end`);
+      continue;
+    }
+    for (let j = 0; j < bucket.length; j += 1) {
+      const block = bucket[j];
+      const branch = j === 0 ? "if" : "elseif";
+      lines.push(`${indent}    ${branch} pc == ${block.id} then`);
+      const emitted = emitBlock(block);
+      emitted.forEach((line) => lines.push(`${indent}      ${line}`));
+    }
+    lines.push(`${indent}    elseif pc == ${fakeEntries[i].id} then`);
+    lines.push(`${indent}      pc = ${fakeEntries[i].fallback}`);
+    lines.push(`${indent}    else`);
+    lines.push(`${indent}      pc = 0`);
+    lines.push(`${indent}    end`);
+  }
+  lines.push(`${indent}  else`);
+  lines.push(`${indent}    pc = 0`);
+  lines.push(`${indent}  end`);
+  lines.push(`${indent}end`);
+  return lines;
+}
+
 function buildVmSource(
   program,
   opcodeInfo,
@@ -1375,7 +1997,9 @@ function buildVmSource(
   constInfo,
   rng,
   vmOptions = {},
-  reservedNames = null
+  reservedNames = null,
+  opcodeList = OPCODES,
+  isaProfile = null
 ) {
   const constCount = constInfo ? constInfo.count : program.consts.length;
   const blockDispatch = Boolean(vmOptions.blockDispatch);
@@ -1480,6 +2104,48 @@ function buildVmSource(
     getInst: makeName(),
     byte: makeName(),
     u32: makeName(),
+    partByte: makeName(),
+    constEntry: makeName(),
+  };
+  const vmStateNames = {
+    bcKeyCount: makeName(),
+  };
+  const vmMeta = {
+    isaKeyA: makeName(),
+    isaKeyB: makeName(),
+  };
+  const decoyNames = {
+    pool: makeName(),
+    key: makeName(),
+    decode: makeName(),
+    vm: makeName(),
+    pc: makeName(),
+    stack: makeName(),
+    sink: makeName(),
+    guard: makeName(),
+    token: makeName(),
+    opcode: makeName(),
+    probe: makeName(),
+  };
+  const activeIsa = isaProfile || {
+    enabled: false,
+    keyA: 0,
+    keyB: 0,
+    stackProtocol: "direct",
+    dispatchGraph: "tree",
+    fakeEdges: false,
+  };
+  const runtimeTools = {
+    bundle: makeName(),
+    char: makeName(),
+    byte: makeName(),
+    concat: makeName(),
+    pack: makeName(),
+    unpack: makeName(),
+    select: makeName(),
+    type: makeName(),
+    floor: makeName(),
+    getfenv: makeName(),
   };
   const call = (fn, args) => `${fn}(${args.join(", ")})`;
   const u64from = (v) => call(bitNames.from, [v]);
@@ -1503,6 +2169,50 @@ function buildVmSource(
   const lines = [
     `do`,
   ];
+  lines.push(
+    `local ${runtimeTools.bundle} = { string.char, string.byte, table.concat, table.pack, table.unpack, select, type, math.floor, getfenv }`,
+    `local ${runtimeTools.char} = ${runtimeTools.bundle}[1]`,
+    `local ${runtimeTools.byte} = ${runtimeTools.bundle}[2]`,
+    `local ${runtimeTools.concat} = ${runtimeTools.bundle}[3]`,
+    `local ${runtimeTools.pack} = ${runtimeTools.bundle}[4]`,
+    `local ${runtimeTools.unpack} = ${runtimeTools.bundle}[5]`,
+    `local ${runtimeTools.select} = ${runtimeTools.bundle}[6]`,
+    `local ${runtimeTools.type} = ${runtimeTools.bundle}[7]`,
+    `local ${runtimeTools.floor} = ${runtimeTools.bundle}[8]`,
+    `local ${runtimeTools.getfenv} = ${runtimeTools.bundle}[9]`,
+  );
+  const upperPoolLines = [];
+  const lowerPoolLines = [];
+  let upperPoolInsertIndex = lines.length;
+  const poolPlacementMode = normalizeVmMode(
+    vmOptions.poolPlacement,
+    new Set(["auto", "top", "bottom", "spread"]),
+    "spread"
+  );
+  const resolvePoolPlacement = () => {
+    if (poolPlacementMode === "top" || poolPlacementMode === "bottom") {
+      return poolPlacementMode;
+    }
+    return rng.bool(0.5) ? "top" : "bottom";
+  };
+  const appendPoolLines = (_kind, poolLines) => {
+    if (!poolLines || !poolLines.length) return;
+    if (resolvePoolPlacement() === "top") {
+      upperPoolLines.push(...poolLines);
+    } else {
+      lowerPoolLines.push(...poolLines);
+    }
+  };
+  const appendPoolAssignments = (kind, target, values) => {
+    for (let i = 0; i < values.length; i += 1) {
+      appendPoolLines(`${kind}_${i + 1}`, [`${target}[${i + 1}] = ${values[i]}`]);
+    }
+  };
+  lines.push(
+    `local bc_parts, bc_order, bc_part_lengths = {}, {}, {}`,
+    `local const_parts, const_order, const_part_sizes, consts_data = {}, {}, {}, {}`
+  );
+  upperPoolInsertIndex = lines.length;
 
   const bitNameBytes = [98, 105, 116, 51, 50];
   const bitKey = rng.int(11, 200);
@@ -1514,13 +2224,13 @@ function buildVmSource(
   lines.push(`  local d = { ${bitEncoded.join(", ")} }`);
   lines.push(`  local out = {}`);
   lines.push(`  for i = 1, #d do`);
-  lines.push(`    out[i] = string.char((d[i] + k) % 256)`);
+  lines.push(`    out[i] = ${runtimeTools.char}((d[i] + k) % 256)`);
   lines.push(`  end`);
   lines.push(`  local env`);
-  lines.push(`  local getf = getfenv`);
-  lines.push(`  if type(getf) == "function" then env = getf(1) end`);
-  lines.push(`  if type(env) ~= "table" then env = _G end`);
-  lines.push(`  ${bitNames.bit} = env[table.concat(out)]`);
+  lines.push(`  local getf = ${runtimeTools.getfenv}`);
+  lines.push(`  if ${runtimeTools.type}(getf) == "function" then env = getf(1) end`);
+  lines.push(`  if ${runtimeTools.type}(env) ~= "table" then env = _G end`);
+  lines.push(`  ${bitNames.bit} = env[${runtimeTools.concat}(out)]`);
   lines.push(`end`);
   lines.push(`if ${bitNames.bit} == nil then`);
   lines.push(`  local function ${bitNames.norm}(x)`);
@@ -1583,7 +2293,7 @@ function buildVmSource(
   lines.push(`  end`);
   lines.push(`  function ${bitNames.bit}.rshift(a, b)`);
   lines.push(`    b = b % 32`);
-  lines.push(`    return math.floor(${bitNames.norm}(a) / (2 ^ b))`);
+  lines.push(`    return ${runtimeTools.floor}(${bitNames.norm}(a) / (2 ^ b))`);
   lines.push(`  end`);
   lines.push(`end`);
   lines.push(`local function ${bitNames.u64}(hi, lo)`);
@@ -1714,6 +2424,8 @@ function buildVmSource(
   } else {
     lines.push(`local seed = 0`);
   }
+  lines.push(`local ${vmMeta.isaKeyA} = ${activeIsa.keyA || 0}`);
+  lines.push(`local ${vmMeta.isaKeyB} = ${activeIsa.keyB || 0}`);
 
   if (!blockDispatch && opEncoded && opKeyPieces) {
     lines.push(`local op_data = { ${opEncoded.join(", ")} }`);
@@ -1727,7 +2439,7 @@ function buildVmSource(
     lines.push(`  mix = mix % 255`);
     lines.push(`  op_map[i] = ${bxor32("op_data[i]", "mix")}`);
     lines.push(`end`);
-    const opConst = OPCODES.map((name, idx) => (
+    const opConst = opcodeList.map((name, idx) => (
       `local OP_${name} = op_map[${buildIndexExpression(idx + 1, rng)}]`
     )).join("\n");
     lines.push(opConst);
@@ -1745,10 +2457,78 @@ function buildVmSource(
     lines.push(`  mix = mix % 255`);
     lines.push(`  bc_keys[i] = ${bxor32("bc_key_data[i]", "mix")}`);
     lines.push(`end`);
-    lines.push(`local bc_key_count = #bc_keys`);
+    lines.push(`local ${vmStateNames.bcKeyCount} = #bc_keys`);
   } else {
     lines.push(`local bc_keys = {}`);
-    lines.push(`local bc_key_count = 0`);
+    lines.push(`local ${vmStateNames.bcKeyCount} = 0`);
+  }
+
+  const decoyProbability = typeof vmOptions.decoyProbability === "number"
+    ? vmOptions.decoyProbability
+    : 0.85;
+  const enableDecoyVm = vmOptions.decoyRuntime !== false
+    && rng.bool(Math.max(0, Math.min(1, decoyProbability)));
+  if (enableDecoyVm) {
+    const decoyCountRaw = Number(vmOptions.decoyStrings);
+    const decoyCount = Number.isFinite(decoyCountRaw)
+      ? Math.max(4, Math.min(96, Math.floor(decoyCountRaw)))
+      : 12;
+    const decoyShift = rng.int(5, 37);
+    const decoyStrings = buildDecoyVmStrings(rng, decoyCount);
+    const decoyEncoded = decoyStrings.map((text) => {
+      const bytes = [];
+      for (let i = 0; i < text.length; i += 1) {
+        bytes.push((text.charCodeAt(i) + decoyShift) & 0xff);
+      }
+      return luaByteString(bytes);
+    });
+    const decoyOrder = Array.from({ length: decoyEncoded.length }, (_, idx) => idx + 1);
+    rng.shuffle(decoyOrder);
+    lines.push(`local ${decoyNames.pool} = {}`);
+    for (const idx of decoyOrder) {
+      lines.push(`${decoyNames.pool}[${idx}] = ${decoyEncoded[idx - 1]}`);
+    }
+    lines.push(`local ${decoyNames.key} = (${decoyShift} + (seed - seed)) % 256`);
+    lines.push(`local function ${decoyNames.decode}(i)`);
+    lines.push(`  local raw = ${decoyNames.pool}[i]`);
+    lines.push(`  if not raw then return nil end`);
+    lines.push(`  local out = {}`);
+    lines.push(`  for j = 1, #raw do`);
+    lines.push(`    local v = ${runtimeTools.byte}(raw, j) - ${decoyNames.key}`);
+    lines.push(`    if v < 0 then v = v + 256 end`);
+    lines.push(`    out[j] = ${runtimeTools.char}(v)`);
+    lines.push(`  end`);
+    lines.push(`  return ${runtimeTools.concat}(out)`);
+    lines.push(`end`);
+    lines.push(`local function ${decoyNames.vm}(${decoyNames.pc}, ${decoyNames.stack})`);
+    lines.push(`  local ${decoyNames.sink} = 0`);
+    lines.push(`  local ${decoyNames.guard} = 0`);
+    lines.push(`  while ${decoyNames.pc} > 0 do`);
+    lines.push(`    ${decoyNames.guard} = ${decoyNames.guard} + 1`);
+    lines.push(`    if ${decoyNames.guard} > #${decoyNames.pool} then break end`);
+    lines.push(`    local ${decoyNames.token} = ${decoyNames.decode}(${decoyNames.pc})`);
+    lines.push(`    local ${decoyNames.opcode} = ${decoyNames.token} and (${runtimeTools.byte}(${decoyNames.token}, 1) % 6) or 0`);
+    lines.push(`    if ${decoyNames.opcode} == 0 then`);
+    lines.push(`      ${decoyNames.sink} = ${decoyNames.sink} + ${decoyNames.pc}`);
+    lines.push(`      ${decoyNames.pc} = ${decoyNames.pc} + 1`);
+    lines.push(`    elseif ${decoyNames.opcode} == 1 then`);
+    lines.push(`      ${decoyNames.sink} = ${bxor32(decoyNames.sink, decoyNames.guard)}`);
+    lines.push(`      ${decoyNames.pc} = ${decoyNames.pc} + 1`);
+    lines.push(`    elseif ${decoyNames.opcode} == 2 then`);
+    lines.push(`      ${decoyNames.sink} = ${decoyNames.sink} + (${decoyNames.token} and #${decoyNames.token} or 0)`);
+    lines.push(`      ${decoyNames.pc} = ${decoyNames.pc} + 2`);
+    lines.push(`    elseif ${decoyNames.opcode} == 3 then`);
+    lines.push(`      ${decoyNames.pc} = 0`);
+    lines.push(`    else`);
+    lines.push(`      ${decoyNames.pc} = ${decoyNames.pc} + 1`);
+    lines.push(`    end`);
+    lines.push(`  end`);
+    lines.push(`  return ${decoyNames.sink}, ${decoyNames.stack}`);
+    lines.push(`end`);
+    lines.push(`local ${decoyNames.probe} = (seed + ${vmStateNames.bcKeyCount} + #${decoyNames.pool}) % 19`);
+    lines.push(`if ${decoyNames.probe} == 31 then`);
+    lines.push(`  ${decoyNames.vm}(1, {})`);
+    lines.push(`end`);
   }
 
   if (constInfo) {
@@ -1762,23 +2542,37 @@ function buildVmSource(
     };
     if (vmOptions.constsSplit && constInfo.entries.length > (vmOptions.constsSplitSize || 0)) {
       const parts = splitConstEntries(constInfo.entries, rng, vmOptions.constsSplitSize || 24);
-      const order = parts.map((_, idx) => idx + 1);
-      rng.shuffle(order);
-      const partStrings = parts.map((part) => `{ ${part.map(renderConstEntry).join(", ")} }`);
-      lines.push(`local const_parts = { ${partStrings.join(", ")} }`);
-      lines.push(`local const_order = { ${order.join(", ")} }`);
-      lines.push(`local consts_data = {}`);
-      lines.push(`local const_index = 1`);
-      lines.push(`for i = 1, #const_order do`);
-      lines.push(`  local part = const_parts[const_order[i]]`);
-      lines.push(`  for j = 1, #part do`);
-      lines.push(`    consts_data[const_index] = part[j]`);
-      lines.push(`    const_index = const_index + 1`);
+      const storageOrder = parts.map((_, idx) => idx + 1);
+      rng.shuffle(storageOrder);
+      const storedParts = storageOrder.map((idx) => parts[idx - 1]);
+      const logicalOrder = new Array(parts.length);
+      storageOrder.forEach((partIndex, storageIndex) => {
+        logicalOrder[partIndex - 1] = storageIndex + 1;
+      });
+      const partStrings = storedParts.map((part) => `{ ${part.map(renderConstEntry).join(", ")} }`);
+      const logicalSizes = parts.map((part) => part.length);
+      appendPoolAssignments("const_parts", "const_parts", partStrings);
+      appendPoolAssignments("const_order", "const_order", logicalOrder.map(String));
+      appendPoolAssignments("const_part_sizes", "const_part_sizes", logicalSizes.map(String));
+      lines.push(`local function ${helperNames.constEntry}(i)`);
+      lines.push(`  local offset = 0`);
+      lines.push(`  for p = 1, #const_part_sizes do`);
+      lines.push(`    local size = const_part_sizes[p]`);
+      lines.push(`    local limit = offset + size`);
+      lines.push(`    if i <= limit then`);
+      lines.push(`      local part = const_parts[const_order[p]]`);
+      lines.push(`      return part[i - offset]`);
+      lines.push(`    end`);
+      lines.push(`    offset = limit`);
       lines.push(`  end`);
+      lines.push(`  return nil`);
       lines.push(`end`);
     } else {
       const constEntries = constInfo.entries.map(renderConstEntry);
-      lines.push(`local consts_data = { ${constEntries.join(", ")} }`);
+      appendPoolAssignments("consts_data", "consts_data", constEntries);
+      lines.push(`local function ${helperNames.constEntry}(i)`);
+      lines.push(`  return consts_data[i]`);
+      lines.push(`end`);
     }
     lines.push(`local consts_key_enc = { ${constInfo.keyEncoded.join(", ")} }`);
     lines.push(`local consts_key = {}`);
@@ -1795,14 +2589,14 @@ function buildVmSource(
     lines.push(`end`);
     lines.push(`local keyLen = #consts_key`);
     if (constEncoding === "string") {
-      lines.push(`local const_byte = string.byte`);
+      lines.push(`local const_byte = ${runtimeTools.byte}`);
     }
     lines.push(`local function ${helperNames.getConst}(i)`);
     lines.push(`  if consts_ready[i] then`);
     lines.push(`    return consts_cache[i]`);
     lines.push(`  end`);
     lines.push(`  consts_ready[i] = true`);
-    lines.push(`  local entry = consts_data[i]`);
+    lines.push(`  local entry = ${helperNames.constEntry}(i)`);
     lines.push(`  if not entry then`);
     lines.push(`    return nil`);
     lines.push(`  end`);
@@ -1817,9 +2611,9 @@ function buildVmSource(
       lines.push(`    local v = data[j] - consts_key[idx]`);
     }
     lines.push(`    if v < 0 then v = v + 256 end`);
-    lines.push(`    out[j] = string.char(v)`);
+    lines.push(`    out[j] = ${runtimeTools.char}(v)`);
     lines.push(`  end`);
-    lines.push(`  local s = table.concat(out)`);
+    lines.push(`  local s = ${runtimeTools.concat}(out)`);
     lines.push(`  local value`);
     lines.push(`  if tag == 0 then`);
     lines.push(`    value = nil`);
@@ -1860,14 +2654,14 @@ function buildVmSource(
     `local stack = {}`,
     `local top = 0`,
     `local env`,
-    `local getf = getfenv`,
-    `if type(getf) == "function" then env = getf(1) end`,
-    `if type(env) ~= "table" then env = _G end`,
-    `local pack = table.pack`,
+    `local getf = ${runtimeTools.getfenv}`,
+    `if ${runtimeTools.type}(getf) == "function" then env = getf(1) end`,
+    `if ${runtimeTools.type}(env) ~= "table" then env = _G end`,
+    `local pack = ${runtimeTools.pack}`,
     `if pack == nil then`,
-    `  pack = function(...) return { n = select("#", ...), ... } end`,
+    `  pack = function(...) return { n = ${runtimeTools.select}("#", ...), ... } end`,
     `end`,
-    `local unpack = table.unpack`,
+    `local unpack = ${runtimeTools.unpack}`,
     `if unpack == nil then`,
     `  local function unpack_fn(t, i, j)`,
     `    i = i or 1`,
@@ -1882,18 +2676,31 @@ function buildVmSource(
   if (useBytecodeStream) {
     const stream = encodeBytecodeStream(program.instructions, rng, seedState, bcInfo);
     const partStrings = stream.parts.map((part) => bytesToLuaString(part));
-    lines.push(`local bc_parts = { ${partStrings.join(", ")} }`);
-    lines.push(`local bc_order = { ${stream.order.join(", ")} }`);
-    lines.push(`local bc_build = {}`);
-    lines.push(`for i = 1, #bc_order do`);
-    lines.push(`  bc_build[i] = bc_parts[bc_order[i]]`);
-    lines.push(`end`);
-    lines.push(`local bc_str = table.concat(bc_build)`);
+    const logicalPartLengths = stream.order.map((storageIndex) => stream.parts[storageIndex - 1].length);
+    appendPoolAssignments("bc_parts", "bc_parts", partStrings);
+    appendPoolAssignments("bc_order", "bc_order", stream.order.map(String));
+    appendPoolAssignments("bc_part_lengths", "bc_part_lengths", logicalPartLengths.map(String));
     lines.push(`local bc_key = ${stream.keyPieces[0]} + ${stream.keyPieces[1]} + seed`);
     lines.push(`bc_key = (bc_key % 255) + 1`);
-    lines.push(`local bc_byte = string.byte`);
+    lines.push(`local bc_byte = ${runtimeTools.byte}`);
+    lines.push(`local function ${helperNames.partByte}(pos)`);
+    lines.push(`  local offset = 0`);
+    lines.push(`  for p = 1, #bc_order do`);
+    lines.push(`    local len = bc_part_lengths[p]`);
+    lines.push(`    local limit = offset + len`);
+    lines.push(`    if pos <= limit then`);
+    lines.push(`      local part = bc_parts[bc_order[p]]`);
+    lines.push(`      return bc_byte(part, pos - offset)`);
+    lines.push(`    end`);
+    lines.push(`    offset = limit`);
+    lines.push(`  end`);
+    lines.push(`  return nil`);
+    lines.push(`end`);
     lines.push(`local function ${helperNames.byte}(i)`);
-    lines.push(`  local b = bc_byte(bc_str, i)`);
+    lines.push(`  local b = ${helperNames.partByte}(i)`);
+    lines.push(`  if b == nil then`);
+    lines.push(`    return 0`);
+    lines.push(`  end`);
     lines.push(`  local mix = i - 1`);
     lines.push(`  mix = mix * 17`);
     lines.push(`  mix = mix + bc_key`);
@@ -1917,6 +2724,11 @@ function buildVmSource(
     lines.push(`end`);
   }
 
+  if (lowerPoolLines.length) {
+    lines.push(...lowerPoolLines);
+    lowerPoolLines.length = 0;
+  }
+
   if (blockDispatch) {
     const ids = buildBlockIds(program.instructions.length, rng);
     const idByIndex = new Map();
@@ -1934,42 +2746,51 @@ function buildVmSource(
     const entryId = ids[0] || 0;
     const sorted = blocks.slice().sort((a, b) => a.id - b.id);
     const emitBlock = (block) => {
-      const opName = typeof block.op === "string" ? block.op : (OPCODES[block.op - 1] || "NOP");
+      const opName = typeof block.op === "string" ? block.op : (opcodeList[block.op - 1] || "NOP");
       const a = block.a || 0;
       const b = block.b || 0;
+      const isX = typeof opName === "string" && opName.endsWith("_X");
+      const aExpr = isX ? bxor32(String(a), vmMeta.isaKeyA) : String(a);
+      const bExpr = opName === "CALL_X" ? bxor32(String(b), vmMeta.isaKeyB) : String(b);
+      const aValue = isX ? (a ^ (activeIsa.keyA || 0)) : a;
       const nextId = idByIndex.get(block.index + 1) || 0;
-      const targetId = idByIndex.get(a) || 0;
+      const targetId = idByIndex.get(aValue) || 0;
       switch (opName) {
         case "NOP":
           return [`pc = ${nextId}`];
         case "PUSH_CONST":
+        case "PUSH_CONST_X":
           return [
-            "top = top + 1",
-            `stack[top] = ${helperNames.getConst}(${a})`,
+            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
+            `stack[top] = ${helperNames.getConst}(${aExpr})`,
             `pc = ${nextId}`,
           ];
         case "PUSH_LOCAL":
+        case "PUSH_LOCAL_X":
           return [
-            "top = top + 1",
-            `stack[top] = locals[${a}]`,
+            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
+            `stack[top] = locals[${aExpr}]`,
             `pc = ${nextId}`,
           ];
         case "SET_LOCAL":
+        case "SET_LOCAL_X":
           return [
-            `locals[${a}] = stack[top]`,
+            `locals[${aExpr}] = stack[top]`,
             "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "PUSH_GLOBAL":
+        case "PUSH_GLOBAL_X":
           return [
-            "top = top + 1",
-            `stack[top] = env[${helperNames.getConst}(${a})]`,
+            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
+            `stack[top] = env[${helperNames.getConst}(${aExpr})]`,
             `pc = ${nextId}`,
           ];
         case "SET_GLOBAL":
+        case "SET_GLOBAL_X":
           return [
-            `env[${helperNames.getConst}(${a})] = stack[top]`,
+            `env[${helperNames.getConst}(${aExpr})] = stack[top]`,
             "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
@@ -2019,9 +2840,10 @@ function buildVmSource(
             `pc = ${nextId}`,
           ];
         case "CALL":
+        case "CALL_X":
           return [
-            `local argc = ${a}`,
-            `local retc = ${b}`,
+            `local argc = ${aExpr}`,
+            `local retc = ${bExpr}`,
             "local base = top - argc",
             "local fn = stack[base]",
             "if retc == 0 then",
@@ -2061,8 +2883,10 @@ function buildVmSource(
             "end",
           ];
         case "JMP":
+        case "JMP_X":
           return [`pc = ${targetId}`];
         case "JMP_IF_FALSE":
+        case "JMP_IF_FALSE_X":
           return [
             "if not stack[top] then",
             `  pc = ${targetId}`,
@@ -2071,6 +2895,7 @@ function buildVmSource(
             "end",
           ];
         case "JMP_IF_TRUE":
+        case "JMP_IF_TRUE_X":
           return [
             "if stack[top] then",
             `  pc = ${targetId}`,
@@ -2108,7 +2933,7 @@ function buildVmSource(
           ];
         case "IDIV":
           return [
-            "stack[top - 1] = math.floor(stack[top - 1] / stack[top])",
+            `stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`,
             "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
@@ -2236,10 +3061,24 @@ function buildVmSource(
       }
     };
 
+    if (activeIsa.stackProtocol === "api") {
+      lines.push(`local function push(arr, t, v)`);
+      lines.push(`  t = t + 1`);
+      lines.push(`  arr[t] = v`);
+      lines.push(`  return t`);
+      lines.push(`end`);
+    }
+    const dispatchMode = activeIsa.dispatchGraph === "auto"
+      ? (sorted.length > 8 ? "sparse" : "tree")
+      : activeIsa.dispatchGraph;
     lines.push(`local pc = ${entryId}`);
-    lines.push(`while pc ~= 0 do`);
-    lines.push(...buildDispatchTree(sorted, rng, emitBlock, "  "));
-    lines.push("end");
+    if (dispatchMode === "sparse") {
+      lines.push(...buildSparseDispatch(sorted, rng, emitBlock, "", { fakeEdges: activeIsa.fakeEdges }));
+    } else {
+      lines.push(`while pc ~= 0 do`);
+      lines.push(...buildDispatchTree(sorted, rng, emitBlock, "  "));
+      lines.push("end");
+    }
     lines.push("end");
   } else {
     const loopLines = [
@@ -2256,9 +3095,9 @@ function buildVmSource(
     }
     loopLines.push(
       `  local key = 0`,
-      `  if bc_key_count > 0 then`,
+      `  if ${vmStateNames.bcKeyCount} > 0 then`,
       `    local idx = pc + seed - 1`,
-      `    idx = idx % bc_key_count`,
+      `    idx = idx % ${vmStateNames.bcKeyCount}`,
       `    idx = idx + 1`,
       `    key = bc_keys[idx]`,
       `    op = ${bxor32("op", "key")}`,
@@ -2394,7 +3233,7 @@ function buildVmSource(
       `    top = top - 1`,
       `    pc = pc + 1`,
       `  elseif op == OP_IDIV then`,
-      `    stack[top - 1] = math.floor(stack[top - 1] / stack[top])`,
+      `    stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
@@ -2489,7 +3328,24 @@ function buildVmSource(
     lines.push(...loopLines);
   }
 
-  return lines.join("\n");
+  if (upperPoolLines.length) {
+    lines.splice(upperPoolInsertIndex, 0, ...upperPoolLines);
+  }
+  let vmSource = lines.join("\n");
+  const coreAliases = {
+    bc: makeName(),
+    bc_keys: makeName(),
+    consts: makeName(),
+    locals: makeName(),
+    stack: makeName(),
+    top: makeName(),
+    pc: makeName(),
+    env: makeName(),
+  };
+  Object.entries(coreAliases).forEach(([from, to]) => {
+    vmSource = replaceIdentifierToken(vmSource, from, to);
+  });
+  return vmSource;
 }
 
 function replaceFunctionBody(fnNode, vmAst, style) {
@@ -2499,6 +3355,15 @@ function replaceFunctionBody(fnNode, vmAst, style) {
     return;
   }
   fnNode.body = body;
+}
+
+function replaceChunkBody(ast, vmAst, prefix = null) {
+  if (!ast || !Array.isArray(ast.body)) {
+    return;
+  }
+  const prefixBody = Array.isArray(prefix) ? prefix : [];
+  const vmBody = vmAst && Array.isArray(vmAst.body) ? vmAst.body : [];
+  ast.body = [...prefixBody, ...vmBody];
 }
 
 function markVmNodes(vmAst) {
@@ -2511,8 +3376,81 @@ function markVmNodes(vmAst) {
   });
 }
 
+function shouldVirtualizeTopLevelChunk(ast, options) {
+  if (!ast || ast.type !== "Chunk") {
+    return false;
+  }
+  if (ast.__obf_vm_chunk) {
+    return false;
+  }
+  if (!options || !options.vm || options.vm.topLevel !== true) {
+    return false;
+  }
+  return true;
+}
+
+function pushTopLevelLocalName(names, seen, name) {
+  if (!name || typeof name !== "string" || name.includes(".")) {
+    return;
+  }
+  if (seen.has(name)) {
+    const index = names.indexOf(name);
+    if (index !== -1) {
+      names.splice(index, 1);
+    }
+  }
+  seen.add(name);
+  names.push(name);
+}
+
+function collectTopLevelPreboundLocals(statements) {
+  const names = [];
+  const seen = new Set();
+  if (!Array.isArray(statements)) {
+    return names;
+  }
+  statements.forEach((stmt) => {
+    if (!stmt || !stmt.type) {
+      return;
+    }
+    if (stmt.type === "LocalStatement") {
+      const vars = Array.isArray(stmt.variables) ? stmt.variables : [];
+      vars.forEach((variable) => {
+        if (variable && variable.type === "Identifier") {
+          pushTopLevelLocalName(names, seen, variable.name);
+        }
+      });
+      return;
+    }
+    if (stmt.type === "FunctionDeclaration" && stmt.isLocal) {
+      pushTopLevelLocalName(names, seen, getFunctionName(stmt));
+    }
+  });
+  return names;
+}
+
+function buildTopLevelChunkPlan(ast) {
+  const body = ast && Array.isArray(ast.body) ? ast.body : [];
+  let splitIndex = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    const stmt = body[i];
+    if (stmt && stmt.type === "FunctionDeclaration") {
+      splitIndex = i + 1;
+    }
+  }
+  const prefix = body.slice(0, splitIndex);
+  const statements = body.slice(splitIndex);
+  const preboundLocals = collectTopLevelPreboundLocals(prefix);
+  return {
+    prefix,
+    statements,
+    preboundLocals,
+  };
+}
+
 function virtualizeLuau(ast, ctx) {
-  const style = ctx.options.luauParser === "custom" ? "custom" : "luaparse";
+  const style = ctx.options && ctx.options.luauParser === "luaparse" ? "luaparse" : "custom";
+  liftNestedVmCallbacks(ast, ctx, style);
   const layers = Math.max(1, ctx.options.vm?.layers || 1);
   const ssaRoot = ctx && typeof ctx.getSSA === "function" ? ctx.getSSA() : null;
   for (let layer = 0; layer < layers; layer += 1) {
@@ -2562,14 +3500,30 @@ function virtualizeLuau(ast, ctx) {
       injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
 
       const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
+      const isaProfile = blockDispatch
+        ? applyPolymorphicBlockISA(program, ctx.rng, ctx.options.vm || {})
+        : {
+            enabled: false,
+            keyA: 0,
+            keyB: 0,
+            stackProtocol: "direct",
+            dispatchGraph: "tree",
+            fakeEdges: false,
+          };
+      const opcodeList = Array.from(new Set([
+        ...OPCODES,
+        ...program.instructions
+          .map((inst) => inst && inst[0])
+          .filter((name) => typeof name === "string"),
+      ]));
       const seedState = buildSeedState(ctx.rng, program.instructions.length, program.consts.length);
       let opcodeInfo = null;
       let keySchedule = null;
       let bcInfo = null;
 
       if (!blockDispatch) {
-        const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false);
-        opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState);
+        const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false, opcodeList);
+        opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
 
         program.instructions = program.instructions.map((inst) => [
           opcodeMap[inst[0]],
@@ -2623,14 +3577,131 @@ function virtualizeLuau(ast, ctx) {
         constInfo,
         ctx.rng,
         ctx.options.vm,
-        reservedNames
+        reservedNames,
+        opcodeList,
+        isaProfile
       );
-      const vmAst = ctx.options.luauParser === "custom"
+      const vmAst = style === "custom"
         ? ctx.parseCustom(vmSource)
         : ctx.parseLuaparse(vmSource);
       markVmNodes(vmAst);
       replaceFunctionBody(node, vmAst, style);
     });
+
+    if (!shouldVirtualizeTopLevelChunk(ast, ctx.options)) {
+      continue;
+    }
+    const chunkPlan = buildTopLevelChunkPlan(ast);
+    if (!Array.isArray(chunkPlan.statements) || chunkPlan.statements.length < minStatements) {
+      continue;
+    }
+
+    const compiler = new VmCompiler({ style, options: ctx.options });
+    let program;
+    try {
+      program = compiler.compileChunk(ast, {
+        statements: chunkPlan.statements,
+        preboundLocals: chunkPlan.preboundLocals,
+      });
+    } catch (err) {
+      const debug = Boolean(ctx.options.vm?.debug) || process.env.JS_OBF_VM_DEBUG === "1";
+      if (debug) {
+        const message = err && err.message ? err.message : String(err);
+        console.warn(`[js-obf] luau-vm skipped <chunk>: ${message}`);
+      }
+      continue;
+    }
+
+    injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
+
+    const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
+    const isaProfile = blockDispatch
+      ? applyPolymorphicBlockISA(program, ctx.rng, ctx.options.vm || {})
+      : {
+          enabled: false,
+          keyA: 0,
+          keyB: 0,
+          stackProtocol: "direct",
+          dispatchGraph: "tree",
+          fakeEdges: false,
+        };
+    const opcodeList = Array.from(new Set([
+      ...OPCODES,
+      ...program.instructions
+        .map((inst) => inst && inst[0])
+        .filter((name) => typeof name === "string"),
+    ]));
+    const seedState = buildSeedState(ctx.rng, program.instructions.length, program.consts.length);
+    let opcodeInfo = null;
+    let keySchedule = null;
+    let bcInfo = null;
+
+    if (!blockDispatch) {
+      const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false, opcodeList);
+      opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
+
+      program.instructions = program.instructions.map((inst) => [
+        opcodeMap[inst[0]],
+        inst[1] || 0,
+        inst[2] || 0,
+      ]);
+
+      keySchedule = ctx.options.vm?.runtimeKey === false
+        ? null
+        : buildKeySchedule(ctx.rng, seedState);
+      if (keySchedule) {
+        const keyCount = keySchedule.keys.length;
+        const seedValue = seedState.seed;
+        program.instructions = program.instructions.map((inst, idx) => {
+          const key = keyCount
+            ? keySchedule.keys[(idx + seedValue) % keyCount]
+            : 0;
+          if (!key) {
+            return inst;
+          }
+          return [
+            inst[0] ^ key,
+            (inst[1] || 0) ^ key,
+            (inst[2] || 0) ^ key,
+          ];
+        });
+      }
+
+      bcInfo = ctx.options.vm?.runtimeSplit === false
+        ? null
+        : splitInstructions(program.instructions, ctx.rng);
+    }
+
+    const constInfo = ctx.options.vm?.constsEncrypt === false
+      ? null
+      : encodeConstPool(program, ctx.rng, seedState);
+    const reservedNames = new Set();
+    if (ssaRoot) {
+      const ssa = findSSAForNode(ssaRoot, ast);
+      if (ssa) {
+        addSSAUsedNames(ssa, reservedNames);
+      }
+    }
+    const vmSource = buildVmSource(
+      program,
+      opcodeInfo,
+      program.paramNames,
+      seedState,
+      keySchedule,
+      bcInfo,
+      constInfo,
+      ctx.rng,
+      ctx.options.vm,
+      reservedNames,
+      opcodeList,
+      isaProfile
+    );
+    const vmAst = style === "custom"
+      ? ctx.parseCustom(vmSource)
+      : ctx.parseLuaparse(vmSource);
+    markVmNodes(vmAst);
+    replaceChunkBody(ast, vmAst, chunkPlan.prefix);
+    ast.__obf_vm_chunk = true;
   }
 }
 

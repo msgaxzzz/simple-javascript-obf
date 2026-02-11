@@ -95,6 +95,7 @@ enable_cff=true
 enable_cff_downlevel=false
 enable_dead=true
 enable_vm=false
+enable_vm_top_level=false
 enable_anti_hook=false
 enable_anti_hook_lock=false
 
@@ -128,6 +129,9 @@ if ! prompt_yes_no "Enable dead-code injection? [y/N]: "; then
 fi
 if prompt_yes_no "Enable VM virtualization? [y/N]: "; then
   enable_vm=true
+  if prompt_yes_no "Virtualize Luau top-level chunk? [y/N]: "; then
+    enable_vm_top_level=true
+  fi
 fi
 if prompt_yes_no "Enable anti-hook runtime guard? [y/N]: "; then
   enable_anti_hook=true
@@ -189,6 +193,9 @@ if ! ${enable_dead}; then
 fi
 if ${enable_vm}; then
   common_args+=(--vm)
+  if ${enable_vm_top_level}; then
+    common_args+=(--vm-top-level)
+  fi
   if [[ -n "${vm_include}" ]]; then
     common_args+=(--vm-include "${vm_include}")
   fi

@@ -102,6 +102,8 @@ Then open `http://localhost:6589` to upload or paste JavaScript/Luau, pick optio
 - `--no-dead` Disable dead-code injection
 - `--vm` Enable VM virtualization (see limitations)
 - `--vm-layers <n>` VM layers (Luau)
+- `--vm-top-level` Virtualize Luau top-level chunk
+- `--no-vm-top-level` Disable Luau top-level chunk virtualization (default)
 - `--vm-include name1,name2` Only virtualize the specified function names
 - `--vm-opcode-shuffle` Enable VM opcode random mapping (default on)
 - `--no-vm-opcode-shuffle` Disable VM opcode random mapping
@@ -154,7 +156,9 @@ VM supports most common syntax while keeping performance and memory overhead rea
 Luau VM targets common Luau syntax and will skip functions containing unsupported nodes:
 - Statements: local/assignment, call, return, if/else, while/repeat, numeric and generic `for`, do-blocks, break/continue
 - Expressions: literals, unary/binary, member/index, calls/method calls, tables, if-expr, type assertion, interpolated strings
-- Skips: `goto/label`, vararg functions, nested functions
+- Skips: `goto/label`, vararg functions, most nested functions
+- Nested callback lift: simple zero-arg anonymous callbacks used as first call argument (for example `task.spawn(function() ... end)`) are lifted and can be virtualized in the host function
+- Top-level chunk virtualization is opt-in via `--vm-top-level`; unsupported top-level constructs are skipped automatically and leading function prelude is preserved
 
 ## Structure
 - `src/index.js`: core API

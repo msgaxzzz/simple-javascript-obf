@@ -133,6 +133,14 @@ function buildCliArgs(options = {}) {
   if (stringsOptions.splitMaxParts !== undefined && stringsOptions.splitMaxParts !== null) {
     args.push("--strings-split-max-parts", String(stringsOptions.splitMaxParts));
   }
+  if (stringsOptions.segmentSize !== undefined && stringsOptions.segmentSize !== null) {
+    args.push("--strings-segment-size", String(stringsOptions.segmentSize));
+  }
+  if (stringsOptions.encodeValueFallback === false) {
+    args.push("--no-strings-value-fallback");
+  } else if (stringsOptions.encodeValueFallback === true) {
+    args.push("--strings-value-fallback");
+  }
   if (stringsOptions.encodeObjectKeys === false) {
     args.push("--no-strings-object-keys");
   } else if (stringsOptions.encodeObjectKeys === true) {
@@ -156,21 +164,65 @@ function buildCliArgs(options = {}) {
   }
   if (options.proxifyLocals) {
     args.push("--proxify-locals");
+  } else if (options.proxifyLocals === false) {
+    args.push("--no-proxify-locals");
   }
   if (options.numbers === true) {
     args.push("--numbers-expr");
   } else if (options.numbers === false) {
     args.push("--no-numbers-expr");
   }
+  if (options.numbersOptions) {
+    if (options.numbersOptions.probability !== undefined && options.numbersOptions.probability !== null) {
+      args.push("--numbers-expr-threshold", String(options.numbersOptions.probability));
+    }
+    if (options.numbersOptions.innerProbability !== undefined && options.numbersOptions.innerProbability !== null) {
+      args.push("--numbers-expr-inner", String(options.numbersOptions.innerProbability));
+    }
+    if (options.numbersOptions.maxDepth !== undefined && options.numbersOptions.maxDepth !== null) {
+      args.push("--numbers-expr-max-depth", String(options.numbersOptions.maxDepth));
+    }
+  }
   if (options.constArray === true) {
     args.push("--const-array");
   } else if (options.constArray === false) {
     args.push("--no-const-array");
   }
+  if (options.constArrayOptions) {
+    if (options.constArrayOptions.probability !== undefined && options.constArrayOptions.probability !== null) {
+      args.push("--const-array-threshold", String(options.constArrayOptions.probability));
+    }
+    if (options.constArrayOptions.stringsOnly === true) {
+      args.push("--const-array-strings-only");
+    } else if (options.constArrayOptions.stringsOnly === false) {
+      args.push("--no-const-array-strings-only");
+    }
+    if (options.constArrayOptions.shuffle === true) {
+      args.push("--const-array-shuffle");
+    } else if (options.constArrayOptions.shuffle === false) {
+      args.push("--no-const-array-shuffle");
+    }
+    if (options.constArrayOptions.rotate === true) {
+      args.push("--const-array-rotate");
+    } else if (options.constArrayOptions.rotate === false) {
+      args.push("--no-const-array-rotate");
+    }
+    if (options.constArrayOptions.encoding) {
+      args.push("--const-array-encoding", String(options.constArrayOptions.encoding));
+    }
+    if (options.constArrayOptions.wrapper === true) {
+      args.push("--const-array-wrapper");
+    } else if (options.constArrayOptions.wrapper === false) {
+      args.push("--no-const-array-wrapper");
+    }
+  }
   if (options.padFooter === true) {
     args.push("--pad-footer");
   } else if (options.padFooter === false) {
     args.push("--no-pad-footer");
+  }
+  if (options.padFooterOptions && options.padFooterOptions.blocks !== undefined && options.padFooterOptions.blocks !== null) {
+    args.push("--pad-footer-blocks", String(options.padFooterOptions.blocks));
   }
 
   if (options.cff === false) {
@@ -198,6 +250,11 @@ function buildCliArgs(options = {}) {
   }
   if (vm.layers !== undefined && vm.layers !== null) {
     args.push("--vm-layers", String(vm.layers));
+  }
+  if (vm.topLevel === true) {
+    args.push("--vm-top-level");
+  } else if (vm.topLevel === false) {
+    args.push("--no-vm-top-level");
   }
   if (Array.isArray(vm.include) && vm.include.length > 0) {
     args.push("--vm-include", vm.include.join(","));
@@ -241,13 +298,46 @@ function buildCliArgs(options = {}) {
   } else if (vm.runtimeSplit === true) {
     args.push("--vm-runtime-split");
   }
+  if (vm.decoyRuntime === false) {
+    args.push("--no-vm-decoy-runtime");
+  } else if (vm.decoyRuntime === true) {
+    args.push("--vm-decoy-runtime");
+  }
+  if (vm.decoyProbability !== undefined && vm.decoyProbability !== null && vm.decoyProbability !== "") {
+    args.push("--vm-decoy-probability", String(vm.decoyProbability));
+  }
+  if (vm.decoyStrings !== undefined && vm.decoyStrings !== null && vm.decoyStrings !== "") {
+    args.push("--vm-decoy-strings", String(vm.decoyStrings));
+  }
+  if (vm.dispatchGraph) {
+    args.push("--vm-dispatch-graph", String(vm.dispatchGraph));
+  }
+  if (vm.stackProtocol) {
+    args.push("--vm-stack-protocol", String(vm.stackProtocol));
+  }
+  if (vm.isaPolymorph === true) {
+    args.push("--vm-isa-polymorph");
+  } else if (vm.isaPolymorph === false) {
+    args.push("--no-vm-isa-polymorph");
+  }
+  if (vm.fakeEdges === true) {
+    args.push("--vm-fake-edges");
+  } else if (vm.fakeEdges === false) {
+    args.push("--no-vm-fake-edges");
+  }
   if (vm.blockDispatch === true) {
     args.push("--vm-block-dispatch");
   } else if (vm.blockDispatch === false) {
     args.push("--no-vm-block-dispatch");
   }
+  if (vm.numericStyle) {
+    args.push("--vm-numeric-style", String(vm.numericStyle));
+  }
   if (vm.downlevel) {
     args.push("--vm-downlevel");
+  }
+  if (vm.debug) {
+    args.push("--vm-debug");
   }
 
   if (options.antiHook && options.antiHook.lock) {
@@ -273,6 +363,11 @@ function buildCliArgs(options = {}) {
   }
   if (options.compact) {
     args.push("--compact");
+  }
+  if (options.timing === true) {
+    args.push("--timing");
+  } else if (options.timing === false) {
+    args.push("--no-timing");
   }
 
   return args;

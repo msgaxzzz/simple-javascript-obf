@@ -2,6 +2,8 @@ const assert = require("assert");
 const { obfuscateLuau } = require("../src/luau");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 const { walk } = require("../src/luau/ast");
+const { renameLuau } = require("../src/luau/rename");
+const { RNG } = require("../src/utils/rng");
 
 const source = [
   "local function demo()",
@@ -66,6 +68,42 @@ function hasPrintCall(ast) {
   return found;
 }
 
+function hasMemberName(ast, name) {
+  let found = false;
+  walk(ast, (node) => {
+    if (found || !node || node.type !== "MemberExpression") {
+      return;
+    }
+    if (node.identifier && node.identifier.type === "Identifier" && node.identifier.name === name) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+function runEnvAliasMemberGuard() {
+  const ast = parseCustom(
+    [
+      "local e = _G",
+      "local i = 1",
+      "local x = e[i].byte",
+      "return x",
+    ].join("\n")
+  );
+  ast.__obf_env_alias_name = "e";
+  renameLuau(ast, {
+    options: {
+      renameOptions: {
+        renameMembers: true,
+        renameGlobals: false,
+        reserved: [],
+      },
+    },
+    rng: new RNG("rename-env-alias-member"),
+  });
+  assert.ok(hasMemberName(ast, "byte"), "custom: env alias lookup member should preserve 'byte'");
+}
+
 async function runCustom() {
   const { code } = await obfuscateLuau(source, {
     lang: "luau",
@@ -85,6 +123,7 @@ async function runCustom() {
 }
 
 (async () => {
+  runEnvAliasMemberGuard();
   await runCustom();
   console.log("luau-rename: ok");
 })().catch((err) => {
