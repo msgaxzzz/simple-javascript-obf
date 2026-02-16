@@ -89,6 +89,14 @@ Options:
   --no-vm-decoy-runtime      Disable fake VM/runtime bait blocks
   --vm-decoy-probability <0-1>  Probability of decoy VM bait insertion (default: 0.85)
   --vm-decoy-strings <n>     Number of fake decoy VM strings (default: 12)
+  --vm-symbol-noise          Inject useless symbol-heavy noise blocks (Luau VM, default: on)
+  --no-vm-symbol-noise       Disable symbol-heavy noise blocks
+  --vm-instruction-fusion    Fuse VM instruction sequences into custom opcodes (default: on)
+  --no-vm-instruction-fusion Disable VM instruction fusion
+  --vm-semantic-misdirection Use misleading semantic-style VM names (default: on)
+  --no-vm-semantic-misdirection Disable misleading semantic-style VM names
+  --vm-dynamic-coupling      Enable runtime state-coupled VM opcode matching (default: on)
+  --no-vm-dynamic-coupling   Disable runtime state-coupled VM opcode matching
   --vm-numeric-style <plain|mixed|chaos>  Numeric literal style for Luau VM output
   --vm-dispatch-graph <auto|tree|sparse>  Luau VM dispatch graph style
   --vm-stack-protocol <auto|direct|api>   Luau VM stack protocol style
@@ -97,7 +105,7 @@ Options:
   --vm-fake-edges            Enable fake edges in sparse Luau dispatch graph
   --no-vm-fake-edges         Disable fake edges in sparse Luau dispatch graph
   --vm-block-dispatch         Use block-dispatch VM (Luau, hides bytecode table)
-  --no-vm-block-dispatch      Use table-driven VM (default)
+  --no-vm-block-dispatch      Force table-driven VM
   --vm-downlevel             Allow VM to downlevel let/const to var
   --vm-debug                 Log Luau VM compile failures
   --anti-hook                Enable anti-hook runtime guard
@@ -290,6 +298,38 @@ function parseArgs(argv) {
     if (arg === "--vm-decoy-strings") {
       options.vmDecoyStrings = args[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === "--vm-symbol-noise") {
+      options.vmSymbolNoise = true;
+      continue;
+    }
+    if (arg === "--no-vm-symbol-noise") {
+      options.vmSymbolNoise = false;
+      continue;
+    }
+    if (arg === "--vm-instruction-fusion") {
+      options.vmInstructionFusion = true;
+      continue;
+    }
+    if (arg === "--no-vm-instruction-fusion") {
+      options.vmInstructionFusion = false;
+      continue;
+    }
+    if (arg === "--vm-semantic-misdirection") {
+      options.vmSemanticMisdirection = true;
+      continue;
+    }
+    if (arg === "--no-vm-semantic-misdirection") {
+      options.vmSemanticMisdirection = false;
+      continue;
+    }
+    if (arg === "--vm-dynamic-coupling") {
+      options.vmDynamicCoupling = true;
+      continue;
+    }
+    if (arg === "--no-vm-dynamic-coupling") {
+      options.vmDynamicCoupling = false;
       continue;
     }
     if (arg === "--vm-dispatch-graph") {
@@ -688,6 +728,10 @@ async function main() {
       decoyRuntime: options.vmDecoyRuntime,
       decoyProbability: options.vmDecoyProbability,
       decoyStrings: options.vmDecoyStrings,
+      symbolNoise: options.vmSymbolNoise,
+      instructionFusion: options.vmInstructionFusion,
+      semanticMisdirection: options.vmSemanticMisdirection,
+      dynamicCoupling: options.vmDynamicCoupling,
       blockDispatch: options.vmBlockDispatch,
       dispatchGraph: options.vmDispatchGraph,
       stackProtocol: options.vmStackProtocol,

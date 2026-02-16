@@ -6,6 +6,7 @@ function numericLiteral(value) {
     type: "NumericLiteral",
     value,
     raw: Number.isFinite(value) ? String(value) : "0",
+    __obf_skip_numbers: true,
   };
 }
 
@@ -35,12 +36,116 @@ function randomOffset(rng, range) {
   return value;
 }
 
+function isInt32Like(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 0x3fffffff;
+}
+
+function buildBinary(operator, left, right) {
+  return {
+    type: "BinaryExpression",
+    operator,
+    left,
+    right,
+  };
+}
+
+function identifier(name) {
+  return {
+    type: "Identifier",
+    name,
+  };
+}
+
+function bit32Call(name, args) {
+  return {
+    type: "CallExpression",
+    base: {
+      type: "MemberExpression",
+      base: identifier("bit32"),
+      identifier: identifier(name),
+      indexer: ".",
+    },
+    arguments: args,
+  };
+}
+
+function tryBuildBitwiseMba(value, ctx, depth, options) {
+  if (!isInt32Like(value)) {
+    return null;
+  }
+  const leftValue = ctx.rng.int(0, value);
+  const rightValue = value - leftValue;
+  if (!Number.isSafeInteger(leftValue) || !Number.isSafeInteger(rightValue)) {
+    return null;
+  }
+  const leftExpr = buildExpression(leftValue, ctx, depth + 1, options);
+  const rightExpr = buildExpression(rightValue, ctx, depth + 1, options);
+  const xorExpr = bit32Call("bxor", [leftExpr, rightExpr]);
+  const andExpr = bit32Call("band", [leftExpr, rightExpr]);
+  const carryExpr = bit32Call("lshift", [andExpr, numericLiteral(1)]);
+  return buildBinary("+", xorExpr, carryExpr);
+}
+
+function tryBuildMulDivMba(value, ctx, depth, options) {
+  if (!Number.isSafeInteger(value)) {
+    return null;
+  }
+  const mul = ctx.rng.int(3, 11);
+  const shift = randomOffset(ctx.rng, Math.min(options.range, 1 << 15));
+  const shifted = value + shift;
+  const encoded = shifted * mul;
+  const bias = shift * mul;
+  if (!Number.isSafeInteger(shifted) || !Number.isSafeInteger(encoded) || !Number.isSafeInteger(bias)) {
+    return null;
+  }
+  const numerator = buildBinary(
+    "-",
+    buildBinary(
+      "*",
+      buildExpression(shifted, ctx, depth + 1, options),
+      numericLiteral(mul)
+    ),
+    buildExpression(bias, ctx, depth + 1, options)
+  );
+  return buildBinary("//", numerator, numericLiteral(mul));
+}
+
+function buildNonLinearExpression(value, ctx, depth, options) {
+  if (depth + 1 >= options.maxDepth) {
+    return null;
+  }
+  const candidates = [];
+  if (isInt32Like(value)) {
+    candidates.push(() => tryBuildBitwiseMba(value, ctx, depth, options));
+  }
+  if (Number.isSafeInteger(value)) {
+    candidates.push(() => tryBuildMulDivMba(value, ctx, depth, options));
+  }
+  if (!candidates.length) {
+    return null;
+  }
+  ctx.rng.shuffle(candidates);
+  for (const build of candidates) {
+    const expr = build();
+    if (expr) {
+      return expr;
+    }
+  }
+  return null;
+}
+
 function buildExpression(value, ctx, depth, options) {
   if (!Number.isFinite(value)) {
     return buildLiteral(0);
   }
   if (depth >= options.maxDepth || !ctx.rng.bool(options.innerProbability)) {
     return buildLiteral(value);
+  }
+  if (ctx.rng.bool(0.45)) {
+    const nonlinear = buildNonLinearExpression(value, ctx, depth, options);
+    if (nonlinear) {
+      return nonlinear;
+    }
   }
   const offset = randomOffset(ctx.rng, options.range);
   if (ctx.rng.bool(0.5)) {
@@ -118,11 +223,16 @@ function numbersToExpressions(ast, ctx) {
     if (!parent || key === null || key === undefined) {
       return;
     }
-    if (index === null || index === undefined) {
-      parent[key] = expr;
-    } else {
-      parent[key][index] = expr;
+    const target = index === null || index === undefined
+      ? parent[key]
+      : parent[key][index];
+    if (!target || typeof target !== "object") {
+      return;
     }
+    Object.keys(target).forEach((prop) => {
+      delete target[prop];
+    });
+    Object.assign(target, expr);
   });
 }
 

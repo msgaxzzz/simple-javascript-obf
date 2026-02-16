@@ -224,10 +224,6 @@ function isBuiltinLibBase(expr, scope, ctx) {
 }
 
 function defineName(scope, name, ctx) {
-  if (ctx && ctx.readNames && !ctx.readNames.has(name)) {
-    scope.bindings.set(name, name);
-    return name;
-  }
   if (ctx.reserved.has(name)) {
     scope.bindings.set(name, name);
     return name;
@@ -242,10 +238,6 @@ function defineName(scope, name, ctx) {
 }
 
 function defineGlobal(name, ctx) {
-  if (ctx && ctx.readNames && !ctx.readNames.has(name)) {
-    ctx.globals.set(name, name);
-    return name;
-  }
   if (ctx.reserved.has(name)) {
     ctx.globals.set(name, name);
     return name;

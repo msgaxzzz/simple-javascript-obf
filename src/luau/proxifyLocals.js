@@ -45,17 +45,26 @@ function proxyAssignment(proxyName, names) {
   if (!names || !names.length) {
     return null;
   }
+  const entries = names.map((entry) => {
+    if (typeof entry === "string") {
+      return { name: entry, key: entry };
+    }
+    return {
+      name: entry.name,
+      key: entry.key,
+    };
+  });
   return {
     type: "AssignmentStatement",
-    variables: names.map((name) => indexExpression(identifier(proxyName), name)),
-    init: names.map((name) => identifier(name)),
+    variables: entries.map((entry) => indexExpression(identifier(proxyName), entry.key)),
+    init: entries.map((entry) => identifier(entry.name)),
   };
 }
 
 function createScope(parent = null) {
   return {
     parent,
-    locals: new Set(),
+    locals: new Map(),
     proxyName: null,
   };
 }
@@ -67,11 +76,14 @@ function ensureProxy(scope, nameGen) {
   return scope.proxyName;
 }
 
-function declareLocal(scope, name, nameGen) {
+function declareLocal(scope, name, nameGen, slotKeyGen) {
   if (!name || RESERVED.has(name)) {
     return;
   }
-  scope.locals.add(name);
+  if (!scope.locals.has(name)) {
+    const key = slotKeyGen ? slotKeyGen("slot") : name;
+    scope.locals.set(name, key);
+  }
   ensureProxy(scope, nameGen);
 }
 
@@ -98,7 +110,8 @@ function isProxyName(scope, name) {
 }
 
 function buildProxyIndex(scope, name) {
-  return indexExpression(identifier(scope.proxyName), name);
+  const key = scope.locals.get(name) || name;
+  return indexExpression(identifier(scope.proxyName), key);
 }
 
 function transformExpression(expr, scope, ctx) {
@@ -250,7 +263,7 @@ function transformStatementList(body, scope, ctx) {
 
 function transformScopedBody(body, parentScope, ctx, initNames = []) {
   const scope = createScope(parentScope);
-  initNames.forEach((name) => declareLocal(scope, name, ctx.nameGen));
+  initNames.forEach((name) => declareLocal(scope, name, ctx.nameGen, ctx.slotKeyGen));
   if (Array.isArray(body)) {
     transformStatementList(body, scope, ctx);
   } else if (body && Array.isArray(body.body)) {
@@ -264,7 +277,11 @@ function finalizeScope(scope, body, initNames) {
     return;
   }
   const initStatements = [proxyDeclaration(scope.proxyName)];
-  const assignment = proxyAssignment(scope.proxyName, initNames);
+  const initEntries = (initNames || []).map((name) => ({
+    name,
+    key: scope.locals.get(name) || name,
+  }));
+  const assignment = proxyAssignment(scope.proxyName, initEntries);
   if (assignment) {
     initStatements.push(assignment);
   }
@@ -315,7 +332,7 @@ function transformFunctionExpression(fn, parentScope, ctx) {
     fn.parameters.forEach((param) => {
       if (param && param.type === "Identifier") {
         params.push(param.name);
-        declareLocal(scope, param.name, ctx.nameGen);
+        declareLocal(scope, param.name, ctx.nameGen, ctx.slotKeyGen);
       }
     });
   }
@@ -339,8 +356,11 @@ function transformStatement(stmt, scope, ctx) {
       const names = [];
       stmt.variables.forEach((variable) => {
         if (variable && variable.type === "Identifier") {
-          declareLocal(scope, variable.name, ctx.nameGen);
-          names.push(variable.name);
+          declareLocal(scope, variable.name, ctx.nameGen, ctx.slotKeyGen);
+          names.push({
+            name: variable.name,
+            key: scope.locals.get(variable.name) || variable.name,
+          });
         }
       });
       const assignment = scope.proxyName ? proxyAssignment(scope.proxyName, names) : null;
@@ -364,10 +384,13 @@ function transformStatement(stmt, scope, ctx) {
       const isLocal = Boolean(stmt.isLocal);
       const fnName = isLocal ? extractFunctionName(stmt) : null;
       if (isLocal && fnName) {
-        declareLocal(scope, fnName, ctx.nameGen);
+        declareLocal(scope, fnName, ctx.nameGen, ctx.slotKeyGen);
         const fnExpr = buildFunctionExpression(stmt, ctx.isCustom);
         transformFunctionExpression(fnExpr, scope, ctx);
-        const assignment = proxyAssignment(scope.proxyName, [fnName]);
+        const assignment = proxyAssignment(scope.proxyName, [{
+          name: fnName,
+          key: scope.locals.get(fnName) || fnName,
+        }]);
         if (assignment) {
           assignment.init = [fnExpr];
           return assignment;
@@ -471,9 +494,11 @@ function proxifyLocals(ast, ctx) {
     addSSAUsedNamesFromRoot(ssaRoot, used);
   }
   const nameGen = makeNameFactory(ctx.rng, used);
+  const slotKeyGen = makeNameFactory(ctx.rng, used);
   const state = {
     ...ctx,
     nameGen,
+    slotKeyGen,
     isCustom: ctx.options.luauParser === "custom",
   };
   const rootScope = createScope(null);

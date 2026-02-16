@@ -96,7 +96,10 @@ async function runBlockDispatchCustom() {
     seed: "vm-block-custom",
   });
   parseCustom(code);
-  assert.ok(code.includes("while pc ~= 0 do"), "block dispatch should emit pc loop");
+  assert.ok(
+    /while\s+[A-Za-z_][A-Za-z0-9_]*\s*~=\s*0\s*do/.test(code),
+    "block dispatch should emit pc loop"
+  );
   assert.ok(!code.includes("inst = bc[pc]"), "block dispatch should omit bc table loop");
 }
 

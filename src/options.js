@@ -114,6 +114,12 @@ function normalizeOptions(userOptions = {}) {
     2,
     { min: 1, max: 8 }
   );
+  const userVmEnabled = typeof userOptions.vm === "boolean"
+    ? userOptions.vm
+    : Boolean(userOptions.vm && userOptions.vm.enabled);
+  const cffEnabledByDefault = userOptions.cff ?? preset.cff;
+  const vmLikeFlow = lang === "luau" && (userVmEnabled || (cffEnabledByDefault && cffMode !== "classic"));
+  const constArrayPerScopeDefault = !vmLikeFlow;
 
   const autoLuauHigh = lang === "luau" && presetName === "high";
   const options = {
@@ -148,7 +154,7 @@ function normalizeOptions(userOptions = {}) {
       wrapper: constArrayUserOptions.wrapper !== false,
       shards: constArrayShards,
       shardMinLength: constArrayShardMin,
-      perScope: constArrayUserOptions.perScope !== false,
+      perScope: constArrayUserOptions.perScope ?? constArrayPerScopeDefault,
       wipe: constArrayUserOptions.wipe !== false,
       opaque: constArrayOpaque,
     },
@@ -156,7 +162,7 @@ function normalizeOptions(userOptions = {}) {
     padFooterOptions: {
       blocks: padFooterBlocks,
     },
-    seed: userOptions.seed ?? "js-obf",
+    seed: userOptions.seed,
     filename: userOptions.filename ?? "input.js",
     sourceMap: Boolean(userOptions.sourceMap),
     compact: Boolean(userOptions.compact),
@@ -212,6 +218,8 @@ function normalizeOptions(userOptions = {}) {
     options.vm = { enabled: options.vm };
   }
   const vmOptions = options.vm || {};
+  const cffEnabled = options.cff !== false;
+  const vmCffEnabled = lang === "luau" && cffEnabled && cffMode !== "classic";
   const vmLayers = normalizeCount(vmOptions.layers, 1, { min: 1, max: 3 });
   const vmRuntimeKey = vmOptions.runtimeKey !== false;
   const vmRuntimeSplit = vmOptions.runtimeSplit !== false;
@@ -220,7 +228,7 @@ function normalizeOptions(userOptions = {}) {
     : "table";
   const vmConstsSplit = vmOptions.constsSplit !== false;
   const vmConstsSplitSize = normalizeCount(vmOptions.constsSplitSize, 24, { min: 4, max: 200 });
-  const vmBlockDispatch = vmOptions.blockDispatch ?? (lang === "luau" && Boolean(vmOptions.enabled));
+  const vmBlockDispatch = vmOptions.blockDispatch ?? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled));
   const vmDispatchGraph = typeof vmOptions.dispatchGraph === "string"
     ? vmOptions.dispatchGraph.toLowerCase()
     : null;
@@ -235,6 +243,10 @@ function normalizeOptions(userOptions = {}) {
   const vmDecoyRuntime = vmOptions.decoyRuntime;
   const vmDecoyProbability = normalizeProbability(vmOptions.decoyProbability, 0.85);
   const vmDecoyStrings = normalizeCount(vmOptions.decoyStrings, 12, { min: 4, max: 96 });
+  const vmSymbolNoise = vmOptions.symbolNoise;
+  const vmInstructionFusion = vmOptions.instructionFusion;
+  const vmSemanticMisdirection = vmOptions.semanticMisdirection;
+  const vmDynamicCoupling = vmOptions.dynamicCoupling;
   let fakeOpcodes = vmOptions.fakeOpcodes;
   if (fakeOpcodes === undefined || fakeOpcodes === true) {
     fakeOpcodes = 0.15;
@@ -271,6 +283,16 @@ function normalizeOptions(userOptions = {}) {
     decoyRuntime: vmDecoyRuntime === undefined ? (lang === "luau" && Boolean(vmOptions.enabled)) : Boolean(vmDecoyRuntime),
     decoyProbability: vmDecoyProbability,
     decoyStrings: vmDecoyStrings,
+    symbolNoise: vmSymbolNoise === undefined ? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled)) : Boolean(vmSymbolNoise),
+    instructionFusion: vmInstructionFusion === undefined
+      ? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled))
+      : Boolean(vmInstructionFusion),
+    semanticMisdirection: vmSemanticMisdirection === undefined
+      ? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled))
+      : Boolean(vmSemanticMisdirection),
+    dynamicCoupling: vmDynamicCoupling === undefined
+      ? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled))
+      : Boolean(vmDynamicCoupling),
     downlevel: Boolean(vmOptions.downlevel),
     debug: Boolean(vmOptions.debug),
   };

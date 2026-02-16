@@ -186,7 +186,43 @@ function literalKey(entry) {
   return `${entry.kind}:${String(entry.value)}`;
 }
 
-function literalToLua(entry, encoding) {
+function encodeNumberLiteral(value, rng) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) {
+    return "0";
+  }
+  const plain = String(num);
+  if (!rng || !Number.isSafeInteger(num)) {
+    return plain;
+  }
+  if (num >= 0 && num <= 0x3fffffff && rng.bool(0.55)) {
+    const left = rng.int(0, num);
+    const right = num - left;
+    return `(bit32.bxor(${left}, ${right}) + bit32.lshift(bit32.band(${left}, ${right}), 1))`;
+  }
+  if (rng.bool(0.75)) {
+    const mul = rng.int(3, 11);
+    const shift = rng.int(-2048, 2048) || 1;
+    const shifted = num + shift;
+    const encoded = shifted * mul;
+    const bias = shift * mul;
+    if (
+      Number.isSafeInteger(shifted) &&
+      Number.isSafeInteger(encoded) &&
+      Number.isSafeInteger(bias)
+    ) {
+      return `((${encoded} - ${bias}) // ${mul})`;
+    }
+  }
+  const offset = rng.int(1, 8192);
+  const encoded = num + offset;
+  if (Number.isSafeInteger(encoded)) {
+    return `(${encoded} - ${offset})`;
+  }
+  return plain;
+}
+
+function literalToLua(entry, encoding, rng) {
   if (!entry) {
     return "nil";
   }
@@ -197,7 +233,7 @@ function literalToLua(entry, encoding) {
       }
       return luaString(entry.value);
     case "number":
-      return String(entry.value);
+      return encodeNumberLiteral(entry.value, rng);
     case "boolean":
       return entry.value ? "true" : "false";
     case "nil":
@@ -419,7 +455,7 @@ function constantArrayLuau(ast, ctx) {
     });
 
     poolMeta.forEach((meta) => {
-      const values = meta.ordered.map((entry) => literalToLua(entry, encoding)).join(", ");
+      const values = meta.ordered.map((entry) => literalToLua(entry, encoding, ctx.rng)).join(", ");
       const needCache = Boolean(hasBase64Strings || wipe);
       runtimeLines.push(`local ${meta.tableName} = { ${values} }`);
       if (needCache) {
@@ -431,7 +467,7 @@ function constantArrayLuau(ast, ctx) {
       }
       runtimeLines.push(`local function ${meta.getterName}(i)`);
       if (wrapper && meta.constLength > 1) {
-        runtimeLines.push(`  local idx = i + ${meta.offsetName}`);
+        runtimeLines.push(`  local idx = i + ${meta.offsetName} - 1`);
         runtimeLines.push(`  idx = idx % ${meta.lengthName}`);
         runtimeLines.push("  idx = idx + 1");
       } else {

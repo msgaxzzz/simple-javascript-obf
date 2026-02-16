@@ -136,15 +136,47 @@ function buildSeedState(rng, bcLength, constCount) {
 }
 
 function buildKeySchedule(rng, seedState) {
-  const keyCount = rng.int(2, 4);
+  const rounds = rng.int(3, 6);
   const base = seedState.pieces[0] || 0;
-  const keys = Array.from({ length: keyCount }, (_, idx) => (
-    ((seedState.seed + base + (idx + 1) * 17) % 255) + 1
+  const words = Array.from({ length: 4 }, (_, idx) => (
+    (rng.int(1, 0x7fffffff) + seedState.seed + base * (idx + 1)) >>> 0
   ));
-  const maskPieces = [rng.int(1, 200), rng.int(1, 200)];
-  const mask = ((maskPieces[0] ^ maskPieces[1]) + seedState.seed) % 255 + 1;
-  const encoded = keys.map((key, idx) => key ^ ((mask + idx * 13) % 255));
-  return { encoded, maskPieces, keys };
+  const maskPieces = [rng.int(1, 0xffff), rng.int(1, 0xffff)];
+  const mask = ((maskPieces[0] ^ maskPieces[1]) + seedState.seed + 0x9e37) >>> 0;
+  const encoded = words.map((word, idx) => (
+    word ^ ((mask + (idx * 0x9e37)) >>> 0)
+  ));
+  return { encoded, maskPieces, words, rounds };
+}
+
+function computeInstructionKey(position, seed, words, rounds) {
+  const pc = Number(position) >>> 0;
+  const w = Array.isArray(words) && words.length >= 4
+    ? words
+    : [0x13579bdf, 0x2468ace1, 0x10213243, 0x55667788];
+  let v0 = (((pc + (seed >>> 0) + (w[0] >>> 0)) >>> 0) ^ (w[1] >>> 0)) >>> 0;
+  let v1 = ((((seed >>> 0) + (w[2] >>> 0)) >>> 0) ^ ((pc + (w[3] >>> 0)) >>> 0)) >>> 0;
+  let sum = ((w[0] >>> 0) + (w[3] >>> 0) + pc) >>> 0;
+  const totalRounds = Math.max(1, Number(rounds) || 1);
+  for (let i = 0; i < totalRounds; i += 1) {
+    sum = (sum + 0x9e37) >>> 0;
+    let mix1 = ((((v1 << 4) >>> 0) ^ (v1 >>> 5)) >>> 0);
+    mix1 = (mix1 ^ ((v1 + sum) >>> 0)) >>> 0;
+    v0 = (v0 + ((mix1 ^ (w[sum & 3] >>> 0)) >>> 0)) >>> 0;
+    let mix2 = ((((v0 << 4) >>> 0) ^ (v0 >>> 5)) >>> 0);
+    mix2 = (mix2 ^ ((v0 + sum) >>> 0)) >>> 0;
+    v1 = (v1 + ((mix2 ^ (w[(sum >>> 11) & 3] >>> 0)) >>> 0)) >>> 0;
+  }
+  let out = (v0 ^ v1) >>> 0;
+  out = (out ^ ((pc + sum) >>> 0)) >>> 0;
+  return out >>> 0;
+}
+
+function deriveInstructionMasks(key) {
+  const k = key >>> 0;
+  const aMask = (k ^ ((k << 5) >>> 0)) >>> 0;
+  const bMask = ((k ^ (k >>> 3) ^ 0xA5A5A5A5) >>> 0);
+  return { aMask, bMask };
 }
 
 function buildOpcodeEncoding(opcodeMap, rng, seedState, opcodeList = OPCODES) {
@@ -259,16 +291,29 @@ function encodeU32(value) {
   ];
 }
 
-function escapeRegexLiteral(value) {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function replaceIdentifierToken(source, from, to) {
-  if (!source || from === to) {
-    return source;
+function renameVmCoreIdentifiers(vmAst, aliases) {
+  if (!vmAst || !aliases) {
+    return;
   }
-  const pattern = new RegExp(`\\b${escapeRegexLiteral(from)}\\b`, "g");
-  return source.replace(pattern, to);
+  const visit = (node) => {
+    if (!node || typeof node !== "object") {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item) => visit(item));
+      return;
+    }
+    if (node.type === "Identifier" && typeof node.name === "string") {
+      const next = aliases[node.name];
+      if (next && next !== node.name) {
+        node.name = next;
+      }
+    }
+    Object.keys(node).forEach((key) => {
+      visit(node[key]);
+    });
+  };
+  visit(vmAst);
 }
 
 function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
@@ -429,13 +474,120 @@ function buildDecoyVmStrings(rng, count) {
   return out;
 }
 
+function buildSymbolNoiseToken(rng) {
+  const chunks = [
+    "!@#$%^&*",
+    "[]{}<>?/\\|",
+    "+-=~`",
+    ":;,.\"'",
+    "__--__",
+    "::==::",
+    "||&&||",
+  ];
+  const parts = rng.int(2, 4);
+  let out = "";
+  for (let i = 0; i < parts; i += 1) {
+    out += chunks[rng.int(0, chunks.length - 1)];
+    if (rng.bool(0.6)) {
+      out += String(rng.int(0, 9999));
+    }
+  }
+  return out;
+}
+
+const VM_JUMP_OPS = new Set(["JMP", "JMP_IF_FALSE", "JMP_IF_TRUE"]);
+
+function remapInstructionJumpTargets(instructions, indexMap) {
+  for (const inst of instructions) {
+    if (!inst || !VM_JUMP_OPS.has(inst[0])) {
+      continue;
+    }
+    const target = Number(inst[1]) || 0;
+    if (target > 0 && target < indexMap.length && indexMap[target]) {
+      inst[1] = indexMap[target];
+    }
+  }
+}
+
+function applyInstructionFusion(program, rng, vmOptions = {}) {
+  if (!program || !Array.isArray(program.instructions) || vmOptions.instructionFusion === false) {
+    return;
+  }
+  const original = program.instructions;
+  if (original.length < 3) {
+    return;
+  }
+  const jumpTargets = new Set();
+  for (const inst of original) {
+    if (inst && VM_JUMP_OPS.has(inst[0])) {
+      const target = Number(inst[1]) || 0;
+      if (target > 0) {
+        jumpTargets.add(target);
+      }
+    }
+  }
+  const fused = [];
+  const indexMap = new Array(original.length + 1);
+  let changed = false;
+  for (let i = 0; i < original.length; ) {
+    const instA = original[i];
+    const instB = original[i + 1];
+    const instC = original[i + 2];
+    const idxA = i + 1;
+    const idxB = i + 2;
+    const idxC = i + 3;
+    let fusedInst = null;
+    if (
+      instA &&
+      instB &&
+      instC &&
+      !jumpTargets.has(idxB) &&
+      !jumpTargets.has(idxC)
+    ) {
+      const opA = instA[0];
+      const opB = instB[0];
+      const opC = instC[0];
+      if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opC === "ADD") {
+        fusedInst = ["PUSH_LOCAL_ADD_LOCAL", instA[1] || 0, instB[1] || 0];
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opC === "SUB") {
+        fusedInst = ["PUSH_LOCAL_SUB_LOCAL", instA[1] || 0, instB[1] || 0];
+      } else if (opA === "PUSH_CONST" && opB === "PUSH_CONST" && opC === "ADD") {
+        fusedInst = ["PUSH_CONST_ADD_CONST", instA[1] || 0, instB[1] || 0];
+      }
+    }
+    if (fusedInst) {
+      const mapped = fused.length + 1;
+      indexMap[idxA] = mapped;
+      indexMap[idxB] = mapped;
+      indexMap[idxC] = mapped;
+      fused.push(fusedInst);
+      i += 3;
+      changed = true;
+      continue;
+    }
+    const mapped = fused.length + 1;
+    indexMap[idxA] = mapped;
+    fused.push(instA);
+    i += 1;
+  }
+  if (!changed) {
+    return;
+  }
+  remapInstructionJumpTargets(fused, indexMap);
+  program.instructions = fused;
+}
+
 function injectFakeInstructions(program, rng, probability) {
   if (!probability || probability <= 0) {
     return;
   }
   const nilIndex = ensureConst(program, null);
+  const original = program.instructions.slice();
   const next = [];
-  for (const inst of program.instructions) {
+  const indexMap = new Array(original.length + 1);
+  for (let i = 0; i < original.length; i += 1) {
+    const inst = original[i];
+    indexMap[i + 1] = next.length + 1;
     next.push(inst);
     if (rng.bool(probability)) {
       if (rng.bool(0.5)) {
@@ -445,6 +597,7 @@ function injectFakeInstructions(program, rng, probability) {
       }
     }
   }
+  remapInstructionJumpTargets(next, indexMap);
   program.instructions = next;
 }
 
@@ -2009,6 +2162,7 @@ function buildVmSource(
   const seedPieces = seedState ? seedState.pieces : [];
   const keyMaskPieces = keySchedule ? keySchedule.maskPieces : null;
   const keyEncoded = keySchedule ? keySchedule.encoded : null;
+  const keyRounds = keySchedule ? keySchedule.rounds : 0;
   const opEncoded = opcodeInfo ? opcodeInfo.encoded : null;
   const opKeyPieces = opcodeInfo ? opcodeInfo.keyPieces : null;
   const LUA_KEYWORDS = new Set([
@@ -2053,6 +2207,19 @@ function buildVmSource(
     "debug",
     "utf8",
   ]);
+  const semanticMisdirection = vmOptions.semanticMisdirection !== false;
+  const misleadingNamePool = [
+    "check_user_auth",
+    "validate_license_key",
+    "process_payment_token",
+    "verify_subscription",
+    "audit_billing_state",
+    "sync_entitlement_cache",
+    "authorize_purchase_flow",
+    "validate_invoice_nonce",
+    "load_secure_profile",
+    "refresh_payment_session",
+  ];
   const nameUsed = new Set();
   if (reservedNames && typeof reservedNames.forEach === "function") {
     reservedNames.forEach((name) => {
@@ -2066,12 +2233,17 @@ function buildVmSource(
   const makeName = () => {
     let out = "";
     while (!out || LUA_KEYWORDS.has(out) || RESERVED_NAMES.has(out) || nameUsed.has(out) || out.toLowerCase().includes("obf")) {
-      const length = rng.int(4, 8);
-      let name = firstAlphabet[rng.int(0, firstAlphabet.length - 1)];
-      for (let i = 1; i < length; i += 1) {
-        name += restAlphabet[rng.int(0, restAlphabet.length - 1)];
+      if (semanticMisdirection && rng.bool(0.38)) {
+        const base = rng.pick(misleadingNamePool);
+        out = rng.bool(0.72) ? `${base}_${rng.int(11, 9999)}` : base;
+        continue;
       }
-      out = name;
+      const length = rng.int(4, 8);
+      let randomName = firstAlphabet[rng.int(0, firstAlphabet.length - 1)];
+      for (let i = 1; i < length; i += 1) {
+        randomName += restAlphabet[rng.int(0, restAlphabet.length - 1)];
+      }
+      out = randomName;
     }
     nameUsed.add(out);
     return out;
@@ -2106,9 +2278,13 @@ function buildVmSource(
     u32: makeName(),
     partByte: makeName(),
     constEntry: makeName(),
+    keyAt: makeName(),
+    opMatch: makeName(),
   };
   const vmStateNames = {
     bcKeyCount: makeName(),
+    stateKey: makeName(),
+    statePulse: makeName(),
   };
   const vmMeta = {
     isaKeyA: makeName(),
@@ -2447,20 +2623,47 @@ function buildVmSource(
 
   if (!blockDispatch && keyEncoded && keyMaskPieces) {
     lines.push(`local bc_key_data = { ${keyEncoded.join(", ")} }`);
+    lines.push(`local bc_key_state = {}`);
     lines.push(`local bc_key_mask = ${bxor32(String(keyMaskPieces[0]), String(keyMaskPieces[1]))} + seed`);
-    lines.push(`bc_key_mask = (bc_key_mask % 255) + 1`);
-    lines.push(`local bc_keys = {}`);
+    lines.push(`bc_key_mask = (bc_key_mask + 40503) % ${bitNames.mod}`);
     lines.push(`for i = 1, #bc_key_data do`);
     lines.push(`  local mix = i - 1`);
-    lines.push(`  mix = mix * 13`);
+    lines.push(`  mix = mix * 40503`);
     lines.push(`  mix = mix + bc_key_mask`);
-    lines.push(`  mix = mix % 255`);
-    lines.push(`  bc_keys[i] = ${bxor32("bc_key_data[i]", "mix")}`);
+    lines.push(`  mix = mix % ${bitNames.mod}`);
+    lines.push(`  bc_key_state[i] = ${bxor32("bc_key_data[i]", "mix")}`);
     lines.push(`end`);
-    lines.push(`local ${vmStateNames.bcKeyCount} = #bc_keys`);
+    lines.push(`local ${vmStateNames.bcKeyCount} = #bc_key_state`);
+    lines.push(`local bc_key_rounds = ${Math.max(1, keyRounds || 1)}`);
+    lines.push(`local function ${helperNames.keyAt}(pcv)`);
+    lines.push(`  if ${vmStateNames.bcKeyCount} < 4 then`);
+    lines.push(`    return 0`);
+    lines.push(`  end`);
+    lines.push(`  local v0 = (pcv + seed + bc_key_state[1]) % ${bitNames.mod}`);
+    lines.push(`  v0 = ${bxor32("v0", "bc_key_state[2]")}`);
+    lines.push(`  local v1 = (seed + bc_key_state[3]) % ${bitNames.mod}`);
+    lines.push(`  v1 = ${bxor32("v1", "(pcv + bc_key_state[4]) % " + bitNames.mod)}`);
+    lines.push(`  local sum = (bc_key_state[1] + bc_key_state[4] + pcv) % ${bitNames.mod}`);
+    lines.push(`  for _ = 1, bc_key_rounds do`);
+    lines.push(`    sum = (sum + 40503) % ${bitNames.mod}`);
+    lines.push(`    local m1 = ${bxor32(lshift32("v1", "4"), rshift32("v1", "5"))}`);
+    lines.push(`    m1 = ${bxor32("m1", "(v1 + sum) % " + bitNames.mod)}`);
+    lines.push(`    local k1 = bc_key_state[(sum % 4) + 1]`);
+    lines.push(`    v0 = (v0 + ${bxor32("m1", "k1")}) % ${bitNames.mod}`);
+    lines.push(`    local m2 = ${bxor32(lshift32("v0", "4"), rshift32("v0", "5"))}`);
+    lines.push(`    m2 = ${bxor32("m2", "(v0 + sum) % " + bitNames.mod)}`);
+    lines.push(`    local k2 = bc_key_state[(${rshift32("sum", "11")} % 4) + 1]`);
+    lines.push(`    v1 = (v1 + ${bxor32("m2", "k2")}) % ${bitNames.mod}`);
+    lines.push(`  end`);
+    lines.push(`  local out = ${bxor32("v0", "v1")}`);
+    lines.push(`  out = ${bxor32("out", "(pcv + sum) % " + bitNames.mod)}`);
+    lines.push(`  return out`);
+    lines.push(`end`);
   } else {
-    lines.push(`local bc_keys = {}`);
     lines.push(`local ${vmStateNames.bcKeyCount} = 0`);
+    lines.push(`local function ${helperNames.keyAt}(_)`);
+    lines.push(`  return 0`);
+    lines.push(`end`);
   }
 
   const decoyProbability = typeof vmOptions.decoyProbability === "number"
@@ -2525,9 +2728,11 @@ function buildVmSource(
     lines.push(`  end`);
     lines.push(`  return ${decoyNames.sink}, ${decoyNames.stack}`);
     lines.push(`end`);
+    const decoyGateA = rng.int(3, 17);
+    const decoyGateB = rng.int(0, 18);
     lines.push(`local ${decoyNames.probe} = (seed + ${vmStateNames.bcKeyCount} + #${decoyNames.pool}) % 19`);
-    lines.push(`if ${decoyNames.probe} == 31 then`);
-    lines.push(`  ${decoyNames.vm}(1, {})`);
+    lines.push(`if ((${decoyNames.probe} * ${decoyGateA}) + seed) % 19 == ${decoyGateB} then`);
+    lines.push(`  ${decoyNames.vm}((${decoyNames.probe} % #${decoyNames.pool}) + 1, {})`);
     lines.push(`end`);
   }
 
@@ -2672,6 +2877,34 @@ function buildVmSource(
     `  unpack = unpack_fn`,
     `end`,
   );
+  const dynamicCoupling = vmOptions.dynamicCoupling !== false;
+  const couplingMul = rng.int(3, 31);
+  const couplingAdd = rng.int(7, 127);
+  lines.push(`local ${vmStateNames.stateKey} = (seed + ${vmStateNames.bcKeyCount} + ${couplingAdd}) % ${bitNames.mod}`);
+  lines.push(`local function ${helperNames.opMatch}(current, expected, pulse)`);
+  lines.push("  if current == nil or expected == nil then return false end");
+  if (dynamicCoupling) {
+    lines.push(`  return ${bxor32("current", "pulse")} == ${bxor32("expected", "pulse")}`);
+  } else {
+    lines.push(`  return current == expected`);
+  }
+  lines.push(`end`);
+  if (vmOptions.symbolNoise !== false) {
+    const noisePool = makeName();
+    const noiseSum = makeName();
+    const noiseMap = makeName();
+    const noiseCount = rng.int(3, 6);
+    const noiseValues = Array.from({ length: noiseCount }, () => luaString(buildSymbolNoiseToken(rng)));
+    lines.push(`local ${noisePool} = { ${noiseValues.join(", ")} }`);
+    lines.push(`local ${noiseSum} = 0`);
+    lines.push(`for i = 1, #${noisePool} do`);
+    lines.push(`  ${noiseSum} = ${noiseSum} + #${noisePool}[i]`);
+    lines.push(`end`);
+    lines.push(`local ${noiseMap} = { ["!@#"] = ${noiseSum}, ["[]{}"] = #${noisePool} }`);
+    lines.push(`if (${noiseMap}["!@#"] % 8191) == 8192 then`);
+    lines.push(`  ${noisePool}[1] = ${noisePool}[1] .. ${luaString("!?!")}`);
+    lines.push(`end`);
+  }
 
   if (useBytecodeStream) {
     const stream = encodeBytecodeStream(program.instructions, rng, seedState, bcInfo);
@@ -2770,6 +3003,24 @@ function buildVmSource(
           return [
             activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
             `stack[top] = locals[${aExpr}]`,
+            `pc = ${nextId}`,
+          ];
+        case "PUSH_LOCAL_ADD_LOCAL":
+          return [
+            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
+            `stack[top] = locals[${a}] + locals[${b}]`,
+            `pc = ${nextId}`,
+          ];
+        case "PUSH_LOCAL_SUB_LOCAL":
+          return [
+            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
+            `stack[top] = locals[${a}] - locals[${b}]`,
+            `pc = ${nextId}`,
+          ];
+        case "PUSH_CONST_ADD_CONST":
+          return [
+            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
+            `stack[top] = ${helperNames.getConst}(${a}) + ${helperNames.getConst}(${b})`,
             `pc = ${nextId}`,
           ];
         case "SET_LOCAL":
@@ -3069,7 +3320,12 @@ function buildVmSource(
       lines.push(`end`);
     }
     const dispatchMode = activeIsa.dispatchGraph === "auto"
-      ? (sorted.length > 8 ? "sparse" : "tree")
+      ? (() => {
+          if (sorted.length <= 6) {
+            return rng.bool(0.7) ? "tree" : "sparse";
+          }
+          return rng.bool(0.5) ? "tree" : "sparse";
+        })()
       : activeIsa.dispatchGraph;
     lines.push(`local pc = ${entryId}`);
     if (dispatchMode === "sparse") {
@@ -3096,61 +3352,76 @@ function buildVmSource(
     loopLines.push(
       `  local key = 0`,
       `  if ${vmStateNames.bcKeyCount} > 0 then`,
-      `    local idx = pc + seed - 1`,
-      `    idx = idx % ${vmStateNames.bcKeyCount}`,
-      `    idx = idx + 1`,
-      `    key = bc_keys[idx]`,
+      `    key = ${helperNames.keyAt}(pc)`,
+      `    local a_mask = ${bxor32("key", lshift32("key", "5"))}`,
+      `    local b_mask = ${bxor32(bxor32("key", rshift32("key", "3")), "2779096485")}`,
       `    op = ${bxor32("op", "key")}`,
-      `    a = ${bxor32("a", "key")}`,
-      `    b = ${bxor32("b", "key")}`,
+      `    a = ${bxor32("a", "a_mask")}`,
+      `    b = ${bxor32("b", "b_mask")}`,
       `  end`,
-      `  if op == OP_NOP then`,
+      `  ${vmStateNames.stateKey} = (${vmStateNames.stateKey} * ${couplingMul} + ${couplingAdd} + pc + seed) % ${bitNames.mod}`,
+      `  local ${vmStateNames.statePulse} = ${dynamicCoupling
+        ? bxor32(vmStateNames.stateKey, rshift32(vmStateNames.stateKey, "7"))
+        : "0"}`,
+      `  if ${helperNames.opMatch}(op, OP_NOP, ${vmStateNames.statePulse}) then`,
       `    pc = pc + 1`,
-      `  elseif op == OP_PUSH_CONST then`,
+      `  elseif ${helperNames.opMatch}(op, OP_PUSH_CONST, ${vmStateNames.statePulse}) then`,
       `    top = top + 1`,
       `    stack[top] = ${helperNames.getConst}(a)`,
       `    pc = pc + 1`,
-      `  elseif op == OP_PUSH_LOCAL then`,
+      `  elseif ${helperNames.opMatch}(op, OP_PUSH_LOCAL, ${vmStateNames.statePulse}) then`,
       `    top = top + 1`,
       `    stack[top] = locals[a]`,
       `    pc = pc + 1`,
-      `  elseif op == OP_SET_LOCAL then`,
+      `  elseif ${helperNames.opMatch}(op, OP_PUSH_LOCAL_ADD_LOCAL, ${vmStateNames.statePulse}) then`,
+      `    top = top + 1`,
+      `    stack[top] = locals[a] + locals[b]`,
+      `    pc = pc + 1`,
+      `  elseif ${helperNames.opMatch}(op, OP_PUSH_LOCAL_SUB_LOCAL, ${vmStateNames.statePulse}) then`,
+      `    top = top + 1`,
+      `    stack[top] = locals[a] - locals[b]`,
+      `    pc = pc + 1`,
+      `  elseif ${helperNames.opMatch}(op, OP_PUSH_CONST_ADD_CONST, ${vmStateNames.statePulse}) then`,
+      `    top = top + 1`,
+      `    stack[top] = ${helperNames.getConst}(a) + ${helperNames.getConst}(b)`,
+      `    pc = pc + 1`,
+      `  elseif ${helperNames.opMatch}(op, OP_SET_LOCAL, ${vmStateNames.statePulse}) then`,
       `    locals[a] = stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_PUSH_GLOBAL then`,
+      `  elseif ${helperNames.opMatch}(op, OP_PUSH_GLOBAL, ${vmStateNames.statePulse}) then`,
       `    top = top + 1`,
       `    stack[top] = env[${helperNames.getConst}(a)]`,
       `    pc = pc + 1`,
-      `  elseif op == OP_SET_GLOBAL then`,
+      `  elseif ${helperNames.opMatch}(op, OP_SET_GLOBAL, ${vmStateNames.statePulse}) then`,
       `    env[${helperNames.getConst}(a)] = stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_NEW_TABLE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_NEW_TABLE, ${vmStateNames.statePulse}) then`,
       `    top = top + 1`,
       `    stack[top] = {}`,
       `    pc = pc + 1`,
-      `  elseif op == OP_DUP then`,
+      `  elseif ${helperNames.opMatch}(op, OP_DUP, ${vmStateNames.statePulse}) then`,
       `    top = top + 1`,
       `    stack[top] = stack[top - 1]`,
       `    pc = pc + 1`,
-      `  elseif op == OP_SWAP then`,
+      `  elseif ${helperNames.opMatch}(op, OP_SWAP, ${vmStateNames.statePulse}) then`,
       `    stack[top], stack[top - 1] = stack[top - 1], stack[top]`,
       `    pc = pc + 1`,
-      `  elseif op == OP_POP then`,
+      `  elseif ${helperNames.opMatch}(op, OP_POP, ${vmStateNames.statePulse}) then`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_GET_TABLE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_GET_TABLE, ${vmStateNames.statePulse}) then`,
       `    local idx = stack[top]`,
       `    stack[top] = nil`,
       `    local base = stack[top - 1]`,
       `    stack[top - 1] = base[idx]`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_SET_TABLE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_SET_TABLE, ${vmStateNames.statePulse}) then`,
       `    local val = stack[top]`,
       `    stack[top] = nil`,
       `    local key = stack[top - 1]`,
@@ -3160,7 +3431,7 @@ function buildVmSource(
       `    stack[top - 2] = nil`,
       `    top = top - 3`,
       `    pc = pc + 1`,
-      `  elseif op == OP_CALL then`,
+      `  elseif ${helperNames.opMatch}(op, OP_CALL, ${vmStateNames.statePulse}) then`,
       `    local argc = a`,
       `    local retc = b`,
       `    local base = top - argc`,
@@ -3188,7 +3459,7 @@ function buildVmSource(
       `      end`,
       `    end`,
       `    pc = pc + 1`,
-      `  elseif op == OP_RETURN then`,
+      `  elseif ${helperNames.opMatch}(op, OP_RETURN, ${vmStateNames.statePulse}) then`,
       `    local count = a`,
       `    if count == 0 then`,
       `      return`,
@@ -3198,125 +3469,125 @@ function buildVmSource(
       `      local base = top - count + 1`,
       `      return unpack(stack, base, top)`,
       `    end`,
-      `  elseif op == OP_JMP then`,
+      `  elseif ${helperNames.opMatch}(op, OP_JMP, ${vmStateNames.statePulse}) then`,
       `    pc = a`,
-      `  elseif op == OP_JMP_IF_FALSE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_JMP_IF_FALSE, ${vmStateNames.statePulse}) then`,
       `    if not stack[top] then`,
       `      pc = a`,
       `    else`,
       `      pc = pc + 1`,
       `    end`,
-      `  elseif op == OP_JMP_IF_TRUE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_JMP_IF_TRUE, ${vmStateNames.statePulse}) then`,
       `    if stack[top] then`,
       `      pc = a`,
       `    else`,
       `      pc = pc + 1`,
       `    end`,
-      `  elseif op == OP_ADD then`,
+      `  elseif ${helperNames.opMatch}(op, OP_ADD, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] + stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_SUB then`,
+      `  elseif ${helperNames.opMatch}(op, OP_SUB, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] - stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_MUL then`,
+      `  elseif ${helperNames.opMatch}(op, OP_MUL, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] * stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_DIV then`,
+      `  elseif ${helperNames.opMatch}(op, OP_DIV, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] / stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_IDIV then`,
+      `  elseif ${helperNames.opMatch}(op, OP_IDIV, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_MOD then`,
+      `  elseif ${helperNames.opMatch}(op, OP_MOD, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] % stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_POW then`,
+      `  elseif ${helperNames.opMatch}(op, OP_POW, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] ^ stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_CONCAT then`,
+      `  elseif ${helperNames.opMatch}(op, OP_CONCAT, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] .. stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_EQ then`,
+      `  elseif ${helperNames.opMatch}(op, OP_EQ, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] == stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_NE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_NE, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] ~= stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_LT then`,
+      `  elseif ${helperNames.opMatch}(op, OP_LT, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] < stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_LE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_LE, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] <= stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_GT then`,
+      `  elseif ${helperNames.opMatch}(op, OP_GT, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] > stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_GE then`,
+      `  elseif ${helperNames.opMatch}(op, OP_GE, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = stack[top - 1] >= stack[top]`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_BAND then`,
+      `  elseif ${helperNames.opMatch}(op, OP_BAND, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = ${band32("stack[top - 1]", "stack[top]")}`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_BOR then`,
+      `  elseif ${helperNames.opMatch}(op, OP_BOR, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = ${bor32("stack[top - 1]", "stack[top]")}`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_BXOR then`,
+      `  elseif ${helperNames.opMatch}(op, OP_BXOR, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = ${bxor32("stack[top - 1]", "stack[top]")}`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_SHL then`,
+      `  elseif ${helperNames.opMatch}(op, OP_SHL, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = ${lshift32("stack[top - 1]", "stack[top]")}`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_SHR then`,
+      `  elseif ${helperNames.opMatch}(op, OP_SHR, ${vmStateNames.statePulse}) then`,
       `    stack[top - 1] = ${rshift32("stack[top - 1]", "stack[top]")}`,
       `    stack[top] = nil`,
       `    top = top - 1`,
       `    pc = pc + 1`,
-      `  elseif op == OP_UNM then`,
+      `  elseif ${helperNames.opMatch}(op, OP_UNM, ${vmStateNames.statePulse}) then`,
       `    stack[top] = -stack[top]`,
       `    pc = pc + 1`,
-      `  elseif op == OP_NOT then`,
+      `  elseif ${helperNames.opMatch}(op, OP_NOT, ${vmStateNames.statePulse}) then`,
       `    stack[top] = not stack[top]`,
       `    pc = pc + 1`,
-      `  elseif op == OP_LEN then`,
+      `  elseif ${helperNames.opMatch}(op, OP_LEN, ${vmStateNames.statePulse}) then`,
       `    stack[top] = #stack[top]`,
       `    pc = pc + 1`,
-      `  elseif op == OP_BNOT then`,
+      `  elseif ${helperNames.opMatch}(op, OP_BNOT, ${vmStateNames.statePulse}) then`,
       `    stack[top] = ${bnot32("stack[top]")}`,
       `    pc = pc + 1`,
       `  else`,
@@ -3331,7 +3602,7 @@ function buildVmSource(
   if (upperPoolLines.length) {
     lines.splice(upperPoolInsertIndex, 0, ...upperPoolLines);
   }
-  let vmSource = lines.join("\n");
+  const vmSource = lines.join("\n");
   const coreAliases = {
     bc: makeName(),
     bc_keys: makeName(),
@@ -3342,10 +3613,7 @@ function buildVmSource(
     pc: makeName(),
     env: makeName(),
   };
-  Object.entries(coreAliases).forEach(([from, to]) => {
-    vmSource = replaceIdentifierToken(vmSource, from, to);
-  });
-  return vmSource;
+  return { source: vmSource, coreAliases };
 }
 
 function replaceFunctionBody(fnNode, vmAst, style) {
@@ -3497,6 +3765,7 @@ function virtualizeLuau(ast, ctx) {
         return;
       }
 
+      applyInstructionFusion(program, ctx.rng, ctx.options.vm || {});
       injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
 
       const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
@@ -3535,19 +3804,21 @@ function virtualizeLuau(ast, ctx) {
           ? null
           : buildKeySchedule(ctx.rng, seedState);
         if (keySchedule) {
-          const keyCount = keySchedule.keys.length;
-          const seedValue = seedState.seed;
           program.instructions = program.instructions.map((inst, idx) => {
-            const key = keyCount
-              ? keySchedule.keys[(idx + seedValue) % keyCount]
-              : 0;
+            const key = computeInstructionKey(
+              idx + 1,
+              seedState.seed,
+              keySchedule.words,
+              keySchedule.rounds
+            );
+            const { aMask, bMask } = deriveInstructionMasks(key);
             if (!key) {
               return inst;
             }
             return [
-              inst[0] ^ key,
-              (inst[1] || 0) ^ key,
-              (inst[2] || 0) ^ key,
+              ((inst[0] || 0) ^ key) >>> 0,
+              ((inst[1] || 0) ^ aMask) >>> 0,
+              ((inst[2] || 0) ^ bMask) >>> 0,
             ];
           });
         }
@@ -3567,7 +3838,7 @@ function virtualizeLuau(ast, ctx) {
           addSSAUsedNames(ssa, reservedNames);
         }
       }
-      const vmSource = buildVmSource(
+      const vmBuild = buildVmSource(
         program,
         opcodeInfo,
         program.paramNames,
@@ -3581,9 +3852,13 @@ function virtualizeLuau(ast, ctx) {
         opcodeList,
         isaProfile
       );
+      const vmSource = typeof vmBuild === "string" ? vmBuild : vmBuild.source;
       const vmAst = style === "custom"
         ? ctx.parseCustom(vmSource)
         : ctx.parseLuaparse(vmSource);
+      if (vmBuild && typeof vmBuild === "object" && vmBuild.coreAliases) {
+        renameVmCoreIdentifiers(vmAst, vmBuild.coreAliases);
+      }
       markVmNodes(vmAst);
       replaceFunctionBody(node, vmAst, style);
     });
@@ -3612,6 +3887,7 @@ function virtualizeLuau(ast, ctx) {
       continue;
     }
 
+    applyInstructionFusion(program, ctx.rng, ctx.options.vm || {});
     injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
 
     const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
@@ -3650,19 +3926,21 @@ function virtualizeLuau(ast, ctx) {
         ? null
         : buildKeySchedule(ctx.rng, seedState);
       if (keySchedule) {
-        const keyCount = keySchedule.keys.length;
-        const seedValue = seedState.seed;
         program.instructions = program.instructions.map((inst, idx) => {
-          const key = keyCount
-            ? keySchedule.keys[(idx + seedValue) % keyCount]
-            : 0;
+          const key = computeInstructionKey(
+            idx + 1,
+            seedState.seed,
+            keySchedule.words,
+            keySchedule.rounds
+          );
+          const { aMask, bMask } = deriveInstructionMasks(key);
           if (!key) {
             return inst;
           }
           return [
-            inst[0] ^ key,
-            (inst[1] || 0) ^ key,
-            (inst[2] || 0) ^ key,
+            ((inst[0] || 0) ^ key) >>> 0,
+            ((inst[1] || 0) ^ aMask) >>> 0,
+            ((inst[2] || 0) ^ bMask) >>> 0,
           ];
         });
       }
@@ -3682,7 +3960,7 @@ function virtualizeLuau(ast, ctx) {
         addSSAUsedNames(ssa, reservedNames);
       }
     }
-    const vmSource = buildVmSource(
+    const vmBuild = buildVmSource(
       program,
       opcodeInfo,
       program.paramNames,
@@ -3696,9 +3974,13 @@ function virtualizeLuau(ast, ctx) {
       opcodeList,
       isaProfile
     );
+    const vmSource = typeof vmBuild === "string" ? vmBuild : vmBuild.source;
     const vmAst = style === "custom"
       ? ctx.parseCustom(vmSource)
       : ctx.parseLuaparse(vmSource);
+    if (vmBuild && typeof vmBuild === "object" && vmBuild.coreAliases) {
+      renameVmCoreIdentifiers(vmAst, vmBuild.coreAliases);
+    }
     markVmNodes(vmAst);
     replaceChunkBody(ast, vmAst, chunkPlan.prefix);
     ast.__obf_vm_chunk = true;
