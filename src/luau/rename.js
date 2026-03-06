@@ -167,7 +167,7 @@ function collectGlobalBindings(ast) {
 }
 
 function createScope(parent = null) {
-  return { parent, bindings: new Map() };
+  return { parent, bindings: new Map(), memberSafe: new Map() };
 }
 
 function resolveName(scope, name) {
@@ -179,6 +179,28 @@ function resolveName(scope, name) {
     current = current.parent;
   }
   return null;
+}
+
+function resolveBindingScope(scope, name) {
+  let current = scope;
+  while (current) {
+    if (current.bindings.has(name)) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+function resolveMemberSafety(scope, name) {
+  let current = scope;
+  while (current) {
+    if (current.memberSafe.has(name)) {
+      return current.memberSafe.get(name);
+    }
+    current = current.parent;
+  }
+  return false;
 }
 
 function isEnvAliasIdentifier(node, scope, ctx) {
@@ -294,6 +316,64 @@ function renameMemberName(node, ctx) {
   node.name = mapped;
 }
 
+function isDefinitelyLocalTable(expr, scope, ctx) {
+  if (!expr || typeof expr !== "object") {
+    return false;
+  }
+  switch (expr.type) {
+    case "TableConstructorExpression":
+      return true;
+    case "GroupExpression":
+      return isDefinitelyLocalTable(expr.expression, scope, ctx);
+    case "Identifier":
+      return resolveMemberSafety(scope, expr.name);
+    case "MemberExpression":
+      return isDefinitelyLocalTable(expr.base, scope, ctx);
+    case "IndexExpression":
+      return isDefinitelyLocalTable(expr.base, scope, ctx);
+    case "IfExpression":
+      if (!Array.isArray(expr.clauses) || !expr.clauses.length) {
+        return false;
+      }
+      if (!isDefinitelyLocalTable(expr.elseValue, scope, ctx)) {
+        return false;
+      }
+      return expr.clauses.every((clause) => isDefinitelyLocalTable(clause.value, scope, ctx));
+    default:
+      return false;
+  }
+}
+
+function markLocalMemberSafety(scope, originalName, mappedName, safe) {
+  if (!scope || !originalName) {
+    return;
+  }
+  scope.memberSafe.set(originalName, Boolean(safe));
+  if (mappedName) {
+    scope.memberSafe.set(mappedName, Boolean(safe));
+  }
+}
+
+function updateMemberSafetyFromAssignment(variable, value, scope, ctx) {
+  if (!variable || variable.type !== "Identifier") {
+    return;
+  }
+  const bindingScope = resolveBindingScope(scope, variable.name);
+  if (!bindingScope) {
+    return;
+  }
+  const mappedName = bindingScope.bindings.get(variable.name) || variable.name;
+  const safe = isDefinitelyLocalTable(value, scope, ctx);
+  markLocalMemberSafety(bindingScope, variable.name, mappedName, safe);
+}
+
+function shouldSkipMemberRename(base, scope, ctx) {
+  if (isBuiltinLibBase(base, scope, ctx)) {
+    return true;
+  }
+  return !isDefinitelyLocalTable(base, scope, ctx);
+}
+
 function renameExpression(expr, scope, ctx) {
   if (!expr || typeof expr !== "object") {
     return;
@@ -318,7 +398,7 @@ function renameExpression(expr, scope, ctx) {
       renameExpression(expr.index, scope, ctx);
       return;
     case "MemberExpression":
-      const skipMemberRename = isBuiltinLibBase(expr.base, scope, ctx);
+      const skipMemberRename = shouldSkipMemberRename(expr.base, scope, ctx);
       renameExpression(expr.base, scope, ctx);
       if (!skipMemberRename) {
         renameMemberName(expr.identifier, ctx);
@@ -329,7 +409,7 @@ function renameExpression(expr, scope, ctx) {
       expr.arguments.forEach((arg) => renameExpression(arg, scope, ctx));
       return;
     case "MethodCallExpression":
-      const skipMethodRename = isBuiltinLibBase(expr.base, scope, ctx);
+      const skipMethodRename = shouldSkipMemberRename(expr.base, scope, ctx);
       renameExpression(expr.base, scope, ctx);
       if (!skipMethodRename) {
         renameMemberName(expr.method, ctx);
@@ -431,16 +511,24 @@ function renameStatement(stmt, scope, ctx) {
       if (stmt.init && stmt.init.length) {
         stmt.init.forEach((expr) => renameExpression(expr, scope, ctx));
       }
-      stmt.variables.forEach((variable) => {
+      stmt.variables.forEach((variable, index) => {
         if (!variable || variable.type !== "Identifier") {
           return;
         }
-        const newName = defineName(scope, variable.name, ctx);
+        const originalName = variable.name;
+        const initExpr = Array.isArray(stmt.init) ? stmt.init[index] : null;
+        const safe = isDefinitelyLocalTable(initExpr, scope, ctx);
+        const newName = defineName(scope, originalName, ctx);
+        markLocalMemberSafety(scope, originalName, newName, safe);
         variable.name = newName;
       });
       return;
     }
     case "AssignmentStatement":
+      stmt.variables.forEach((variable, index) => {
+        const value = Array.isArray(stmt.init) ? stmt.init[index] : null;
+        updateMemberSafetyFromAssignment(variable, value, scope, ctx);
+      });
       stmt.variables.forEach((variable) => renameExpression(variable, scope, ctx));
       stmt.init.forEach((expr) => renameExpression(expr, scope, ctx));
       return;
@@ -483,7 +571,9 @@ function renameStatement(stmt, scope, ctx) {
       }
       const loopScope = createScope(scope);
       if (stmt.variable && stmt.variable.type === "Identifier") {
-        const newName = defineName(loopScope, stmt.variable.name, ctx);
+        const originalName = stmt.variable.name;
+        const newName = defineName(loopScope, originalName, ctx);
+        markLocalMemberSafety(loopScope, originalName, newName, false);
         stmt.variable.name = newName;
       }
       renameScopedBody(stmt.body, loopScope, ctx);
@@ -496,7 +586,9 @@ function renameStatement(stmt, scope, ctx) {
         if (!variable || variable.type !== "Identifier") {
           return;
         }
-        const newName = defineName(loopScope, variable.name, ctx);
+        const originalName = variable.name;
+        const newName = defineName(loopScope, originalName, ctx);
+        markLocalMemberSafety(loopScope, originalName, newName, false);
         variable.name = newName;
       });
       renameScopedBody(stmt.body, loopScope, ctx);
@@ -551,7 +643,9 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
   }
 
   if (isLocal && fnId) {
-    const newName = defineName(scope, fnId.name, ctx);
+    const originalName = fnId.name;
+    const newName = defineName(scope, originalName, ctx);
+    markLocalMemberSafety(scope, originalName, newName, false);
     fnId.name = newName;
   } else if (!isLocal && fnId && ctx.renameGlobals && ctx.globalDeclared.has(fnId.name)) {
     fnId.name = defineGlobal(fnId.name, ctx);
@@ -559,7 +653,7 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
 
   if (fnMember) {
     if (fnMember.type === "FunctionName") {
-      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope, ctx);
+      const skipMemberRename = shouldSkipMemberRename(fnMember.base, scope, ctx);
       renameIdentifier(fnMember.base, scope, ctx);
       if (ctx.renameMembers && Array.isArray(fnMember.members) && !skipMemberRename) {
         fnMember.members.forEach((member) => renameMemberName(member, ctx));
@@ -568,7 +662,7 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
         renameMemberName(fnMember.method, ctx);
       }
     } else if (fnMember.type === "MemberExpression") {
-      const skipMemberRename = isBuiltinLibBase(fnMember.base, scope, ctx);
+      const skipMemberRename = shouldSkipMemberRename(fnMember.base, scope, ctx);
       renameExpression(fnMember.base, scope, ctx);
       if (!skipMemberRename) {
         renameMemberName(fnMember.identifier, ctx);
@@ -580,7 +674,9 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
   if (stmt.parameters && stmt.parameters.length) {
     stmt.parameters.forEach((param) => {
       if (param && param.type === "Identifier") {
-        const newName = defineName(fnScope, param.name, ctx);
+        const originalName = param.name;
+        const newName = defineName(fnScope, originalName, ctx);
+        markLocalMemberSafety(fnScope, originalName, newName, false);
         param.name = newName;
       }
     });
@@ -599,7 +695,9 @@ function renameFunctionExpression(expr, scope, ctx) {
   if (expr.parameters && expr.parameters.length) {
     expr.parameters.forEach((param) => {
       if (param && param.type === "Identifier") {
-        const newName = defineName(fnScope, param.name, ctx);
+        const originalName = param.name;
+        const newName = defineName(fnScope, originalName, ctx);
+        markLocalMemberSafety(fnScope, originalName, newName, false);
         param.name = newName;
       }
     });

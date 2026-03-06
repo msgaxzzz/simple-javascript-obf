@@ -81,6 +81,19 @@ function hasMemberName(ast, name) {
   return found;
 }
 
+function countMemberName(ast, name) {
+  let count = 0;
+  walk(ast, (node) => {
+    if (!node || node.type !== "MemberExpression") {
+      return;
+    }
+    if (node.identifier && node.identifier.type === "Identifier" && node.identifier.name === name) {
+      count += 1;
+    }
+  });
+  return count;
+}
+
 function runEnvAliasMemberGuard() {
   const ast = parseCustom(
     [
@@ -104,6 +117,48 @@ function runEnvAliasMemberGuard() {
   assert.ok(hasMemberName(ast, "byte"), "custom: env alias lookup member should preserve 'byte'");
 }
 
+function runExternalServiceMemberGuard() {
+  const ast = parseCustom(
+    [
+      "local Players = game:GetService(\"Players\")",
+      "local lp = Players.LocalPlayer",
+      "return lp",
+    ].join("\n")
+  );
+  renameLuau(ast, {
+    options: {
+      renameOptions: {
+        renameMembers: true,
+        renameGlobals: false,
+        reserved: [],
+      },
+    },
+    rng: new RNG("rename-external-service-guard"),
+  });
+  assert.ok(hasMemberName(ast, "LocalPlayer"), "custom: external service member should be preserved");
+}
+
+function runLocalTableMemberRename() {
+  const ast = parseCustom(
+    [
+      "local t = { foo = { bar = 1 } }",
+      "return t.foo.bar",
+    ].join("\n")
+  );
+  renameLuau(ast, {
+    options: {
+      renameOptions: {
+        renameMembers: true,
+        renameGlobals: false,
+        reserved: [],
+      },
+    },
+    rng: new RNG("rename-local-table-members"),
+  });
+  assert.strictEqual(countMemberName(ast, "foo"), 0, "custom: local table member 'foo' should be renamed");
+  assert.strictEqual(countMemberName(ast, "bar"), 0, "custom: nested local table member 'bar' should be renamed");
+}
+
 async function runCustom() {
   const { code } = await obfuscateLuau(source, {
     lang: "luau",
@@ -124,6 +179,8 @@ async function runCustom() {
 
 (async () => {
   runEnvAliasMemberGuard();
+  runExternalServiceMemberGuard();
+  runLocalTableMemberRename();
   await runCustom();
   console.log("luau-rename: ok");
 })().catch((err) => {

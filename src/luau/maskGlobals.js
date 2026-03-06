@@ -522,7 +522,7 @@ function maskGlobalsLuau(ast, ctx) {
     reserved.add(getfAlias);
     ast.__obf_env_alias_name = envAlias;
     ast.__obf_getf_alias_name = getfAlias;
-    const style = ctx.options.luauParser === "custom" ? "custom" : "luaparse";
+    const style = !ctx.options || ctx.options.luauParser !== "luaparse" ? "custom" : "luaparse";
     insertAtTop(ast, buildEnvAliasNodes(style, envAlias, getfAlias, ctx));
     ast.__obf_env_alias = true;
   }

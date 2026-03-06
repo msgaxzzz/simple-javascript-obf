@@ -3,6 +3,11 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { spawn } = require("child_process");
+const {
+  pingAppwrite,
+  isRemoteObfuscationEnabled,
+  obfuscateViaAppwrite,
+} = require("./src/lib/appwrite");
 
 const WEB_DIR = path.join(__dirname, "web");
 const PORT = Number(process.env.PORT) || 6589;
@@ -75,8 +80,11 @@ async function handleObfuscate(req, res) {
 
     const filename = body.filename || "input.js";
     const options = body.options || {};
+    const payload = { source, filename, options };
 
-    const result = await runCliObfuscate(source, filename, options);
+    const result = isRemoteObfuscationEnabled()
+      ? await obfuscateViaAppwrite(payload)
+      : await runCliObfuscate(source, filename, options);
     sendJson(res, 200, result);
   } catch (error) {
     sendJson(res, 500, { error: error.message || "Obfuscation failed." });
@@ -91,6 +99,9 @@ function buildCliArgs(options = {}) {
   }
   if (options.lang) {
     args.push("--lang", String(options.lang));
+  }
+  if (options.luauStyle) {
+    args.push("--luau-style", String(options.luauStyle));
   }
   if (options.rename === false) {
     args.push("--no-rename");
@@ -487,4 +498,16 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`JS Obfuscator web UI running at http://localhost:${PORT}`);
+  if (isRemoteObfuscationEnabled()) {
+    console.log("Obfuscation backend: Appwrite Function");
+  } else {
+    console.log("Obfuscation backend: Local CLI");
+  }
+  pingAppwrite()
+    .then(() => {
+      console.log("Appwrite ping successful.");
+    })
+    .catch((error) => {
+      console.warn(`Appwrite ping failed: ${error.message}`);
+    });
 });

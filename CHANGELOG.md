@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [1.2.3-A] - 2026-03-06
+### Added
+- Appwrite integration pieces for remote obfuscation, including an Appwrite function entrypoint, local helper client wiring, and example environment variables.
+- GitHub Actions Luau CI coverage for the custom-scope, classic-CFF, VM, and roundtrip Luau suites.
+- Luau proxify regression coverage for local function declarations routed through proxy slots.
+
+### Changed
+- Luau CLI/docs defaults now advertise classic CFF as the default Luau CFF mode and timing as opt-in.
+- Luau output post-processing now compacts whitespace more aggressively, neutralizes accidental `--` comment formation, and enforces the custom parser/style path consistently.
+- Web/Appwrite startup flow now supports forwarding obfuscation requests through Appwrite-backed execution.
+
+### Fixed
+- Luau rename/proxify/member handling now preserves local table member safety and local function proxy binding more reliably.
+- JavaScript CFF/dead-code/string-encode support files and Luau string helpers were refreshed alongside the updated Luau fixtures.
+
 ## [1.2.3] - 2026-03-06
 ### Fixed
 - Luau VM repeat-until, else-scope, assignment-order, trailing multireturn, recursive binding, and captured-local writeback correctness bugs.

@@ -4,3 +4,7 @@ package-lock.json
 Deobf
 
 .codex
+
+.env
+.env.*
+!.env.example

@@ -140,7 +140,8 @@ function antiHookLuau(ast, ctx) {
     return;
   }
   const runtime = buildRuntime({ lock: ctx.options.antiHook.lock, rng: ctx.rng });
-  const runtimeAst = ctx.options.luauParser === "custom"
+  const useCustom = !ctx.options || ctx.options.luauParser !== "luaparse";
+  const runtimeAst = useCustom
     ? ctx.parseCustom(runtime)
     : ctx.parseLuaparse(runtime);
   if (runtimeAst && Array.isArray(runtimeAst.body)) {

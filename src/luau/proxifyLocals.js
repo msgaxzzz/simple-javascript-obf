@@ -114,6 +114,17 @@ function buildProxyIndex(scope, name) {
   return indexExpression(identifier(scope.proxyName), key);
 }
 
+function proxySlotAssignment(targetScope, name, valueExpr) {
+  if (!targetScope || !targetScope.proxyName || !name) {
+    return null;
+  }
+  return {
+    type: "AssignmentStatement",
+    variables: [buildProxyIndex(targetScope, name)],
+    init: [valueExpr],
+  };
+}
+
 function transformExpression(expr, scope, ctx) {
   if (!expr || typeof expr !== "object") {
     return expr;
@@ -381,18 +392,18 @@ function transformStatement(stmt, scope, ctx) {
       stmt.arguments = stmt.arguments.map((expr) => transformExpression(expr, scope, ctx));
       return stmt;
     case "FunctionDeclaration": {
-      const isLocal = Boolean(stmt.isLocal);
-      const fnName = isLocal ? extractFunctionName(stmt) : null;
-      if (isLocal && fnName) {
+      const isLocalDecl = Boolean(stmt.isLocal);
+      const fnName = extractFunctionName(stmt);
+      let targetScope = fnName ? resolveLocal(scope, fnName) : null;
+      if (isLocalDecl && fnName && !targetScope) {
         declareLocal(scope, fnName, ctx.nameGen, ctx.slotKeyGen);
+        targetScope = scope;
+      }
+      if (fnName && targetScope) {
         const fnExpr = buildFunctionExpression(stmt, ctx.isCustom);
         transformFunctionExpression(fnExpr, scope, ctx);
-        const assignment = proxyAssignment(scope.proxyName, [{
-          name: fnName,
-          key: scope.locals.get(fnName) || fnName,
-        }]);
+        const assignment = proxySlotAssignment(targetScope, fnName, fnExpr);
         if (assignment) {
-          assignment.init = [fnExpr];
           return assignment;
         }
       }
@@ -499,7 +510,7 @@ function proxifyLocals(ast, ctx) {
     ...ctx,
     nameGen,
     slotKeyGen,
-    isCustom: ctx.options.luauParser === "custom",
+    isCustom: !ctx.options || ctx.options.luauParser !== "luaparse",
   };
   const rootScope = createScope(null);
   transformStatementList(ast.body, rootScope, state);

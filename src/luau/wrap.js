@@ -71,7 +71,7 @@ function wrapInFunction(ast, ctx) {
   }
   const used = collectIdentifierNames(ast, ctx);
   const nameGen = makeNameFactory(ctx.rng, used);
-  const isCustom = ctx.options.luauParser === "custom";
+  const isCustom = !ctx.options || ctx.options.luauParser !== "luaparse";
   for (let i = 0; i < iterations; i += 1) {
     wrapOnce(ast, nameGen, isCustom);
   }

@@ -57,6 +57,85 @@ function buildStateValues(count, rng) {
   return values;
 }
 
+function createStateCodec(t, ctx) {
+  const mode = ctx.rng.int(0, 2);
+
+  if (mode === 0) {
+    return {
+      prologue: [],
+      encodeValue(value) {
+        return value >>> 0;
+      },
+      encodeExpr(value) {
+        return t.numericLiteral(value >>> 0);
+      },
+    };
+  }
+
+  const codecName = ctx.nameGen.next();
+  const inputName = ctx.nameGen.next();
+  const key = ctx.rng.int(1, 0x7fffffff) >>> 0;
+
+  if (mode === 1) {
+    const fn = t.functionDeclaration(
+      t.identifier(codecName),
+      [t.identifier(inputName)],
+      t.blockStatement([
+        t.returnStatement(
+          t.binaryExpression(
+            ">>>",
+            t.binaryExpression("^", t.identifier(inputName), t.numericLiteral(key)),
+            t.numericLiteral(0)
+          )
+        ),
+      ])
+    );
+
+    return {
+      prologue: [fn],
+      encodeValue(value) {
+        return (value ^ key) >>> 0;
+      },
+      encodeExpr(value) {
+        return t.callExpression(t.identifier(codecName), [t.numericLiteral(value >>> 0)]);
+      },
+    };
+  }
+
+  const add = ctx.rng.int(1, 0x7fffffff) >>> 0;
+  const fn = t.functionDeclaration(
+    t.identifier(codecName),
+    [t.identifier(inputName)],
+    t.blockStatement([
+      t.returnStatement(
+        t.binaryExpression(
+          ">>>",
+          t.binaryExpression(
+            "^",
+            t.binaryExpression(
+              ">>>",
+              t.binaryExpression("+", t.identifier(inputName), t.numericLiteral(add)),
+              t.numericLiteral(0)
+            ),
+            t.numericLiteral(key)
+          ),
+          t.numericLiteral(0)
+        )
+      ),
+    ])
+  );
+
+  return {
+    prologue: [fn],
+    encodeValue(value) {
+      return ((((value >>> 0) + add) >>> 0) ^ key) >>> 0;
+    },
+    encodeExpr(value) {
+      return t.callExpression(t.identifier(codecName), [t.numericLiteral(value >>> 0)]);
+    },
+  };
+}
+
 // Generate fake dead code that looks realistic
 function buildFakeStatement(t, ctx) {
   const fakeVarId = t.identifier(ctx.nameGen.next());
@@ -130,9 +209,7 @@ function downlevelLetConst(path) {
 
 function buildFlattenedBody(t, ctx, statements) {
   const stateId = t.identifier(ctx.nameGen.next());
-  const stateValuesId = t.identifier(ctx.nameGen.next());
-  const nextId = t.identifier(ctx.nameGen.next());
-  const indexId = t.identifier(ctx.nameGen.next());
+  const endId = t.identifier(ctx.nameGen.next());
   const count = statements.length;
   const order = Array.from({ length: count }, (_, i) => i);
   ctx.rng.shuffle(order);
@@ -146,6 +223,8 @@ function buildFlattenedBody(t, ctx, statements) {
     usedStates.add(value);
     return value;
   };
+  const endState = pickUnusedState();
+  const stateCodec = createStateCodec(t, ctx);
 
   const cases = order.map((index) => {
     const stmt = statements[index];
@@ -162,18 +241,19 @@ function buildFlattenedBody(t, ctx, statements) {
     }
 
     if (stmt.type !== "ReturnStatement" && stmt.type !== "ThrowStatement") {
+      const nextState = index + 1 < count ? stateValues[index + 1] : endState;
       caseBody.push(
         t.expressionStatement(
           t.assignmentExpression(
             "=",
             stateId,
-            t.memberExpression(nextId, stateId, true)
+            stateCodec.encodeExpr(nextState)
           )
         )
       );
     }
     caseBody.push(t.breakStatement());
-    return t.switchCase(t.numericLiteral(stateValues[index]), [
+    return t.switchCase(t.numericLiteral(stateCodec.encodeValue(stateValues[index])), [
       t.blockStatement(caseBody),
     ]);
   });
@@ -185,11 +265,15 @@ function buildFlattenedBody(t, ctx, statements) {
     const fakeBody = [
       buildFakeStatement(t, ctx),
       t.expressionStatement(
-        t.assignmentExpression("=", stateId, t.numericLiteral(-1))
+        t.assignmentExpression("=", stateId, endId)
       ),
       t.breakStatement(),
     ];
-    cases.push(t.switchCase(t.numericLiteral(fakeIndex), [t.blockStatement(fakeBody)]));
+    cases.push(
+      t.switchCase(t.numericLiteral(stateCodec.encodeValue(fakeIndex)), [
+        t.blockStatement(fakeBody),
+      ])
+    );
   }
 
   // Default case
@@ -197,7 +281,7 @@ function buildFlattenedBody(t, ctx, statements) {
     t.switchCase(null, [
       t.blockStatement([
         t.expressionStatement(
-          t.assignmentExpression("=", stateId, t.numericLiteral(-1))
+          t.assignmentExpression("=", stateId, endId)
         ),
         t.breakStatement(),
       ]),
@@ -207,73 +291,26 @@ function buildFlattenedBody(t, ctx, statements) {
   // Shuffle cases to further obfuscate
   ctx.rng.shuffle(cases);
 
-  const whileStmt = t.whileStatement(
-    t.binaryExpression("!==", stateId, t.numericLiteral(-1)),
-    t.blockStatement([
-      t.switchStatement(stateId, cases),
-    ])
-  );
-
-  const maxState = Math.max(...stateValues);
-
+  const loopTest = t.binaryExpression("!==", stateId, endId);
+  const loopBody = t.blockStatement([t.switchStatement(stateId, cases)]);
+  const loopStmt = ctx.rng.bool(0.5)
+    ? t.whileStatement(loopTest, loopBody)
+    : t.forStatement(null, loopTest, null, loopBody);
   return [
+    ...stateCodec.prologue,
     t.variableDeclaration("const", [
       t.variableDeclarator(
-        stateValuesId,
-        t.arrayExpression(stateValues.map((value) => t.numericLiteral(value)))
+        endId,
+        stateCodec.encodeExpr(endState)
       ),
     ]),
-    t.variableDeclaration("const", [
-      t.variableDeclarator(
-        nextId,
-        t.newExpression(t.identifier("Array"), [
-          t.numericLiteral(maxState + 1),
-        ])
-      ),
-    ]),
-    t.forStatement(
-      t.variableDeclaration("let", [
-        t.variableDeclarator(indexId, t.numericLiteral(0)),
-      ]),
-      t.binaryExpression(
-        "<",
-        indexId,
-        t.memberExpression(stateValuesId, t.identifier("length"))
-      ),
-      t.updateExpression("++", indexId),
-      t.blockStatement([
-        t.expressionStatement(
-          t.assignmentExpression(
-            "=",
-            t.memberExpression(
-              nextId,
-              t.memberExpression(stateValuesId, indexId, true),
-              true
-            ),
-            t.conditionalExpression(
-              t.binaryExpression(
-                "<",
-                t.binaryExpression("+", indexId, t.numericLiteral(1)),
-                t.memberExpression(stateValuesId, t.identifier("length"))
-              ),
-              t.memberExpression(
-                stateValuesId,
-                t.binaryExpression("+", indexId, t.numericLiteral(1)),
-                true
-              ),
-              t.numericLiteral(-1)
-            )
-          )
-        ),
-      ])
-    ),
     t.variableDeclaration("let", [
       t.variableDeclarator(
         stateId,
-        t.memberExpression(stateValuesId, t.numericLiteral(0), true)
+        stateCodec.encodeExpr(stateValues[0])
       ),
     ]),
-    whileStmt,
+    loopStmt,
   ];
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "simple-javascript-obf",
-  "version": "1.2.3",
+  "version": "1.2.3-A",
   "description": "Modular JavaScript obfuscator with optional VM and CFF",
   "main": "src/index.js",
   "bin": {

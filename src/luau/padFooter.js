@@ -82,11 +82,12 @@ function padFooterLuau(ast, ctx) {
     snippets.push(snippet);
   }
   const source = snippets.join("\n");
-  const paddingAst = ctx.options.luauParser === "custom"
+  const useCustom = !ctx.options || ctx.options.luauParser !== "luaparse";
+  const paddingAst = useCustom
     ? ctx.parseCustom(source)
     : ctx.parseLuaparse(source);
   if (paddingAst && Array.isArray(paddingAst.body)) {
-    const style = ctx.options.luauParser === "custom" ? "custom" : "luaparse";
+    const style = useCustom ? "custom" : "luaparse";
     const lastIndex = ast.body.length - 1;
     let insertIndex = ast.body.length;
     if (lastIndex >= 0 && ast.body[lastIndex]?.type === "ReturnStatement") {

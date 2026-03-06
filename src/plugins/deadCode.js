@@ -1,21 +1,27 @@
 function buildRuntimeValue(t, ctx) {
-  const sources = [
-    () =>
-      t.callExpression(
-        t.memberExpression(t.identifier("Date"), t.identifier("now")),
-        []
-      ),
-    () =>
+  const nowExpr = t.callExpression(
+    t.memberExpression(t.identifier("Date"), t.identifier("now")),
+    []
+  );
+  const randomExpr = t.binaryExpression(
+    "|",
+    t.binaryExpression(
+      "*",
       t.callExpression(
         t.memberExpression(t.identifier("Math"), t.identifier("random")),
         []
       ),
+      t.numericLiteral(0x100000000)
+    ),
+    t.numericLiteral(0)
+  );
+  const candidates = [
+    () => nowExpr,
+    () => randomExpr,
+    () => t.binaryExpression("^", nowExpr, randomExpr),
+    () => t.binaryExpression("+", nowExpr, randomExpr),
   ];
-  const base = ctx.rng.pick(sources)();
-  // Force numeric coercion to reduce weird cases; keep it runtime-dependent.
-  return ctx.rng.bool(0.6)
-    ? t.binaryExpression("|", base, t.numericLiteral(0))
-    : base;
+  return t.binaryExpression(">>>", ctx.rng.pick(candidates)(), t.numericLiteral(0));
 }
 
 function buildOpaquePredicate(t, ctx) {
@@ -25,118 +31,68 @@ function buildOpaquePredicate(t, ctx) {
     t.variableDeclaration("var", [
       t.variableDeclarator(tempA, buildRuntimeValue(t, ctx)),
     ]),
+    t.variableDeclaration("var", [
+      t.variableDeclarator(tempB, buildRuntimeValue(t, ctx)),
+    ]),
   ];
+  const mulA = ctx.rng.int(3, 0x7ffffffe) | 1;
+  const addA = ctx.rng.int(0, 0x7fffffff);
+  const targetA = ctx.rng.int(0, 0xffffffff);
+  const mulB = ctx.rng.int(3, 0x7ffffffe) | 1;
+  const addB = ctx.rng.int(0, 0x7fffffff);
+  const targetB = ctx.rng.int(0, 0xffffffff);
 
-  const patterns = [
-    {
-      needsB: false,
-      build: (a) =>
-        t.binaryExpression(
-          "===",
-          t.binaryExpression("^", a, t.numericLiteral(1)),
-          a
+  const checkA = t.binaryExpression(
+    "===",
+    t.binaryExpression(
+      ">>>",
+      t.binaryExpression(
+        "+",
+        t.callExpression(
+          t.memberExpression(t.identifier("Math"), t.identifier("imul")),
+          [tempA, t.numericLiteral(mulA)]
         ),
-    },
-    {
-      needsB: false,
-      build: (a) =>
-        t.binaryExpression(
-          "===",
-          t.binaryExpression("+", a, t.numericLiteral(1)),
-          a
+        t.numericLiteral(addA)
+      ),
+      t.numericLiteral(0)
+    ),
+    t.numericLiteral(targetA)
+  );
+  const checkB = t.binaryExpression(
+    "===",
+    t.binaryExpression(
+      ">>>",
+      t.binaryExpression(
+        "+",
+        t.callExpression(
+          t.memberExpression(t.identifier("Math"), t.identifier("imul")),
+          [tempB, t.numericLiteral(mulB)]
         ),
-    },
-    {
-      needsB: false,
-      build: (a) =>
-        t.logicalExpression(
-          "&&",
-          t.binaryExpression("<", a, t.numericLiteral(0)),
-          t.binaryExpression(">", a, t.numericLiteral(0))
-        ),
-    },
-    {
-      needsB: false,
-      build: (a) =>
-        t.binaryExpression(
-          "===",
-          t.binaryExpression("|", a, t.numericLiteral(1)),
-          t.numericLiteral(0)
-        ),
-    },
-    {
-      needsB: false,
-      build: (a) =>
-        t.binaryExpression(
-          "===",
-          t.binaryExpression("^", a, t.binaryExpression("+", a, t.numericLiteral(1))),
-          t.numericLiteral(0)
-        ),
-    },
-    {
-      needsB: false,
-      build: (a) =>
-        t.binaryExpression(
-          "<",
-          t.binaryExpression(">>>", a, t.numericLiteral(0)),
-          t.numericLiteral(0)
-        ),
-    },
-    {
-      needsB: false,
-      build: (a) =>
-        t.binaryExpression(
-          "===",
-          t.binaryExpression("&", a, t.numericLiteral(3)),
-          t.numericLiteral(4)
-        ),
-    },
-    {
-      needsB: false,
-      build: (a) =>
-        t.logicalExpression(
-          "&&",
-          t.binaryExpression("===", a, a),
-          t.binaryExpression("!==", a, a)
-        ),
-    },
-    {
-      needsB: true,
-      build: (a, b) =>
-        t.logicalExpression(
-          "&&",
-          t.binaryExpression("<", a, b),
-          t.binaryExpression(">", a, b)
-        ),
-    },
-    {
-      needsB: true,
-      build: (a, b) =>
-        t.logicalExpression(
-          "&&",
-          t.binaryExpression("===", a, b),
-          t.binaryExpression("!==", a, b)
-        ),
-    },
-  ];
+        t.numericLiteral(addB)
+      ),
+      t.numericLiteral(0)
+    ),
+    t.numericLiteral(targetB)
+  );
+  let test = t.logicalExpression("&&", checkA, checkB);
 
-  const shuffled = patterns.slice();
-  ctx.rng.shuffle(shuffled);
-  const count = ctx.rng.int(2, Math.min(4, shuffled.length));
-  const selected = shuffled.slice(0, count);
-
-  if (selected.some((item) => item.needsB)) {
-    decls.push(
-      t.variableDeclaration("var", [
-        t.variableDeclarator(tempB, buildRuntimeValue(t, ctx)),
-      ])
+  if (ctx.rng.bool(0.5)) {
+    const mixTarget = ctx.rng.int(0, 0xffffffff);
+    const mixAdd = ctx.rng.int(1, 0x7fffffff);
+    const mixCheck = t.binaryExpression(
+      "===",
+      t.binaryExpression(
+        ">>>",
+        t.binaryExpression(
+          "+",
+          t.binaryExpression("^", tempA, tempB),
+          t.numericLiteral(mixAdd)
+        ),
+        t.numericLiteral(0)
+      ),
+      t.numericLiteral(mixTarget)
     );
-  }
-
-  let test = selected[0].build(tempA, tempB);
-  for (let i = 1; i < selected.length; i += 1) {
-    const op = ctx.rng.bool() ? "&&" : "||";
-    test = t.logicalExpression(op, test, selected[i].build(tempA, tempB));
+    test = t.logicalExpression("&&", test, mixCheck);
   }
 
   return {
