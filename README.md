@@ -51,6 +51,43 @@ node webstart.js
 ```
 Then open `http://localhost:6589` to upload or paste JavaScript/Luau, pick options, run obfuscation, and download results.
 
+### Run obfuscation on Appwrite backend
+By default, `webstart.js` obfuscates locally through the CLI.  
+To run obfuscation on Appwrite Functions instead, deploy this function entrypoint:
+
+- Runtime: Node.js
+- Entrypoint: `appwrite/functions/obfuscate/main.js`
+- Source root: repository root (so `src/` is included)
+
+Create a `.env` file before starting the web UI (you can copy `.env.example`):
+```
+APPWRITE_ENDPOINT="https://<region>.cloud.appwrite.io/v1"
+APPWRITE_PROJECT_ID="<your_project_id>"
+APPWRITE_OBF_FUNCTION_ID="<your_function_id>"
+APPWRITE_API_KEY="<optional_api_key>"
+```
+Then start:
+```
+node webstart.js
+```
+
+Notes:
+- `APPWRITE_ENDPOINT` and `APPWRITE_PROJECT_ID` are required for Appwrite requests.
+- `APPWRITE_OBF_FUNCTION_ID` enables remote obfuscation mode.
+- `APPWRITE_API_KEY` is optional if your function execution permissions allow unauthenticated calls.
+- The server still runs locally, but `/api/obfuscate` forwards execution to your Appwrite Function.
+
+### GitHub Actions
+If you run this project in GitHub Actions, configure repository secrets:
+
+- `APPWRITE_ENDPOINT`
+- `APPWRITE_PROJECT_ID`
+- `APPWRITE_OBF_FUNCTION_ID`
+- `APPWRITE_API_KEY` (optional)
+
+The default workflow (`.github/workflows/node.js.yml`) reads these secrets into CI environment variables.
+It also installs the latest official Luau CLI for Linux from `luau-lang/luau` and runs the Luau custom-scope, classic-CFF, VM, and roundtrip regression suites.
+
 ## CLI options
 - `-o, --output <file>` Output file
 - `--preset <high|balanced|low>` Preset strength (default `high`)
@@ -97,7 +134,7 @@ Then open `http://localhost:6589` to upload or paste JavaScript/Luau, pick optio
 - `--pad-footer-blocks <n>` Number of fake blocks (Luau, default 2)
 - `--no-cff` Disable control-flow flattening
 - `--cff-downlevel` Allow CFF to downlevel `let/const` to `var`
-- `--cff-mode <vm|classic>` Luau CFF mode (default `vm`)
+- `--cff-mode <vm|classic>` Luau CFF mode (default `classic`)
 - `--cff-opaque` Enable opaque predicates (default on)
 - `--no-dead` Disable dead-code injection
 - `--vm` Enable VM virtualization (see limitations)
@@ -129,9 +166,10 @@ Then open `http://localhost:6589` to upload or paste JavaScript/Luau, pick optio
 - `--compact` Compact output (JS) / one-line Luau output
 - `--no-minify` Skip Terser minification
 - `--beautify` Beautify Terser output (multi-line, requires minify)
-- `--timing` Print per-plugin timings (ms precision, default on) to stderr
+- `--timing` Print per-plugin timings (ms precision, default off) to stderr
 - `--no-timing` Disable per-plugin timings
 - `--lang <js|luau>` Select language (default `js`, inferred from `.lua/.luau`)
+- `--luau-style <default>` Luau wrapper style (default only)
 
 Luau parsing always uses the custom AST backend.
 

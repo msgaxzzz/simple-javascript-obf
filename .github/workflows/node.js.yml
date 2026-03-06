@@ -1,31 +1,71 @@
-# This workflow will do a clean installation of node dependencies, cache/restore them, build the source code and run tests across different versions of node
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs
-
-name: Node.js CI
+name: CI
 
 on:
   push:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
-  build:
-
+  test:
     runs-on: ubuntu-latest
+    env:
+      APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+      APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+      APPWRITE_OBF_FUNCTION_ID: ${{ secrets.APPWRITE_OBF_FUNCTION_ID }}
+      APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
 
     strategy:
+      fail-fast: false
       matrix:
         node-version: [18.x, 20.x, 22.x]
-        # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-    - run: npm ci
-    - run: npm run build --if-present
-    - run: npm test
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Luau CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          api_url="https://api.github.com/repos/luau-lang/luau/releases/latest"
+          asset_url="$(curl -fsSL "$api_url" | jq -r '.assets[] | select(.name == "luau-ubuntu.zip") | .browser_download_url')"
+          if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
+            echo "Failed to locate luau-ubuntu.zip from latest luau-lang/luau release" >&2
+            exit 1
+          fi
+          curl -fsSL "$asset_url" -o /tmp/luau.zip
+          rm -rf /tmp/luau
+          unzip -q /tmp/luau.zip -d /tmp/luau
+          chmod +x /tmp/luau/luau
+          echo "/tmp/luau" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain
+        run: |
+          node --version
+          npm --version
+          luau --help
+
+      - name: Verify Appwrite env wiring
+        run: node -e "const ok=Boolean(process.env.APPWRITE_ENDPOINT&&process.env.APPWRITE_PROJECT_ID); if(!ok){console.warn('Appwrite secrets are not fully set; remote obfuscation checks may be skipped.');} else {console.log('Appwrite secrets detected.');}"
+
+      - name: Run Luau custom scope tests
+        run: node test/luau-custom-scope.js
+
+      - name: Run Luau classic CFF tests
+        run: node test/luau-cff.js
+
+      - name: Run Luau VM tests
+        run: node test/luau-vm.js
+
+      - name: Run Luau roundtrip tests
+        run: node test/luau-custom-roundtrip.js
