@@ -130,6 +130,7 @@ function normalizeOptions(userOptions = {}) {
 
   const isLuauHighPreset = lang === "luau" && presetName === "high";
   const compactDefault = lang === "luau" ? true : Boolean(userOptions.compact);
+  const defaultStringMinLength = lang === "luau" ? 1 : 3;
   const options = {
     preset: presetName,
     lang: lang === "luau" ? "luau" : "js",
@@ -180,7 +181,7 @@ function normalizeOptions(userOptions = {}) {
     ecma,
     luauStyle,
     stringsOptions: {
-      minLength: stringsUserOptions.minLength ?? 3,
+      minLength: stringsUserOptions.minLength ?? defaultStringMinLength,
       maxCount,
       segmentSize,
       sampleRate: normalizeProbability(stringsUserOptions.sampleRate, 1),

@@ -1,4 +1,4 @@
-const { parseLuau, insertAtTop, walk } = require("./ast");
+const { parseLuau, insertAtTop, traverse } = require("./ast");
 const { collectIdentifierNames, makeNameFactory } = require("./names");
 
 const AI_DECOY_BAIT =
@@ -399,7 +399,7 @@ function stringEncode(ast, ctx) {
     return node;
   }
 
-  walk(ast, (node, parent, key, index) => {
+  traverse(ast, (node, parent, key, index, traversal) => {
     if (node.type !== "StringLiteral") {
       return;
     }
@@ -412,11 +412,8 @@ function stringEncode(ast, ctx) {
     if (!replacement || !parent || key === null || key === undefined) {
       return;
     }
-    if (index === null || index === undefined) {
-      parent[key] = replacement;
-    } else {
-      parent[key][index] = replacement;
-    }
+    traversal.replace(replacement);
+    traversal.skip();
   });
 
   function forceInjectBait() {

@@ -64,6 +64,9 @@ jobs:
       - name: Run JavaScript obfuscation smoke tests
         run: node test/obf-smoke.js
 
+      - name: Run Luau string encoding tests
+        run: node test/luau-strings.js
+
       - name: Run Luau classic CFF tests
         run: node test/luau-cff.js
 

@@ -1,5 +1,5 @@
 const { parse } = require("./parser");
-const { walk } = require("./walk");
+const { traverse } = require("./traverse");
 const { makeNameFactory } = require("../names");
 
 const AI_DECOY_BAIT =
@@ -7,7 +7,7 @@ const AI_DECOY_BAIT =
 
 function collectIdentifierNames(ast) {
   const used = new Set();
-  walk(ast, (node) => {
+  traverse(ast, (node) => {
     if (node && node.type === "Identifier" && typeof node.name === "string") {
       used.add(node.name);
     }
@@ -383,7 +383,7 @@ function stringEncode(ast, options, rng) {
     return encodeSingle(value, encodedMap, raw);
   }
 
-  walk(ast, (node, parent, key, index) => {
+  traverse(ast, (node, parent, key, index, traversal) => {
     if (node.type !== "StringLiteral") {
       return;
     }
@@ -399,11 +399,8 @@ function stringEncode(ast, options, rng) {
     if (!replacement || !parent || key === null || key === undefined) {
       return;
     }
-    if (index === null || index === undefined) {
-      parent[key] = replacement;
-    } else {
-      parent[key][index] = replacement;
-    }
+    traversal.replace(replacement);
+    traversal.skip();
   });
 
   function forceInjectBait() {
