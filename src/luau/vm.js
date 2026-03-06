@@ -1,7 +1,6 @@
 const { walk } = require("./ast");
 const { decodeRawString } = require("./strings");
 const { makeDiagnosticErrorFromNode } = require("./custom/diagnostics");
-const { addSSAUsedNames, findSSAForNode } = require("./ssa-utils");
 
 const DEFAULT_MIN_STATEMENTS = 1;
 
@@ -19,7 +18,12 @@ const OPCODES = [
   "GET_TABLE",
   "SET_TABLE",
   "CALL",
+  "CALL_EXPAND",
   "RETURN",
+  "RETURN_CALL",
+  "RETURN_CALL_EXPAND",
+  "APPEND_CALL",
+  "APPEND_CALL_EXPAND",
   "JMP",
   "JMP_IF_FALSE",
   "JMP_IF_TRUE",
@@ -47,6 +51,80 @@ const OPCODES = [
   "LEN",
   "BNOT",
 ];
+
+const NOISE_OPCODES = [
+  "NOISE_NOP",
+  "NOISE_READ",
+  "NOISE_WRITE",
+  "NOISE_BRANCH",
+];
+
+const OPCODE_ARITY_ONE = new Set([
+  "PUSH_CONST",
+  "PUSH_LOCAL",
+  "SET_LOCAL",
+  "PUSH_GLOBAL",
+  "SET_GLOBAL",
+  "CALL_EXPAND",
+  "RETURN",
+  "RETURN_CALL_EXPAND",
+  "APPEND_CALL_EXPAND",
+  "JMP",
+  "JMP_IF_FALSE",
+  "JMP_IF_TRUE",
+  "NOISE_BRANCH",
+]);
+
+const OPCODE_ARITY_TWO = new Set([
+  "CALL",
+  "RETURN_CALL",
+  "APPEND_CALL",
+  "PUSH_LOCAL_ADD_LOCAL",
+  "PUSH_LOCAL_SUB_LOCAL",
+  "PUSH_CONST_ADD_CONST",
+  "NOISE_READ",
+  "NOISE_WRITE",
+]);
+
+function getOpcodeArity(op) {
+  if (typeof op !== "string") {
+    return 2;
+  }
+  const base = op.endsWith("_X") ? op.slice(0, -2) : op;
+  if (OPCODE_ARITY_TWO.has(base)) {
+    return 2;
+  }
+  if (OPCODE_ARITY_ONE.has(base)) {
+    return 1;
+  }
+  return 0;
+}
+
+function trimInstructionOperands(inst, arity) {
+  if (!Array.isArray(inst) || !inst.length) {
+    return inst;
+  }
+  const width = Math.max(0, Math.min(2, Number(arity) || 0));
+  const out = [inst[0]];
+  if (width >= 1) {
+    out.push(inst[1] || 0);
+  }
+  if (width >= 2) {
+    out.push(inst[2] || 0);
+  }
+  return out;
+}
+
+function compactInstructionByOpcode(inst) {
+  return trimInstructionOperands(inst, getOpcodeArity(inst && inst[0]));
+}
+
+function compactInstructionList(instructions) {
+  if (!Array.isArray(instructions)) {
+    return instructions;
+  }
+  return instructions.map((inst) => compactInstructionByOpcode(inst));
+}
 
 const BINARY_OP_MAP = new Map([
   ["+", "ADD"],
@@ -77,6 +155,16 @@ const UNARY_OP_MAP = new Map([
   ["~", "BNOT"],
 ]);
 
+function isCallLikeExpression(expr) {
+  return Boolean(
+    expr &&
+    (expr.type === "CallExpression" ||
+      expr.type === "MethodCallExpression" ||
+      expr.type === "TableCallExpression" ||
+      expr.type === "StringCallExpression")
+  );
+}
+
 function raise(message, node = null) {
   throw makeDiagnosticErrorFromNode(message, node);
 }
@@ -103,6 +191,25 @@ function luaByteString(bytes) {
   }
   out += "\"";
   return out;
+}
+
+function addIdentifierNames(root, target) {
+  if (!target) {
+    return target;
+  }
+  if (Array.isArray(root)) {
+    root.forEach((node) => addIdentifierNames(node, target));
+    return target;
+  }
+  if (!root || typeof root !== "object") {
+    return target;
+  }
+  walk(root, (node) => {
+    if (node && node.type === "Identifier" && typeof node.name === "string") {
+      target.add(node.name);
+    }
+  });
+  return target;
 }
 
 function buildOpcodeMap(rng, shuffle, opcodeList = OPCODES) {
@@ -329,9 +436,16 @@ function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
     const part = parts[i];
     const bytes = [];
     for (const inst of part) {
+      const argc = Math.max(0, Math.min(2, (Array.isArray(inst) ? inst.length : 0) - 1));
+      const width = argc + 1;
+      bytes.push(width & 0xff);
       bytes.push(...encodeU32(inst[0] || 0));
-      bytes.push(...encodeU32(inst[1] || 0));
-      bytes.push(...encodeU32(inst[2] || 0));
+      if (argc >= 1) {
+        bytes.push(...encodeU32(inst[1] || 0));
+      }
+      if (argc >= 2) {
+        bytes.push(...encodeU32(inst[2] || 0));
+      }
     }
     const encoded = bytes.map((byte, idx) => (
       byte ^ ((key + ((offset + idx) * 17)) % 256)
@@ -495,7 +609,7 @@ function buildSymbolNoiseToken(rng) {
   return out;
 }
 
-const VM_JUMP_OPS = new Set(["JMP", "JMP_IF_FALSE", "JMP_IF_TRUE"]);
+const VM_JUMP_OPS = new Set(["JMP", "JMP_IF_FALSE", "JMP_IF_TRUE", "NOISE_BRANCH"]);
 
 function remapInstructionJumpTargets(instructions, indexMap) {
   for (const inst of instructions) {
@@ -590,15 +704,23 @@ function injectFakeInstructions(program, rng, probability) {
     indexMap[i + 1] = next.length + 1;
     next.push(inst);
     if (rng.bool(probability)) {
-      if (rng.bool(0.5)) {
-        next.push(["NOP", 0, 0]);
-      } else {
+      const kind = rng.pick(["nop", "push_pop", "noise_read", "noise_write", "noise_branch"]);
+      if (kind === "nop") {
+        next.push(["NOISE_NOP", 0, 0]);
+      } else if (kind === "push_pop") {
         next.push(["PUSH_CONST", nilIndex, 0], ["POP", 0, 0]);
+      } else if (kind === "noise_read") {
+        next.push(["NOISE_READ", rng.int(1, 0xffff), rng.int(1, 0xffff)]);
+      } else if (kind === "noise_write") {
+        next.push(["NOISE_WRITE", rng.int(1, 0xffff), rng.int(1, 0xffff)]);
+      } else {
+        const target = rng.int(1, Math.max(1, original.length));
+        next.push(["NOISE_BRANCH", target, 0]);
       }
     }
   }
   remapInstructionJumpTargets(next, indexMap);
-  program.instructions = next;
+  program.instructions = compactInstructionList(next);
 }
 
 class Emitter {
@@ -738,8 +860,16 @@ class VmCompiler {
     return name;
   }
 
-  compileFunction(node) {
+  compileFunction(node, extraPreboundLocals = []) {
     const params = this.getFunctionParams(node);
+    const preboundLocals = Array.from(new Set([
+      ...extraPreboundLocals,
+      ...this.getFunctionPreboundLocals(node),
+    ]));
+    this.enterScope();
+    preboundLocals.forEach((name) => {
+      this.defineLocal(name);
+    });
     this.enterScope();
     params.forEach((param) => {
       if (param) {
@@ -753,12 +883,14 @@ class VmCompiler {
     this.emit("RETURN", 0, 0);
     this.emitter.patch();
     this.exitScope();
+    this.exitScope();
     return {
       instructions: this.emitter.instructions,
       consts: this.consts,
       localCount: this.localCount,
       paramCount: params.length,
       paramNames: params,
+      localInitValues: [...preboundLocals, ...params],
     };
   }
 
@@ -786,7 +918,26 @@ class VmCompiler {
       localCount: this.localCount,
       paramCount: locals.length,
       paramNames: locals,
+      localInitValues: locals,
     };
+  }
+
+  getFunctionPreboundLocals(node) {
+    if (!node || !node.isLocal) {
+      return [];
+    }
+    if (this.style === "custom") {
+      if (!node.name || node.name.type !== "FunctionName") {
+        return [];
+      }
+      if ((node.name.members && node.name.members.length) || node.name.method) {
+        return [];
+      }
+      return node.name.base && node.name.base.name ? [node.name.base.name] : [];
+    }
+    return node.identifier && node.identifier.type === "Identifier"
+      ? [node.identifier.name]
+      : [];
   }
 
   getFunctionParams(node) {
@@ -928,13 +1079,14 @@ class VmCompiler {
     const variables = stmt.variables || [];
     const init = stmt.init || [];
     if (variables.length <= 1 && init.length <= 1) {
+      const preparedTargets = this.prepareMultiAssignTargets(variables);
       if (init.length === 1) {
-        this.compileExpression(init[0]);
+        this.compileValueExpression(init[0], 1);
       } else {
         const nilIdx = this.addConst(null);
         this.emit("PUSH_CONST", nilIdx, 0);
       }
-      this.compileAssignTarget(variables[0]);
+      this.compilePreparedAssignTarget(preparedTargets[0]);
       return;
     }
     this.compileMultiAssign(variables, init, false);
@@ -944,24 +1096,47 @@ class VmCompiler {
     const temp = this.nextTemp();
     this.emit("NEW_TABLE", 0, 0);
     this.emit("SET_LOCAL", temp, 0);
-    init.forEach((expr, idx) => {
+    const preparedTargets = this.prepareMultiAssignTargets(variables);
+
+    let writeIndex = 0;
+    for (let idx = 0; idx < init.length && writeIndex < variables.length; idx += 1) {
+      const expr = init[idx];
+      const isLast = idx === init.length - 1;
+      const remaining = variables.length - writeIndex;
+      if (expr && isLast && remaining > 1 && isCallLikeExpression(expr)) {
+        const resultTemps = Array.from({ length: remaining }, () => this.nextTemp());
+        this.compileValueExpression(expr, remaining);
+        for (let j = remaining - 1; j >= 0; j -= 1) {
+          this.emit("SET_LOCAL", resultTemps[j], 0);
+        }
+        for (let j = 0; j < remaining; j += 1) {
+          this.emit("PUSH_LOCAL", temp, 0);
+          this.emit("PUSH_CONST", this.addConst(writeIndex + j + 1), 0);
+          this.emit("PUSH_LOCAL", resultTemps[j], 0);
+          this.emit("SET_TABLE", 0, 0);
+        }
+        writeIndex = variables.length;
+        break;
+      }
       this.emit("PUSH_LOCAL", temp, 0);
-      const keyIdx = this.addConst(idx + 1);
+      const keyIdx = this.addConst(writeIndex + 1);
       this.emit("PUSH_CONST", keyIdx, 0);
-      this.compileExpression(expr);
+      this.compileValueExpression(expr, 1);
       this.emit("SET_TABLE", 0, 0);
-    });
+      writeIndex += 1;
+    }
 
     variables.forEach((variable, idx) => {
       this.emit("PUSH_LOCAL", temp, 0);
       const keyIdx = this.addConst(idx + 1);
       this.emit("PUSH_CONST", keyIdx, 0);
       this.emit("GET_TABLE", 0, 0);
-      if (isLocal && variable && variable.type === "Identifier") {
-        const localIdx = this.defineLocal(variable.name);
+      const prepared = preparedTargets[idx];
+      if (isLocal && prepared && prepared.type === "Identifier") {
+        const localIdx = this.defineLocal(prepared.name);
         this.emit("SET_LOCAL", localIdx, 0);
       } else {
-        this.compileAssignTarget(variable);
+        this.compilePreparedAssignTarget(prepared);
       }
     });
   }
@@ -1035,7 +1210,20 @@ class VmCompiler {
       this.emit("RETURN", 0, 0);
       return;
     }
-    args.forEach((expr) => this.compileExpression(expr));
+    const tailExpr = args[args.length - 1];
+    if (isCallLikeExpression(tailExpr)) {
+      for (let i = 0; i < args.length - 1; i += 1) {
+        this.compileValueExpression(args[i], 1);
+      }
+      if (this.callHasExpandedTail(tailExpr)) {
+        this.emitExpandedReturnCall(tailExpr, args.length - 1);
+      } else {
+        const argc = this.compileCallFrame(tailExpr);
+        this.emit("RETURN_CALL", argc, args.length - 1);
+      }
+      return;
+    }
+    args.forEach((expr) => this.compileValueExpression(expr, 1));
     this.emit("RETURN", args.length, 0);
   }
 
@@ -1045,7 +1233,9 @@ class VmCompiler {
     let idx = 0;
     for (const clause of clauses) {
       if (!clause.condition) {
+        this.enterScope();
         this.compileStatements(clause.body);
+        this.exitScope();
         this.emitJump("JMP", endLabel);
         break;
       }
@@ -1114,9 +1304,9 @@ class VmCompiler {
     this.label(startLabel);
     this.enterScope();
     this.compileStatements(this.getBlockStatements(stmt.body));
-    this.exitScope();
     this.label(condLabel);
     this.compileExpression(stmt.condition);
+    this.exitScope();
     this.emitJump("JMP_IF_FALSE", startLabel);
     this.emit("POP", 0, 0);
     this.label(endLabel);
@@ -1315,17 +1505,92 @@ class VmCompiler {
       return;
     }
     if (target.type === "MemberExpression") {
+      const valueTmp = this.nextTemp();
+      this.emit("SET_LOCAL", valueTmp, 0);
       this.compileExpression(target.base);
       const keyIdx = this.addConst(target.identifier.name);
       this.emit("PUSH_CONST", keyIdx, 0);
-      this.emit("SWAP", 0, 0);
+      this.emit("PUSH_LOCAL", valueTmp, 0);
       this.emit("SET_TABLE", 0, 0);
       return;
     }
     if (target.type === "IndexExpression") {
+      const valueTmp = this.nextTemp();
+      this.emit("SET_LOCAL", valueTmp, 0);
       this.compileExpression(target.base);
       this.compileExpression(target.index);
-      this.emit("SWAP", 0, 0);
+      this.emit("PUSH_LOCAL", valueTmp, 0);
+      this.emit("SET_TABLE", 0, 0);
+      return;
+    }
+    raise(`Unsupported assignment target ${target.type}`, target);
+  }
+
+  prepareMultiAssignTargets(variables) {
+    return (variables || []).map((target) => {
+      if (!target) {
+        return null;
+      }
+      if (target.type === "Identifier") {
+        return { type: "Identifier", name: target.name };
+      }
+      if (target.type === "MemberExpression") {
+        const baseTmp = this.nextTemp();
+        this.compileExpression(target.base);
+        this.emit("SET_LOCAL", baseTmp, 0);
+        return {
+          type: "MemberExpression",
+          baseTmp,
+          key: target.identifier.name,
+        };
+      }
+      if (target.type === "IndexExpression") {
+        const baseTmp = this.nextTemp();
+        const indexTmp = this.nextTemp();
+        this.compileExpression(target.base);
+        this.emit("SET_LOCAL", baseTmp, 0);
+        this.compileExpression(target.index);
+        this.emit("SET_LOCAL", indexTmp, 0);
+        return {
+          type: "IndexExpression",
+          baseTmp,
+          indexTmp,
+        };
+      }
+      raise(`Unsupported assignment target ${target.type}`, target);
+    });
+  }
+
+  compilePreparedAssignTarget(target) {
+    if (!target) {
+      this.emit("POP", 0, 0);
+      return;
+    }
+    if (target.type === "Identifier") {
+      const localIdx = this.resolveLocal(target.name);
+      if (localIdx) {
+        this.emit("SET_LOCAL", localIdx, 0);
+      } else {
+        const nameIdx = this.addConst(target.name);
+        this.emit("SET_GLOBAL", nameIdx, 0);
+      }
+      return;
+    }
+
+    const valueTmp = this.nextTemp();
+    this.emit("SET_LOCAL", valueTmp, 0);
+
+    if (target.type === "MemberExpression") {
+      this.emit("PUSH_LOCAL", target.baseTmp, 0);
+      this.emit("PUSH_CONST", this.addConst(target.key), 0);
+      this.emit("PUSH_LOCAL", valueTmp, 0);
+      this.emit("SET_TABLE", 0, 0);
+      return;
+    }
+    if (target.type === "IndexExpression") {
+      this.emit("PUSH_LOCAL", target.baseTmp, 0);
+      this.emit("PUSH_LOCAL", target.indexTmp, 0);
+      this.emit("PUSH_LOCAL", valueTmp, 0);
       this.emit("SET_TABLE", 0, 0);
       return;
     }
@@ -1428,6 +1693,172 @@ class VmCompiler {
     }
   }
 
+  compileValueExpression(expr, retCount = 1) {
+    if (!isCallLikeExpression(expr)) {
+      this.compileExpression(expr);
+      return;
+    }
+    switch (expr.type) {
+      case "CallExpression":
+        this.compileCallExpression(expr, retCount);
+        return;
+      case "MethodCallExpression":
+        this.compileMethodCall(expr, retCount);
+        return;
+      case "TableCallExpression":
+        this.compileTableCall(expr, retCount);
+        return;
+      case "StringCallExpression":
+        this.compileStringCall(expr, retCount);
+        return;
+      default:
+        this.compileExpression(expr);
+    }
+  }
+
+  callHasExpandedTail(expr) {
+    if (!expr) {
+      return false;
+    }
+    if (expr.type !== "CallExpression" && expr.type !== "MethodCallExpression") {
+      return false;
+    }
+    const args = expr.arguments || [];
+    return args.length > 0 && isCallLikeExpression(args[args.length - 1]);
+  }
+
+  emitTableValue(tableIdx, itemIndex, expr, retCount = 1) {
+    this.emit("PUSH_LOCAL", tableIdx, 0);
+    this.emit("PUSH_CONST", this.addConst(itemIndex), 0);
+    this.compileValueExpression(expr, retCount);
+    this.emit("SET_TABLE", 0, 0);
+  }
+
+  emitPackedTableCount(tableIdx, count) {
+    this.emit("PUSH_LOCAL", tableIdx, 0);
+    this.emit("PUSH_CONST", this.addConst("n"), 0);
+    this.emit("PUSH_CONST", this.addConst(count), 0);
+    this.emit("SET_TABLE", 0, 0);
+  }
+
+  compilePackCallResults(expr) {
+    const temp = this.nextTemp();
+    this.emit("NEW_TABLE", 0, 0);
+    this.emit("SET_LOCAL", temp, 0);
+    this.emitPackedTableCount(temp, 0);
+    this.emit("PUSH_LOCAL", temp, 0);
+    this.compileAppendCallLike(expr, 1);
+    return temp;
+  }
+
+  compileExpandedCallExpressionPreparation(expr) {
+    const fnIdx = this.nextTemp();
+    const prefixIdx = this.nextTemp();
+    const args = expr.arguments || [];
+    const tailExpr = args[args.length - 1];
+
+    if (expr.base && expr.base.type === "MemberExpression" && expr.base.indexer === ":") {
+      const selfIdx = this.nextTemp();
+      this.compileExpression(expr.base.base);
+      this.emit("SET_LOCAL", selfIdx, 0);
+      this.emit("PUSH_LOCAL", selfIdx, 0);
+      this.emit("PUSH_CONST", this.addConst(expr.base.identifier.name), 0);
+      this.emit("GET_TABLE", 0, 0);
+      this.emit("SET_LOCAL", fnIdx, 0);
+
+      this.emit("NEW_TABLE", 0, 0);
+      this.emit("SET_LOCAL", prefixIdx, 0);
+      this.emit("PUSH_LOCAL", prefixIdx, 0);
+      this.emit("PUSH_CONST", this.addConst(1), 0);
+      this.emit("PUSH_LOCAL", selfIdx, 0);
+      this.emit("SET_TABLE", 0, 0);
+      for (let i = 0; i < args.length - 1; i += 1) {
+        this.emitTableValue(prefixIdx, i + 2, args[i], 1);
+      }
+      this.emitPackedTableCount(prefixIdx, args.length);
+      const tailIdx = this.compilePackCallResults(tailExpr);
+      return { fnIdx, prefixIdx, tailIdx };
+    }
+
+    this.compileExpression(expr.base);
+    this.emit("SET_LOCAL", fnIdx, 0);
+    this.emit("NEW_TABLE", 0, 0);
+    this.emit("SET_LOCAL", prefixIdx, 0);
+    for (let i = 0; i < args.length - 1; i += 1) {
+      this.emitTableValue(prefixIdx, i + 1, args[i], 1);
+    }
+    this.emitPackedTableCount(prefixIdx, args.length - 1);
+    const tailIdx = this.compilePackCallResults(tailExpr);
+    return { fnIdx, prefixIdx, tailIdx };
+  }
+
+  compileExpandedMethodCallPreparation(expr) {
+    const fnIdx = this.nextTemp();
+    const prefixIdx = this.nextTemp();
+    const baseIdx = this.nextTemp();
+    const args = expr.arguments || [];
+    const tailExpr = args[args.length - 1];
+
+    this.compileExpression(expr.base);
+    this.emit("SET_LOCAL", baseIdx, 0);
+    this.emit("PUSH_LOCAL", baseIdx, 0);
+    this.emit("PUSH_CONST", this.addConst(expr.method.name), 0);
+    this.emit("GET_TABLE", 0, 0);
+    this.emit("SET_LOCAL", fnIdx, 0);
+
+    this.emit("NEW_TABLE", 0, 0);
+    this.emit("SET_LOCAL", prefixIdx, 0);
+    this.emit("PUSH_LOCAL", prefixIdx, 0);
+    this.emit("PUSH_CONST", this.addConst(1), 0);
+    this.emit("PUSH_LOCAL", baseIdx, 0);
+    this.emit("SET_TABLE", 0, 0);
+    for (let i = 0; i < args.length - 1; i += 1) {
+      this.emitTableValue(prefixIdx, i + 2, args[i], 1);
+    }
+    this.emitPackedTableCount(prefixIdx, args.length);
+    const tailIdx = this.compilePackCallResults(tailExpr);
+    return { fnIdx, prefixIdx, tailIdx };
+  }
+
+  compileExpandedCallPreparation(expr) {
+    if (expr.type === "CallExpression") {
+      return this.compileExpandedCallExpressionPreparation(expr);
+    }
+    if (expr.type === "MethodCallExpression") {
+      return this.compileExpandedMethodCallPreparation(expr);
+    }
+    raise(`Unsupported expanded call expression ${expr.type}`, expr);
+  }
+
+  emitExpandedCall(expr, retCount) {
+    const { fnIdx, prefixIdx, tailIdx } = this.compileExpandedCallPreparation(expr);
+    this.emit("PUSH_LOCAL", fnIdx, 0);
+    this.emit("PUSH_LOCAL", prefixIdx, 0);
+    this.emit("PUSH_LOCAL", tailIdx, 0);
+    this.emit("CALL_EXPAND", retCount, 0);
+  }
+
+  emitExpandedReturnCall(expr, prefixCount) {
+    const { fnIdx, prefixIdx, tailIdx } = this.compileExpandedCallPreparation(expr);
+    this.emit("PUSH_LOCAL", fnIdx, 0);
+    this.emit("PUSH_LOCAL", prefixIdx, 0);
+    this.emit("PUSH_LOCAL", tailIdx, 0);
+    this.emit("RETURN_CALL_EXPAND", prefixCount, 0);
+  }
+
+  compileAppendCallLike(expr, startIndex) {
+    if (this.callHasExpandedTail(expr)) {
+      const { fnIdx, prefixIdx, tailIdx } = this.compileExpandedCallPreparation(expr);
+      this.emit("PUSH_LOCAL", fnIdx, 0);
+      this.emit("PUSH_LOCAL", prefixIdx, 0);
+      this.emit("PUSH_LOCAL", tailIdx, 0);
+      this.emit("APPEND_CALL_EXPAND", startIndex, 0);
+      return;
+    }
+    const argc = this.compileCallFrame(expr);
+    this.emit("APPEND_CALL", argc, startIndex);
+  }
+
   extractLiteral(node) {
     if (node.type === "StringLiteral") {
       if (typeof node.value === "string") {
@@ -1474,6 +1905,30 @@ class VmCompiler {
   }
 
   compileCallExpression(expr, retCount) {
+    if (this.callHasExpandedTail(expr)) {
+      this.emitExpandedCall(expr, retCount);
+      return;
+    }
+    const argc = this.compileCallFrame(expr);
+    this.emit("CALL", argc, retCount);
+  }
+
+  compileCallFrame(expr) {
+    switch (expr && expr.type) {
+      case "CallExpression":
+        return this.compileCallFrameExpression(expr);
+      case "MethodCallExpression":
+        return this.compileMethodCallFrame(expr);
+      case "TableCallExpression":
+        return this.compileTableCallFrame(expr);
+      case "StringCallExpression":
+        return this.compileStringCallFrame(expr);
+      default:
+        raise(`Unsupported call expression ${expr && expr.type}`, expr);
+    }
+  }
+
+  compileCallFrameExpression(expr) {
     if (expr.base && expr.base.type === "MemberExpression" && expr.base.indexer === ":") {
       this.compileExpression(expr.base.base);
       this.emit("DUP", 0, 0);
@@ -1482,16 +1937,24 @@ class VmCompiler {
       this.emit("SWAP", 0, 0);
       const args = expr.arguments || [];
       args.forEach((arg) => this.compileExpression(arg));
-      this.emit("CALL", args.length + 1, retCount);
-      return;
+      return args.length + 1;
     }
     this.compileExpression(expr.base);
     const args = expr.arguments || [];
     args.forEach((arg) => this.compileExpression(arg));
-    this.emit("CALL", args.length, retCount);
+    return args.length;
   }
 
   compileMethodCall(expr, retCount) {
+    if (this.callHasExpandedTail(expr)) {
+      this.emitExpandedCall(expr, retCount);
+      return;
+    }
+    const argc = this.compileMethodCallFrame(expr);
+    this.emit("CALL", argc, retCount);
+  }
+
+  compileMethodCallFrame(expr) {
     this.compileExpression(expr.base);
     this.emit("DUP", 0, 0);
     this.emit("PUSH_CONST", this.addConst(expr.method.name), 0);
@@ -1499,26 +1962,38 @@ class VmCompiler {
     this.emit("SWAP", 0, 0);
     const args = expr.arguments || [];
     args.forEach((arg) => this.compileExpression(arg));
-    this.emit("CALL", args.length + 1, retCount);
+    return args.length + 1;
   }
 
   compileTableCall(expr, retCount) {
+    const argc = this.compileTableCallFrame(expr);
+    this.emit("CALL", argc, retCount);
+  }
+
+  compileTableCallFrame(expr) {
     this.compileExpression(expr.base);
     this.compileExpression(expr.arguments);
-    this.emit("CALL", 1, retCount);
+    return 1;
   }
 
   compileStringCall(expr, retCount) {
+    const argc = this.compileStringCallFrame(expr);
+    this.emit("CALL", argc, retCount);
+  }
+
+  compileStringCallFrame(expr) {
     this.compileExpression(expr.base);
     this.compileExpression(expr.argument);
-    this.emit("CALL", 1, retCount);
+    return 1;
   }
 
   compileTableConstructor(expr) {
     this.emit("NEW_TABLE", 0, 0);
     let listIndex = 1;
     const fields = expr.fields || [];
-    for (const field of fields) {
+    for (let fieldIndex = 0; fieldIndex < fields.length; fieldIndex += 1) {
+      const field = fields[fieldIndex];
+      const isLastField = fieldIndex === fields.length - 1;
       if (field.type === "TableKey") {
         this.emit("DUP", 0, 0);
         this.compileExpression(field.key);
@@ -1531,10 +2006,14 @@ class VmCompiler {
         this.emit("SET_TABLE", 0, 0);
       } else if (field.type === "TableValue") {
         this.emit("DUP", 0, 0);
-        this.emit("PUSH_CONST", this.addConst(listIndex), 0);
-        this.compileExpression(field.value);
-        this.emit("SET_TABLE", 0, 0);
-        listIndex += 1;
+        if (isLastField && isCallLikeExpression(field.value)) {
+          this.compileAppendCallLike(field.value, listIndex);
+        } else {
+          this.emit("PUSH_CONST", this.addConst(listIndex), 0);
+          this.compileValueExpression(field.value, 1);
+          this.emit("SET_TABLE", 0, 0);
+          listIndex += 1;
+        }
       } else if (field.kind === "index") {
         this.emit("DUP", 0, 0);
         this.compileExpression(field.key);
@@ -1547,10 +2026,14 @@ class VmCompiler {
         this.emit("SET_TABLE", 0, 0);
       } else if (field.kind === "list") {
         this.emit("DUP", 0, 0);
-        this.emit("PUSH_CONST", this.addConst(listIndex), 0);
-        this.compileExpression(field.value);
-        this.emit("SET_TABLE", 0, 0);
-        listIndex += 1;
+        if (isLastField && isCallLikeExpression(field.value)) {
+          this.compileAppendCallLike(field.value, listIndex);
+        } else {
+          this.emit("PUSH_CONST", this.addConst(listIndex), 0);
+          this.compileValueExpression(field.value, 1);
+          this.emit("SET_TABLE", 0, 0);
+          listIndex += 1;
+        }
       }
     }
   }
@@ -2157,7 +2640,8 @@ function buildVmSource(
   const constCount = constInfo ? constInfo.count : program.consts.length;
   const blockDispatch = Boolean(vmOptions.blockDispatch);
   const useBytecodeStream = !blockDispatch && vmOptions.bytecodeEncrypt !== false;
-  const localsInit = (paramNames || []).map((name) => (name ? name : "nil"));
+  const initValues = Array.isArray(program.localInitValues) ? program.localInitValues : paramNames;
+  const localsInit = (initValues || []).map((name) => (name ? name : "nil"));
   const localsTable = `{ ${localsInit.join(", ")} }`;
   const seedPieces = seedState ? seedState.pieces : [];
   const keyMaskPieces = keySchedule ? keySchedule.maskPieces : null;
@@ -2279,7 +2763,9 @@ function buildVmSource(
     partByte: makeName(),
     constEntry: makeName(),
     keyAt: makeName(),
-    opMatch: makeName(),
+    expandArgs: makeName(),
+    callExpanded: makeName(),
+    syncLocal: makeName(),
   };
   const vmStateNames = {
     bcKeyCount: makeName(),
@@ -2341,6 +2827,16 @@ function buildVmSource(
   const lshift32 = (a, b) => call(bitNames.lshift32, [a, b]);
   const rshift32 = (a, b) => call(bitNames.rshift32, [a, b]);
   const bnot32 = (a) => call(bitNames.bnot32, [a]);
+  const renderLinearInstruction = (inst) => {
+    const row = [inst[0] || 0];
+    if (Array.isArray(inst) && inst.length > 1) {
+      row.push(inst[1] || 0);
+    }
+    if (Array.isArray(inst) && inst.length > 2) {
+      row.push(inst[2] || 0);
+    }
+    return `{ ${row.join(", ")} }`;
+  };
 
   const lines = [
     `do`,
@@ -2560,7 +3056,7 @@ function buildVmSource(
     if (bcInfo && bcInfo.parts && bcInfo.parts.length > 1) {
       const partStrings = bcInfo.parts.map((part) => {
         const items = part
-          .map((inst) => `{ ${inst[0]}, ${inst[1] || 0}, ${inst[2] || 0} }`)
+          .map((inst) => renderLinearInstruction(inst))
           .join(", ");
         return `{ ${items} }`;
       });
@@ -2578,7 +3074,7 @@ function buildVmSource(
       lines.push(`end`);
     } else {
       const bc = program.instructions
-        .map((inst) => `{ ${inst[0]}, ${inst[1] || 0}, ${inst[2] || 0} }`)
+        .map((inst) => renderLinearInstruction(inst))
         .join(", ");
       lines.push(`local bc = { ${bc} }`);
     }
@@ -2615,10 +3111,6 @@ function buildVmSource(
     lines.push(`  mix = mix % 255`);
     lines.push(`  op_map[i] = ${bxor32("op_data[i]", "mix")}`);
     lines.push(`end`);
-    const opConst = opcodeList.map((name, idx) => (
-      `local OP_${name} = op_map[${buildIndexExpression(idx + 1, rng)}]`
-    )).join("\n");
-    lines.push(opConst);
   }
 
   if (!blockDispatch && keyEncoded && keyMaskPieces) {
@@ -2877,18 +3369,52 @@ function buildVmSource(
     `  unpack = unpack_fn`,
     `end`,
   );
+  lines.push(`local function ${helperNames.expandArgs}(prefix, tail)`);
+  lines.push(`  local args = {}`);
+  lines.push(`  local count = 0`);
+  lines.push(`  local prefixCount = prefix and (prefix.n or #prefix) or 0`);
+  lines.push(`  for i = 1, prefixCount do`);
+  lines.push(`    count = count + 1`);
+  lines.push(`    args[count] = prefix[i]`);
+  lines.push(`  end`);
+  lines.push(`  local tailCount = tail and (tail.n or #tail) or 0`);
+  lines.push(`  for i = 1, tailCount do`);
+  lines.push(`    count = count + 1`);
+  lines.push(`    args[count] = tail[i]`);
+  lines.push(`  end`);
+  lines.push(`  args.n = count`);
+  lines.push(`  return args`);
+  lines.push(`end`);
+  lines.push(`local function ${helperNames.callExpanded}(fn, prefix, tail)`);
+  lines.push(`  local args = ${helperNames.expandArgs}(prefix, tail)`);
+  lines.push(`  return pack(fn(unpack(args, 1, args.n or #args)))`);
+  lines.push(`end`);
+  lines.push(`local function ${helperNames.syncLocal}(idx, value)`);
+  if (initValues && initValues.length) {
+    let emitted = false;
+    initValues.forEach((name, index) => {
+      if (!name) {
+        return;
+      }
+      const prefix = emitted ? "elseif" : "if";
+      lines.push(`  ${prefix} idx == ${index + 1} then`);
+      lines.push(`    ${name} = value`);
+      emitted = true;
+    });
+    if (!emitted) {
+      lines.push(`  return`);
+    } else {
+      lines.push(`  return`);
+      lines.push(`  end`);
+    }
+  } else {
+    lines.push(`  return`);
+  }
+  lines.push(`end`);
   const dynamicCoupling = vmOptions.dynamicCoupling !== false;
   const couplingMul = rng.int(3, 31);
   const couplingAdd = rng.int(7, 127);
   lines.push(`local ${vmStateNames.stateKey} = (seed + ${vmStateNames.bcKeyCount} + ${couplingAdd}) % ${bitNames.mod}`);
-  lines.push(`local function ${helperNames.opMatch}(current, expected, pulse)`);
-  lines.push("  if current == nil or expected == nil then return false end");
-  if (dynamicCoupling) {
-    lines.push(`  return ${bxor32("current", "pulse")} == ${bxor32("expected", "pulse")}`);
-  } else {
-    lines.push(`  return current == expected`);
-  }
-  lines.push(`end`);
   if (vmOptions.symbolNoise !== false) {
     const noisePool = makeName();
     const noiseSum = makeName();
@@ -2916,6 +3442,12 @@ function buildVmSource(
     lines.push(`local bc_key = ${stream.keyPieces[0]} + ${stream.keyPieces[1]} + seed`);
     lines.push(`bc_key = (bc_key % 255) + 1`);
     lines.push(`local bc_byte = ${runtimeTools.byte}`);
+    lines.push(`local bc_inst_count = ${program.instructions.length}`);
+    const streamIndexName = makeName();
+    const streamIndexReadyName = makeName();
+    const streamEnsureIndexName = makeName();
+    lines.push(`local ${streamIndexName} = {}`);
+    lines.push(`local ${streamIndexReadyName} = false`);
     lines.push(`local function ${helperNames.partByte}(pos)`);
     lines.push(`  local offset = 0`);
     lines.push(`  for p = 1, #bc_order do`);
@@ -2947,12 +3479,40 @@ function buildVmSource(
     lines.push(`  local b4 = ${helperNames.byte}(pos + 3)`);
     lines.push(`  return b1 + b2 * 256 + b3 * 65536 + b4 * 16777216`);
     lines.push(`end`);
+    lines.push(`local function ${streamEnsureIndexName}()`);
+    lines.push(`  if ${streamIndexReadyName} then`);
+    lines.push(`    return`);
+    lines.push(`  end`);
+    lines.push(`  local cursor = 1`);
+    lines.push(`  for i = 1, bc_inst_count do`);
+    lines.push(`    ${streamIndexName}[i] = cursor`);
+    lines.push(`    local width = ${helperNames.byte}(cursor)`);
+    lines.push(`    if width == nil or width < 1 then`);
+    lines.push(`      width = 1`);
+    lines.push(`    end`);
+    lines.push(`    cursor = cursor + 1 + width * 4`);
+    lines.push(`  end`);
+    lines.push(`  ${streamIndexReadyName} = true`);
+    lines.push(`end`);
     lines.push(`local function ${helperNames.getInst}(pc)`);
-    lines.push(`  local base = pc - 1`);
-    lines.push(`  base = base * 12 + 1`);
-    lines.push(`  local op = ${helperNames.u32}(base)`);
-    lines.push(`  local a = ${helperNames.u32}(base + 4)`);
-    lines.push(`  local b = ${helperNames.u32}(base + 8)`);
+    lines.push(`  ${streamEnsureIndexName}()`);
+    lines.push(`  local base = ${streamIndexName}[pc]`);
+    lines.push(`  if base == nil then`);
+    lines.push(`    return 0, 0, 0`);
+    lines.push(`  end`);
+    lines.push(`  local width = ${helperNames.byte}(base)`);
+    lines.push(`  if width == nil or width < 1 then`);
+    lines.push(`    return 0, 0, 0`);
+    lines.push(`  end`);
+    lines.push(`  local op = ${helperNames.u32}(base + 1)`);
+    lines.push(`  local a = 0`);
+    lines.push(`  local b = 0`);
+    lines.push(`  if width > 1 then`);
+    lines.push(`    a = ${helperNames.u32}(base + 5)`);
+    lines.push(`  end`);
+    lines.push(`  if width > 2 then`);
+    lines.push(`    b = ${helperNames.u32}(base + 9)`);
+    lines.push(`  end`);
     lines.push(`  return op, a, b`);
     lines.push(`end`);
   }
@@ -3027,6 +3587,7 @@ function buildVmSource(
         case "SET_LOCAL_X":
           return [
             `locals[${aExpr}] = stack[top]`,
+            `${helperNames.syncLocal}(${aExpr}, locals[${aExpr}])`,
             "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
@@ -3118,6 +3679,111 @@ function buildVmSource(
             "      stack[top] = res[i]",
             "    end",
             "  end",
+            "end",
+            `pc = ${nextId}`,
+          ];
+        case "CALL_EXPAND":
+          return [
+            `local retc = ${aExpr}`,
+            "local tail = stack[top]",
+            "local prefixArgs = stack[top - 1]",
+            "local fn = stack[top - 2]",
+            `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+            "for i = top, top - 2, -1 do",
+            "  stack[i] = nil",
+            "end",
+            "top = top - 3",
+            "if retc == 0 then",
+            `  pc = ${nextId}`,
+            "elseif retc == 1 then",
+            "  top = top + 1",
+            "  stack[top] = res[1]",
+            `  pc = ${nextId}`,
+            "else",
+            "  for i = 1, retc do",
+            "    top = top + 1",
+            "    stack[top] = res[i]",
+            "  end",
+            `  pc = ${nextId}`,
+            "end",
+          ];
+        case "RETURN_CALL":
+          return [
+            `local argc = ${aExpr}`,
+            `local prefix = ${bExpr}`,
+            "local base = top - argc",
+            "local fn = stack[base]",
+            "if prefix == 0 then",
+            "  return fn(unpack(stack, base + 1, top))",
+            "end",
+            "local res = pack(fn(unpack(stack, base + 1, top)))",
+            "local merged = { n = prefix + (res.n or #res) }",
+            "local prefixBase = base - prefix",
+            "for i = 1, prefix do",
+            "  merged[i] = stack[prefixBase + i - 1]",
+            "end",
+            "for i = 1, res.n or #res do",
+            "  merged[prefix + i] = res[i]",
+            "end",
+            "return unpack(merged, 1, merged.n)",
+          ];
+        case "RETURN_CALL_EXPAND":
+          return [
+            `local prefix = ${aExpr}`,
+            "local tail = stack[top]",
+            "local prefixArgs = stack[top - 1]",
+            "local fn = stack[top - 2]",
+            `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+            "if prefix == 0 then",
+            "  return unpack(res, 1, res.n or #res)",
+            "end",
+            "local merged = { n = prefix + (res.n or #res) }",
+            "local prefixBase = top - 2 - prefix",
+            "for i = 1, prefix do",
+            "  merged[i] = stack[prefixBase + i - 1]",
+            "end",
+            "for i = 1, res.n or #res do",
+            "  merged[prefix + i] = res[i]",
+            "end",
+            "return unpack(merged, 1, merged.n)",
+          ];
+        case "APPEND_CALL":
+          return [
+            `local argc = ${aExpr}`,
+            `local startIndex = ${bExpr}`,
+            "local base = top - argc",
+            "local fn = stack[base]",
+            "local tbl = stack[base - 1]",
+            "local res = pack(fn(unpack(stack, base + 1, top)))",
+            "for i = top, base, -1 do",
+            "  stack[i] = nil",
+            "end",
+            "top = base - 1",
+            "for i = 1, res.n or #res do",
+            "  tbl[startIndex + i - 1] = res[i]",
+            "end",
+            "if tbl.n ~= nil then",
+            "  tbl.n = startIndex + (res.n or #res) - 1",
+            "end",
+            `pc = ${nextId}`,
+          ];
+        case "APPEND_CALL_EXPAND":
+          return [
+            `local startIndex = ${aExpr}`,
+            "local tail = stack[top]",
+            "local prefixArgs = stack[top - 1]",
+            "local fn = stack[top - 2]",
+            "local tbl = stack[top - 3]",
+            `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+            "for i = top, top - 2, -1 do",
+            "  stack[i] = nil",
+            "end",
+            "top = top - 3",
+            "for i = 1, res.n or #res do",
+            "  tbl[startIndex + i - 1] = res[i]",
+            "end",
+            "if tbl.n ~= nil then",
+            "  tbl.n = startIndex + (res.n or #res) - 1",
             "end",
             `pc = ${nextId}`,
           ];
@@ -3307,6 +3973,28 @@ function buildVmSource(
             `stack[top] = ${bnot32("stack[top]")}`,
             `pc = ${nextId}`,
           ];
+        case "NOISE_NOP":
+          return [`pc = ${nextId}`];
+        case "NOISE_READ":
+          return [
+            "local probe = stack[top]",
+            "if probe == nil then probe = locals[1] end",
+            `pc = ${nextId}`,
+          ];
+        case "NOISE_WRITE":
+          return [
+            `local ghost = ${bxor32(String(a), String(b))}`,
+            "if ghost < 0 then ghost = -ghost end",
+            `pc = ${nextId}`,
+          ];
+        case "NOISE_BRANCH":
+          return [
+            `if ((${a} + top + 1) % 97) == 211 then`,
+            `  pc = ${targetId}`,
+            "else",
+            `  pc = ${nextId}`,
+            "end",
+          ];
         default:
           return [`pc = ${nextId}`];
       }
@@ -3337,6 +4025,558 @@ function buildVmSource(
     }
     lines.push("end");
   } else {
+    const noiseStateName = makeName();
+    const emitLinearHandlerBody = (rawOpName) => {
+      const opName = typeof rawOpName === "string" && rawOpName.endsWith("_X")
+        ? rawOpName.slice(0, -2)
+        : rawOpName;
+      switch (opName) {
+        case "NOP":
+        case "NOISE_NOP":
+          return ["return pc + 1, false, nil"];
+        case "PUSH_CONST":
+          return [
+            "top = top + 1",
+            `stack[top] = ${helperNames.getConst}(a)`,
+            "return pc + 1, false, nil",
+          ];
+        case "PUSH_LOCAL":
+          return [
+            "top = top + 1",
+            "stack[top] = locals[a]",
+            "return pc + 1, false, nil",
+          ];
+        case "PUSH_LOCAL_ADD_LOCAL":
+          return [
+            "top = top + 1",
+            "stack[top] = locals[a] + locals[b]",
+            "return pc + 1, false, nil",
+          ];
+        case "PUSH_LOCAL_SUB_LOCAL":
+          return [
+            "top = top + 1",
+            "stack[top] = locals[a] - locals[b]",
+            "return pc + 1, false, nil",
+          ];
+        case "PUSH_CONST_ADD_CONST":
+          return [
+            "top = top + 1",
+            `stack[top] = ${helperNames.getConst}(a) + ${helperNames.getConst}(b)`,
+            "return pc + 1, false, nil",
+          ];
+        case "SET_LOCAL":
+          return [
+            "locals[a] = stack[top]",
+            `${helperNames.syncLocal}(a, locals[a])`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "PUSH_GLOBAL":
+          return [
+            "top = top + 1",
+            `stack[top] = env[${helperNames.getConst}(a)]`,
+            "return pc + 1, false, nil",
+          ];
+        case "SET_GLOBAL":
+          return [
+            `env[${helperNames.getConst}(a)] = stack[top]`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "NEW_TABLE":
+          return [
+            "top = top + 1",
+            "stack[top] = {}",
+            "return pc + 1, false, nil",
+          ];
+        case "DUP":
+          return [
+            "top = top + 1",
+            "stack[top] = stack[top - 1]",
+            "return pc + 1, false, nil",
+          ];
+        case "SWAP":
+          return [
+            "stack[top], stack[top - 1] = stack[top - 1], stack[top]",
+            "return pc + 1, false, nil",
+          ];
+        case "POP":
+          return [
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "GET_TABLE":
+          return [
+            "local idx = stack[top]",
+            "stack[top] = nil",
+            "local base = stack[top - 1]",
+            "stack[top - 1] = base[idx]",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "SET_TABLE":
+          return [
+            "local val = stack[top]",
+            "stack[top] = nil",
+            "local key = stack[top - 1]",
+            "stack[top - 1] = nil",
+            "local base = stack[top - 2]",
+            "base[key] = val",
+            "stack[top - 2] = nil",
+            "top = top - 3",
+            "return pc + 1, false, nil",
+          ];
+        case "CALL":
+          return [
+            "local argc = a",
+            "local retc = b",
+            "local base = top - argc",
+            "local fn = stack[base]",
+            "if retc == 0 then",
+            "  fn(unpack(stack, base + 1, top))",
+            "  for i = top, base, -1 do",
+            "    stack[i] = nil",
+            "  end",
+            "  top = base - 1",
+            "else",
+            "  local res = pack(fn(unpack(stack, base + 1, top)))",
+            "  for i = top, base, -1 do",
+            "    stack[i] = nil",
+            "  end",
+            "  top = base - 1",
+            "  if retc == 1 then",
+            "    top = top + 1",
+            "    stack[top] = res[1]",
+            "  else",
+            "    for i = 1, retc do",
+            "      top = top + 1",
+            "      stack[top] = res[i]",
+            "    end",
+            "  end",
+            "end",
+            "return pc + 1, false, nil",
+          ];
+        case "CALL_EXPAND":
+          return [
+            "local retc = a",
+            "local tail = stack[top]",
+            "local prefixArgs = stack[top - 1]",
+            "local fn = stack[top - 2]",
+            `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+            "for i = top, top - 2, -1 do",
+            "  stack[i] = nil",
+            "end",
+            "top = top - 3",
+            "if retc == 0 then",
+            "  return pc + 1, false, nil",
+            "elseif retc == 1 then",
+            "  top = top + 1",
+            "  stack[top] = res[1]",
+            "else",
+            "  for i = 1, retc do",
+            "    top = top + 1",
+            "    stack[top] = res[i]",
+            "  end",
+            "end",
+            "return pc + 1, false, nil",
+          ];
+        case "RETURN_CALL":
+          return [
+            "local argc = a",
+            "local prefix = b",
+            "local base = top - argc",
+            "local fn = stack[base]",
+            "if prefix == 0 then",
+            "  return 0, true, pack(fn(unpack(stack, base + 1, top)))",
+            "end",
+            "local res = pack(fn(unpack(stack, base + 1, top)))",
+            "local merged = { n = prefix + (res.n or #res) }",
+            "local prefixBase = base - prefix",
+            "for i = 1, prefix do",
+            "  merged[i] = stack[prefixBase + i - 1]",
+            "end",
+            "for i = 1, res.n or #res do",
+            "  merged[prefix + i] = res[i]",
+            "end",
+            "return 0, true, merged",
+          ];
+        case "RETURN_CALL_EXPAND":
+          return [
+            "local prefix = a",
+            "local tail = stack[top]",
+            "local prefixArgs = stack[top - 1]",
+            "local fn = stack[top - 2]",
+            `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+            "if prefix == 0 then",
+            "  return 0, true, res",
+            "end",
+            "local merged = { n = prefix + (res.n or #res) }",
+            "local prefixBase = top - 2 - prefix",
+            "for i = 1, prefix do",
+            "  merged[i] = stack[prefixBase + i - 1]",
+            "end",
+            "for i = 1, res.n or #res do",
+            "  merged[prefix + i] = res[i]",
+            "end",
+            "return 0, true, merged",
+          ];
+        case "APPEND_CALL":
+          return [
+            "local argc = a",
+            "local startIndex = b",
+            "local base = top - argc",
+            "local fn = stack[base]",
+            "local tbl = stack[base - 1]",
+            "local res = pack(fn(unpack(stack, base + 1, top)))",
+            "for i = top, base, -1 do",
+            "  stack[i] = nil",
+            "end",
+            "top = base - 1",
+            "for i = 1, res.n or #res do",
+            "  tbl[startIndex + i - 1] = res[i]",
+            "end",
+            "if tbl.n ~= nil then",
+            "  tbl.n = startIndex + (res.n or #res) - 1",
+            "end",
+            "return pc + 1, false, nil",
+          ];
+        case "APPEND_CALL_EXPAND":
+          return [
+            "local startIndex = a",
+            "local tail = stack[top]",
+            "local prefixArgs = stack[top - 1]",
+            "local fn = stack[top - 2]",
+            "local tbl = stack[top - 3]",
+            `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+            "for i = top, top - 2, -1 do",
+            "  stack[i] = nil",
+            "end",
+            "top = top - 3",
+            "for i = 1, res.n or #res do",
+            "  tbl[startIndex + i - 1] = res[i]",
+            "end",
+            "if tbl.n ~= nil then",
+            "  tbl.n = startIndex + (res.n or #res) - 1",
+            "end",
+            "return pc + 1, false, nil",
+          ];
+        case "RETURN":
+          return [
+            "local count = a",
+            "if count == 0 then",
+            "  return 0, true, pack()",
+            "elseif count == 1 then",
+            "  return 0, true, pack(stack[top])",
+            "else",
+            "  local base = top - count + 1",
+            "  return 0, true, pack(unpack(stack, base, top))",
+            "end",
+          ];
+        case "JMP":
+          return ["return a, false, nil"];
+        case "JMP_IF_FALSE":
+          return [
+            "if not stack[top] then",
+            "  return a, false, nil",
+            "end",
+            "return pc + 1, false, nil",
+          ];
+        case "JMP_IF_TRUE":
+          return [
+            "if stack[top] then",
+            "  return a, false, nil",
+            "end",
+            "return pc + 1, false, nil",
+          ];
+        case "ADD":
+          return [
+            "stack[top - 1] = stack[top - 1] + stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "SUB":
+          return [
+            "stack[top - 1] = stack[top - 1] - stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "MUL":
+          return [
+            "stack[top - 1] = stack[top - 1] * stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "DIV":
+          return [
+            "stack[top - 1] = stack[top - 1] / stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "IDIV":
+          return [
+            `stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "MOD":
+          return [
+            "stack[top - 1] = stack[top - 1] % stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "POW":
+          return [
+            "stack[top - 1] = stack[top - 1] ^ stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "CONCAT":
+          return [
+            "stack[top - 1] = stack[top - 1] .. stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "EQ":
+          return [
+            "stack[top - 1] = stack[top - 1] == stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "NE":
+          return [
+            "stack[top - 1] = stack[top - 1] ~= stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "LT":
+          return [
+            "stack[top - 1] = stack[top - 1] < stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "LE":
+          return [
+            "stack[top - 1] = stack[top - 1] <= stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "GT":
+          return [
+            "stack[top - 1] = stack[top - 1] > stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "GE":
+          return [
+            "stack[top - 1] = stack[top - 1] >= stack[top]",
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "BAND":
+          return [
+            `stack[top - 1] = ${band32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "BOR":
+          return [
+            `stack[top - 1] = ${bor32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "BXOR":
+          return [
+            `stack[top - 1] = ${bxor32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "SHL":
+          return [
+            `stack[top - 1] = ${lshift32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "SHR":
+          return [
+            `stack[top - 1] = ${rshift32("stack[top - 1]", "stack[top]")}`,
+            "stack[top] = nil",
+            "top = top - 1",
+            "return pc + 1, false, nil",
+          ];
+        case "UNM":
+          return [
+            "stack[top] = -stack[top]",
+            "return pc + 1, false, nil",
+          ];
+        case "NOT":
+          return [
+            "stack[top] = not stack[top]",
+            "return pc + 1, false, nil",
+          ];
+        case "LEN":
+          return [
+            "stack[top] = #stack[top]",
+            "return pc + 1, false, nil",
+          ];
+        case "BNOT":
+          return [
+            `stack[top] = ${bnot32("stack[top]")}`,
+            "return pc + 1, false, nil",
+          ];
+        case "NOISE_READ":
+          return [
+            "local slot = ((a + pc + seed) % 11) + 1",
+            `local ghost = ${noiseStateName}[slot]`,
+            "if ghost == nil then",
+            "  ghost = stack[top]",
+            "end",
+            `${noiseStateName}[slot] = ghost`,
+            "return pc + 1, false, nil",
+          ];
+        case "NOISE_WRITE":
+          return [
+            "local slot = ((a + b + pc + seed) % 11) + 1",
+            `local ghost = ${noiseStateName}[slot] or 0`,
+            `${noiseStateName}[slot] = ${bxor32("ghost", "(a + b + pc) % " + bitNames.mod)}`,
+            "return pc + 1, false, nil",
+          ];
+        case "NOISE_BRANCH":
+          return [
+            "if ((a + pc + seed) % 97) == 211 then",
+            "  return a, false, nil",
+            "end",
+            "return pc + 1, false, nil",
+          ];
+        default:
+          return ["return pc + 1, false, nil"];
+      }
+    };
+
+    const opcodeIndexByName = new Map(opcodeList.map((name, idx) => [name, idx + 1]));
+    const dispatchOps = opcodeList.filter((name) => typeof name === "string" && opcodeIndexByName.has(name));
+    const shuffledDispatchOps = dispatchOps.length ? dispatchOps.slice() : ["NOP"];
+    rng.shuffle(shuffledDispatchOps);
+    const maxGroups = Math.max(1, Math.min(6, shuffledDispatchOps.length));
+    const minGroups = Math.min(2, maxGroups);
+    const groupCount = maxGroups === minGroups ? maxGroups : rng.int(minGroups, maxGroups);
+    const dispatchBuckets = Array.from({ length: groupCount }, () => []);
+    shuffledDispatchOps.forEach((opName, idx) => {
+      dispatchBuckets[idx % groupCount].push(opName);
+    });
+
+    const dispatchNames = {
+      groupMap: makeName(),
+      tokenMap: makeName(),
+      dispatchers: makeName(),
+      group: makeName(),
+      token: makeName(),
+      runner: makeName(),
+      nextPc: makeName(),
+      stop: makeName(),
+      ret: makeName(),
+    };
+
+    const groupPlans = dispatchBuckets.map((ops, idx) => {
+      const decodeName = makeName();
+      const handlersName = makeName();
+      const dispatchName = makeName();
+      const groupMask = rng.int(0x101, 0x7fffffff) >>> 0;
+      const usedHandlerIds = new Set();
+      const usedTokens = new Set();
+      const entries = ops.map((opName) => {
+        let handlerId = 0;
+        while (!handlerId || usedHandlerIds.has(handlerId)) {
+          handlerId = rng.int(1, 0x3fff);
+        }
+        usedHandlerIds.add(handlerId);
+        let token = 0;
+        while (!token || usedTokens.has(token)) {
+          token = rng.int(0x1000, 0x7fffffff) >>> 0;
+        }
+        usedTokens.add(token);
+        const opcodeIndex = opcodeIndexByName.get(opName) || 1;
+        const opExpr = `op_map[${buildIndexExpression(opcodeIndex, rng)}]`;
+        return {
+          opName,
+          handlerId,
+          token,
+          maskedToken: (token ^ groupMask) >>> 0,
+          opExpr,
+        };
+      });
+      return {
+        groupId: idx + 1,
+        decodeName,
+        handlersName,
+        dispatchName,
+        groupMask,
+        entries,
+      };
+    });
+
+    lines.push(`local ${noiseStateName} = {}`);
+    lines.push(`local ${dispatchNames.groupMap} = {}`);
+    lines.push(`local ${dispatchNames.tokenMap} = {}`);
+    for (const group of groupPlans) {
+      for (const entry of group.entries) {
+        lines.push(`${dispatchNames.groupMap}[${entry.opExpr}] = ${group.groupId}`);
+        lines.push(`${dispatchNames.tokenMap}[${entry.opExpr}] = ${entry.maskedToken}`);
+      }
+    }
+
+    for (const group of groupPlans) {
+      lines.push(`local ${group.decodeName} = {}`);
+      for (const entry of group.entries) {
+        lines.push(`${group.decodeName}[${entry.token}] = ${entry.handlerId}`);
+      }
+      lines.push(`local ${group.handlersName} = {}`);
+      for (const entry of group.entries) {
+        lines.push(`${group.handlersName}[${entry.handlerId}] = function(a, b, pc)`);
+        const body = emitLinearHandlerBody(entry.opName);
+        body.forEach((line) => lines.push(`  ${line}`));
+        lines.push(`end`);
+      }
+      lines.push(`local function ${group.dispatchName}(token, a, b, pc, pulse)`);
+      if (dynamicCoupling) {
+        lines.push(`  local raw = ${bxor32("token", "pulse")}`);
+      } else {
+        lines.push(`  local raw = token`);
+      }
+      lines.push(`  local key = ${bxor32("raw", String(group.groupMask))}`);
+      lines.push(`  local hid = ${group.decodeName}[key]`);
+      lines.push(`  if hid == nil then return 0, true, nil end`);
+      lines.push(`  local fn = ${group.handlersName}[hid]`);
+      lines.push(`  if fn == nil then return 0, true, nil end`);
+      lines.push(`  return fn(a, b, pc)`);
+      lines.push(`end`);
+    }
+
+    lines.push(`local ${dispatchNames.dispatchers} = {}`);
+    for (const group of groupPlans) {
+      lines.push(`${dispatchNames.dispatchers}[${group.groupId}] = ${group.dispatchName}`);
+    }
+
     const loopLines = [
       `local pc = 1`,
       `while true do`,
@@ -3345,9 +4585,10 @@ function buildVmSource(
       loopLines.push(`  local op, a, b = ${helperNames.getInst}(pc)`);
     } else {
       loopLines.push(`  local inst = bc[pc]`);
-      loopLines.push(`  local op = inst[1]`);
-      loopLines.push(`  local a = inst[2]`);
-      loopLines.push(`  local b = inst[3]`);
+      loopLines.push(`  if inst == nil then return end`);
+      loopLines.push(`  local op = inst[1] or 0`);
+      loopLines.push(`  local a = inst[2] or 0`);
+      loopLines.push(`  local b = inst[3] or 0`);
     }
     loopLines.push(
       `  local key = 0`,
@@ -3363,236 +4604,29 @@ function buildVmSource(
       `  local ${vmStateNames.statePulse} = ${dynamicCoupling
         ? bxor32(vmStateNames.stateKey, rshift32(vmStateNames.stateKey, "7"))
         : "0"}`,
-      `  if ${helperNames.opMatch}(op, OP_NOP, ${vmStateNames.statePulse}) then`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_PUSH_CONST, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = ${helperNames.getConst}(a)`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_PUSH_LOCAL, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = locals[a]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_PUSH_LOCAL_ADD_LOCAL, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = locals[a] + locals[b]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_PUSH_LOCAL_SUB_LOCAL, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = locals[a] - locals[b]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_PUSH_CONST_ADD_CONST, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = ${helperNames.getConst}(a) + ${helperNames.getConst}(b)`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_SET_LOCAL, ${vmStateNames.statePulse}) then`,
-      `    locals[a] = stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_PUSH_GLOBAL, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = env[${helperNames.getConst}(a)]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_SET_GLOBAL, ${vmStateNames.statePulse}) then`,
-      `    env[${helperNames.getConst}(a)] = stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_NEW_TABLE, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = {}`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_DUP, ${vmStateNames.statePulse}) then`,
-      `    top = top + 1`,
-      `    stack[top] = stack[top - 1]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_SWAP, ${vmStateNames.statePulse}) then`,
-      `    stack[top], stack[top - 1] = stack[top - 1], stack[top]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_POP, ${vmStateNames.statePulse}) then`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_GET_TABLE, ${vmStateNames.statePulse}) then`,
-      `    local idx = stack[top]`,
-      `    stack[top] = nil`,
-      `    local base = stack[top - 1]`,
-      `    stack[top - 1] = base[idx]`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_SET_TABLE, ${vmStateNames.statePulse}) then`,
-      `    local val = stack[top]`,
-      `    stack[top] = nil`,
-      `    local key = stack[top - 1]`,
-      `    stack[top - 1] = nil`,
-      `    local base = stack[top - 2]`,
-      `    base[key] = val`,
-      `    stack[top - 2] = nil`,
-      `    top = top - 3`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_CALL, ${vmStateNames.statePulse}) then`,
-      `    local argc = a`,
-      `    local retc = b`,
-      `    local base = top - argc`,
-      `    local fn = stack[base]`,
-      `    if retc == 0 then`,
-      `      fn(unpack(stack, base + 1, top))`,
-      `      for i = top, base, -1 do`,
-      `        stack[i] = nil`,
-      `      end`,
-      `      top = base - 1`,
-      `    else`,
-      `      local res = pack(fn(unpack(stack, base + 1, top)))`,
-      `      for i = top, base, -1 do`,
-      `        stack[i] = nil`,
-      `      end`,
-      `      top = base - 1`,
-      `      if retc == 1 then`,
-      `        top = top + 1`,
-      `        stack[top] = res[1]`,
-      `      else`,
-      `        for i = 1, retc do`,
-      `          top = top + 1`,
-      `          stack[top] = res[i]`,
-      `        end`,
-      `      end`,
-      `    end`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_RETURN, ${vmStateNames.statePulse}) then`,
-      `    local count = a`,
-      `    if count == 0 then`,
-      `      return`,
-      `    elseif count == 1 then`,
-      `      return stack[top]`,
-      `    else`,
-      `      local base = top - count + 1`,
-      `      return unpack(stack, base, top)`,
-      `    end`,
-      `  elseif ${helperNames.opMatch}(op, OP_JMP, ${vmStateNames.statePulse}) then`,
-      `    pc = a`,
-      `  elseif ${helperNames.opMatch}(op, OP_JMP_IF_FALSE, ${vmStateNames.statePulse}) then`,
-      `    if not stack[top] then`,
-      `      pc = a`,
-      `    else`,
-      `      pc = pc + 1`,
-      `    end`,
-      `  elseif ${helperNames.opMatch}(op, OP_JMP_IF_TRUE, ${vmStateNames.statePulse}) then`,
-      `    if stack[top] then`,
-      `      pc = a`,
-      `    else`,
-      `      pc = pc + 1`,
-      `    end`,
-      `  elseif ${helperNames.opMatch}(op, OP_ADD, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] + stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_SUB, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] - stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_MUL, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] * stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_DIV, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] / stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_IDIV, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_MOD, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] % stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_POW, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] ^ stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_CONCAT, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] .. stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_EQ, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] == stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_NE, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] ~= stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_LT, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] < stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_LE, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] <= stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_GT, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] > stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_GE, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = stack[top - 1] >= stack[top]`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_BAND, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = ${band32("stack[top - 1]", "stack[top]")}`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_BOR, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = ${bor32("stack[top - 1]", "stack[top]")}`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_BXOR, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = ${bxor32("stack[top - 1]", "stack[top]")}`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_SHL, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = ${lshift32("stack[top - 1]", "stack[top]")}`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_SHR, ${vmStateNames.statePulse}) then`,
-      `    stack[top - 1] = ${rshift32("stack[top - 1]", "stack[top]")}`,
-      `    stack[top] = nil`,
-      `    top = top - 1`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_UNM, ${vmStateNames.statePulse}) then`,
-      `    stack[top] = -stack[top]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_NOT, ${vmStateNames.statePulse}) then`,
-      `    stack[top] = not stack[top]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_LEN, ${vmStateNames.statePulse}) then`,
-      `    stack[top] = #stack[top]`,
-      `    pc = pc + 1`,
-      `  elseif ${helperNames.opMatch}(op, OP_BNOT, ${vmStateNames.statePulse}) then`,
-      `    stack[top] = ${bnot32("stack[top]")}`,
-      `    pc = pc + 1`,
-      `  else`,
+      `  local ${dispatchNames.group} = ${dispatchNames.groupMap}[op]`,
+      `  if ${dispatchNames.group} == nil then`,
       `    return`,
       `  end`,
+      `  local ${dispatchNames.token} = ${dispatchNames.tokenMap}[op]`,
+      `  if ${dispatchNames.token} == nil then`,
+      `    return`,
+      `  end`,
+      ...(dynamicCoupling
+        ? [`  ${dispatchNames.token} = ${bxor32(dispatchNames.token, vmStateNames.statePulse)}`]
+        : []),
+      `  local ${dispatchNames.runner} = ${dispatchNames.dispatchers}[${dispatchNames.group}]`,
+      `  if ${dispatchNames.runner} == nil then`,
+      `    return`,
+      `  end`,
+      `  local ${dispatchNames.nextPc}, ${dispatchNames.stop}, ${dispatchNames.ret} = ${dispatchNames.runner}(${dispatchNames.token}, a, b, pc, ${vmStateNames.statePulse})`,
+      `  if ${dispatchNames.stop} then`,
+      `    if ${dispatchNames.ret} == nil then`,
+      `      return`,
+      `    end`,
+      `    return unpack(${dispatchNames.ret}, 1, ${dispatchNames.ret}.n or #${dispatchNames.ret})`,
+      `  end`,
+      `  pc = ${dispatchNames.nextPc}`,
       `end`,
       `end`,
     );
@@ -3697,6 +4731,33 @@ function collectTopLevelPreboundLocals(statements) {
   return names;
 }
 
+function collectPreboundLocalsForFunction(ast, fnNode) {
+  const names = [];
+  const seen = new Set();
+  const body = ast && Array.isArray(ast.body) ? ast.body : [];
+  for (const stmt of body) {
+    if (stmt === fnNode) {
+      break;
+    }
+    if (!stmt || !stmt.type) {
+      continue;
+    }
+    if (stmt.type === "LocalStatement") {
+      const vars = Array.isArray(stmt.variables) ? stmt.variables : [];
+      vars.forEach((variable) => {
+        if (variable && variable.type === "Identifier") {
+          pushTopLevelLocalName(names, seen, variable.name);
+        }
+      });
+      continue;
+    }
+    if (stmt.type === "FunctionDeclaration" && stmt.isLocal) {
+      pushTopLevelLocalName(names, seen, getFunctionName(stmt));
+    }
+  }
+  return names;
+}
+
 function buildTopLevelChunkPlan(ast) {
   const body = ast && Array.isArray(ast.body) ? ast.body : [];
   let splitIndex = 0;
@@ -3720,7 +4781,6 @@ function virtualizeLuau(ast, ctx) {
   const style = ctx.options && ctx.options.luauParser === "luaparse" ? "luaparse" : "custom";
   liftNestedVmCallbacks(ast, ctx, style);
   const layers = Math.max(1, ctx.options.vm?.layers || 1);
-  const ssaRoot = ctx && typeof ctx.getSSA === "function" ? ctx.getSSA() : null;
   for (let layer = 0; layer < layers; layer += 1) {
     const minStatements = ctx.options.vm?.minStatements ?? DEFAULT_MIN_STATEMENTS;
 
@@ -3754,7 +4814,7 @@ function virtualizeLuau(ast, ctx) {
       const compiler = new VmCompiler({ style, options: ctx.options });
       let program;
       try {
-        program = compiler.compileFunction(node);
+        program = compiler.compileFunction(node, collectPreboundLocalsForFunction(ast, node));
       } catch (err) {
         const debug = Boolean(ctx.options.vm?.debug) || process.env.JS_OBF_VM_DEBUG === "1";
         if (debug) {
@@ -3767,6 +4827,7 @@ function virtualizeLuau(ast, ctx) {
 
       applyInstructionFusion(program, ctx.rng, ctx.options.vm || {});
       injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
+      program.instructions = compactInstructionList(program.instructions);
 
       const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
       const isaProfile = blockDispatch
@@ -3781,6 +4842,7 @@ function virtualizeLuau(ast, ctx) {
           };
       const opcodeList = Array.from(new Set([
         ...OPCODES,
+        ...NOISE_OPCODES,
         ...program.instructions
           .map((inst) => inst && inst[0])
           .filter((name) => typeof name === "string"),
@@ -3794,11 +4856,18 @@ function virtualizeLuau(ast, ctx) {
         const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false, opcodeList);
         opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
 
-        program.instructions = program.instructions.map((inst) => [
-          opcodeMap[inst[0]],
-          inst[1] || 0,
-          inst[2] || 0,
-        ]);
+        program.instructions = program.instructions.map((inst) => {
+          const opName = inst[0];
+          const width = getOpcodeArity(opName);
+          const out = [opcodeMap[opName]];
+          if (width >= 1) {
+            out.push(inst[1] || 0);
+          }
+          if (width >= 2) {
+            out.push(inst[2] || 0);
+          }
+          return out;
+        });
 
         keySchedule = ctx.options.vm?.runtimeKey === false
           ? null
@@ -3815,11 +4884,14 @@ function virtualizeLuau(ast, ctx) {
             if (!key) {
               return inst;
             }
-            return [
-              ((inst[0] || 0) ^ key) >>> 0,
-              ((inst[1] || 0) ^ aMask) >>> 0,
-              ((inst[2] || 0) ^ bMask) >>> 0,
-            ];
+            const out = [((inst[0] || 0) ^ key) >>> 0];
+            if (inst.length > 1) {
+              out.push(((inst[1] || 0) ^ aMask) >>> 0);
+            }
+            if (inst.length > 2) {
+              out.push(((inst[2] || 0) ^ bMask) >>> 0);
+            }
+            return out;
           });
         }
 
@@ -3832,12 +4904,7 @@ function virtualizeLuau(ast, ctx) {
         ? null
         : encodeConstPool(program, ctx.rng, seedState);
       const reservedNames = new Set();
-      if (ssaRoot) {
-        const ssa = findSSAForNode(ssaRoot, node);
-        if (ssa) {
-          addSSAUsedNames(ssa, reservedNames);
-        }
-      }
+      addIdentifierNames(node, reservedNames);
       const vmBuild = buildVmSource(
         program,
         opcodeInfo,
@@ -3889,6 +4956,7 @@ function virtualizeLuau(ast, ctx) {
 
     applyInstructionFusion(program, ctx.rng, ctx.options.vm || {});
     injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
+    program.instructions = compactInstructionList(program.instructions);
 
     const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
     const isaProfile = blockDispatch
@@ -3903,6 +4971,7 @@ function virtualizeLuau(ast, ctx) {
         };
     const opcodeList = Array.from(new Set([
       ...OPCODES,
+      ...NOISE_OPCODES,
       ...program.instructions
         .map((inst) => inst && inst[0])
         .filter((name) => typeof name === "string"),
@@ -3916,11 +4985,18 @@ function virtualizeLuau(ast, ctx) {
       const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false, opcodeList);
       opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
 
-      program.instructions = program.instructions.map((inst) => [
-        opcodeMap[inst[0]],
-        inst[1] || 0,
-        inst[2] || 0,
-      ]);
+      program.instructions = program.instructions.map((inst) => {
+        const opName = inst[0];
+        const width = getOpcodeArity(opName);
+        const out = [opcodeMap[opName]];
+        if (width >= 1) {
+          out.push(inst[1] || 0);
+        }
+        if (width >= 2) {
+          out.push(inst[2] || 0);
+        }
+        return out;
+      });
 
       keySchedule = ctx.options.vm?.runtimeKey === false
         ? null
@@ -3937,11 +5013,14 @@ function virtualizeLuau(ast, ctx) {
           if (!key) {
             return inst;
           }
-          return [
-            ((inst[0] || 0) ^ key) >>> 0,
-            ((inst[1] || 0) ^ aMask) >>> 0,
-            ((inst[2] || 0) ^ bMask) >>> 0,
-          ];
+          const out = [((inst[0] || 0) ^ key) >>> 0];
+          if (inst.length > 1) {
+            out.push(((inst[1] || 0) ^ aMask) >>> 0);
+          }
+          if (inst.length > 2) {
+            out.push(((inst[2] || 0) ^ bMask) >>> 0);
+          }
+          return out;
         });
       }
 
@@ -3954,12 +5033,7 @@ function virtualizeLuau(ast, ctx) {
       ? null
       : encodeConstPool(program, ctx.rng, seedState);
     const reservedNames = new Set();
-    if (ssaRoot) {
-      const ssa = findSSAForNode(ssaRoot, ast);
-      if (ssa) {
-        addSSAUsedNames(ssa, reservedNames);
-      }
-    }
+    addIdentifierNames(chunkPlan.statements, reservedNames);
     const vmBuild = buildVmSource(
       program,
       opcodeInfo,

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-03-06
+### Fixed
+- Luau VM repeat-until, else-scope, assignment-order, trailing multireturn, recursive binding, and captured-local writeback correctness bugs.
+- Luau custom scope analysis now binds generic type parameters correctly.
+- Luau classic CFF now preserves flattened top-level locals across later returns instead of resolving them as globals.
+
 ## [1.2.2] - 2026-02-02
 ### Added
 - Luau VM hardening: per-instruction key schedule, encoded opcode map generation, and lazy constant decoding.

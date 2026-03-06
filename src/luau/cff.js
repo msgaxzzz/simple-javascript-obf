@@ -94,6 +94,20 @@ function localStatement(variable, value) {
   return { type: "LocalStatement", variables: [variable], init: [value] };
 }
 
+function cloneNode(node) {
+  if (!node || typeof node !== "object") {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map((item) => cloneNode(item));
+  }
+  const out = {};
+  Object.keys(node).forEach((key) => {
+    out[key] = cloneNode(node[key]);
+  });
+  return out;
+}
+
 function buildTableList(values, style) {
   const fields = values.map((value) => {
     if (style === "luaparse") {
@@ -203,6 +217,43 @@ function findSSAForNode(ssaRoot, node) {
   return null;
 }
 
+function extractLocalName(variable) {
+  if (!variable || variable.type !== "Identifier" || typeof variable.name !== "string") {
+    return null;
+  }
+  return variable.name;
+}
+
+function prepareFlattenStatements(statements) {
+  const hoisted = [];
+  const seen = new Set();
+  const rewritten = [];
+  for (const stmt of statements) {
+    if (!stmt || stmt.type !== "LocalStatement") {
+      rewritten.push(stmt);
+      continue;
+    }
+    const variables = Array.isArray(stmt.variables) ? stmt.variables : [];
+    for (const variable of variables) {
+      const name = extractLocalName(variable);
+      if (!name || seen.has(name)) {
+        return null;
+      }
+      seen.add(name);
+      hoisted.push(cloneNode(variable));
+    }
+    const init = Array.isArray(stmt.init) && stmt.init.length
+      ? cloneNode(stmt.init)
+      : variables.map(() => ({ type: "NilLiteral", value: null }));
+    rewritten.push({
+      type: "AssignmentStatement",
+      variables: cloneNode(variables),
+      init,
+    });
+  }
+  return { hoisted, rewritten };
+}
+
 function buildFlattenedStatements(statements, ctx, style, usedNames = null) {
   const { rng } = ctx;
   const used = usedNames || collectIdentifierNames({ type: "Chunk", body: statements });
@@ -300,7 +351,18 @@ function flattenFunction(node, ctx) {
       addNamesFromSSA(ssa, usedNames);
     }
   }
-  const flattened = buildFlattenedStatements(statements, ctx, style, usedNames);
+  const prepared = prepareFlattenStatements(statements);
+  if (!prepared) {
+    return;
+  }
+  const flattened = buildFlattenedStatements(prepared.rewritten, ctx, style, usedNames);
+  if (prepared.hoisted.length) {
+    flattened.unshift({
+      type: "LocalStatement",
+      variables: prepared.hoisted,
+      init: [],
+    });
+  }
   setFunctionStatements(node, flattened, style);
 }
 

@@ -116,13 +116,13 @@ function processType(typeNode, scope, includeTypes) {
     case "TypeofType":
       processExpression(typeNode.expression, scope, includeTypes, "read");
       return;
-    case "FunctionType":
-      if (typeNode.typeParameters) {
-        typeNode.typeParameters.forEach((param) => processType(param.default, scope, includeTypes));
-      }
-      typeNode.parameters.forEach((param) => processType(param, scope, includeTypes));
-      typeNode.returnTypes.forEach((ret) => processType(ret, scope, includeTypes));
+    case "FunctionType": {
+      const typeScope = createScope(scope, typeNode);
+      bindTypeParameters(typeScope, typeNode.typeParameters, includeTypes);
+      typeNode.parameters.forEach((param) => processType(param, typeScope, includeTypes));
+      typeNode.returnTypes.forEach((ret) => processType(ret, typeScope, includeTypes));
       return;
+    }
     case "TableType":
       typeNode.fields.forEach((field) => {
         if (field.kind === "index") {
@@ -151,8 +151,23 @@ function processTypedIdentifier(node, scope, includeTypes) {
   }
 }
 
+function bindTypeParameters(scope, params, includeTypes) {
+  if (!includeTypes || !Array.isArray(params)) {
+    return;
+  }
+  params.forEach((param) => {
+    if (param && param.name) {
+      addTypeBinding(scope, param.name, "type-param", param);
+    }
+    if (param && param.default) {
+      processType(param.default, scope, includeTypes);
+    }
+  });
+}
+
 function processFunctionExpression(node, scope, includeTypes) {
   const fnScope = createScope(scope, node);
+  bindTypeParameters(fnScope, node.typeParameters, includeTypes);
   node.parameters.forEach((param) => {
     if (param && param.name) {
       addBinding(fnScope, param.name, "param", param);
@@ -164,9 +179,6 @@ function processFunctionExpression(node, scope, includeTypes) {
   }
   if (includeTypes && node.returnType) {
     processType(node.returnType, fnScope, includeTypes);
-  }
-  if (includeTypes && node.typeParameters) {
-    node.typeParameters.forEach((param) => processType(param.default, fnScope, includeTypes));
   }
   processStatementList(node.body.body, fnScope, includeTypes);
 }
@@ -315,10 +327,8 @@ function processStatement(stmt, scope, includeTypes) {
         const hasMembers = (stmt.name.members && stmt.name.members.length) || stmt.name.method;
         addReference(scope, stmt.name.base.name, stmt.name.base, hasMembers ? "read" : "write");
       }
-      if (includeTypes && stmt.typeParameters) {
-        stmt.typeParameters.forEach((param) => processType(param.default, scope, includeTypes));
-      }
       const fnScope = createScope(scope, stmt);
+      bindTypeParameters(fnScope, stmt.typeParameters, includeTypes);
       stmt.parameters.forEach((param) => {
         if (param && param.name) {
           addBinding(fnScope, param.name, "param", param);
@@ -395,19 +405,23 @@ function processStatement(stmt, scope, includeTypes) {
     case "ExportTypeStatement":
       if (includeTypes && stmt.name && stmt.name.name) {
         addTypeBinding(scope, stmt.name.name, "type", stmt.name);
-        processType(stmt.value, scope, includeTypes);
+        const typeScope = createScope(scope, stmt);
+        bindTypeParameters(typeScope, stmt.typeParameters, includeTypes);
+        processType(stmt.value, typeScope, includeTypes);
       }
       return;
     case "TypeFunctionStatement":
     case "ExportTypeFunctionStatement":
       if (includeTypes && stmt.name && stmt.name.name) {
         addTypeBinding(scope, stmt.name.name, "type", stmt.name);
-        stmt.parameters.forEach((param) => processTypedIdentifier(param, scope, includeTypes));
+        const typeScope = createScope(scope, stmt);
+        bindTypeParameters(typeScope, stmt.typeParameters, includeTypes);
+        stmt.parameters.forEach((param) => processTypedIdentifier(param, typeScope, includeTypes));
         if (stmt.hasVararg && stmt.varargAnnotation) {
-          processType(stmt.varargAnnotation, scope, includeTypes);
+          processType(stmt.varargAnnotation, typeScope, includeTypes);
         }
         if (stmt.returnTypes) {
-          stmt.returnTypes.forEach((ret) => processType(ret, scope, includeTypes));
+          stmt.returnTypes.forEach((ret) => processType(ret, typeScope, includeTypes));
         }
       }
       return;
@@ -417,12 +431,14 @@ function processStatement(stmt, scope, includeTypes) {
         if (name) {
           addTypeBinding(scope, name, "declare", stmt.name.base);
         }
-        stmt.parameters.forEach((param) => processTypedIdentifier(param, scope, includeTypes));
+        const declareScope = createScope(scope, stmt);
+        bindTypeParameters(declareScope, stmt.typeParameters, includeTypes);
+        stmt.parameters.forEach((param) => processTypedIdentifier(param, declareScope, includeTypes));
         if (stmt.hasVararg && stmt.varargAnnotation) {
-          processType(stmt.varargAnnotation, scope, includeTypes);
+          processType(stmt.varargAnnotation, declareScope, includeTypes);
         }
         if (stmt.returnType) {
-          processType(stmt.returnType, scope, includeTypes);
+          processType(stmt.returnType, declareScope, includeTypes);
         }
       }
       return;

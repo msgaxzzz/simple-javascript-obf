@@ -1,4 +1,8 @@
 const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { spawnSync } = require("child_process");
 const { obfuscateLuau } = require("../src/luau");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 
@@ -16,6 +20,60 @@ function hasVmLoop(code) {
   return code.includes("while true do") || /while\s+[A-Za-z_][A-Za-z0-9_]*\s*~=\s*0\s*do/.test(code);
 }
 
+function createSemanticVmOptions(functionName) {
+  return {
+    enabled: true,
+    include: [functionName],
+    opcodeShuffle: false,
+    fakeOpcodes: 0,
+    bytecodeEncrypt: false,
+    constsEncrypt: false,
+    constsSplit: false,
+    runtimeKey: false,
+    runtimeSplit: false,
+    decoyRuntime: false,
+    symbolNoise: false,
+    instructionFusion: false,
+    semanticMisdirection: false,
+    dynamicCoupling: false,
+    isaPolymorph: false,
+    fakeEdges: false,
+  };
+}
+
+async function obfuscateSemanticVm(sourceText, functionName, seed) {
+  const { code } = await obfuscateLuau(sourceText, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: createSemanticVmOptions(functionName),
+    cff: false,
+    strings: false,
+    rename: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    seed,
+  });
+  parseCustom(code);
+  return code;
+}
+
+function runLuau(code) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "js-obf-luau-vm-"));
+  const file = path.join(dir, "case.luau");
+  try {
+    fs.writeFileSync(file, code, "utf8");
+    const result = spawnSync("luau", [file], { encoding: "utf8" });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout || `luau exited with code ${result.status}`);
+    }
+    return result.stdout.trim();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function runCustom() {
   const { code } = await obfuscateLuau(source, {
     lang: "luau",
@@ -29,7 +87,7 @@ async function runCustom() {
   parseCustom(code);
   assert.ok(hasVmLoop(code), "custom parser should emit VM loop");
   assert.ok(
-    code.includes("string.char, string.byte, table.concat, table.pack, table.unpack, select, type, math.floor, getfenv"),
+    /string\.char,\s*string\.byte,\s*table\.concat,\s*table\.pack,\s*table\.unpack,\s*select,\s*type,\s*math\.floor,\s*getfenv/.test(code),
     "custom parser should emit runtime toolkit bundle",
   );
   assert.ok(/0[xX][0-9A-Fa-f_]+|0[bB][01_]+/.test(code), "custom parser should emit mixed numeric literal style");
@@ -98,7 +156,7 @@ async function runCustomTopLevel() {
   assert.ok(hasVmLoop(code), "top-level chunk should emit VM loop");
   assert.ok(code.includes("local function helper"), "top-level local function prelude should be preserved");
   assert.ok(
-    code.includes("string.char, string.byte, table.concat, table.pack, table.unpack, select, type, math.floor, getfenv"),
+    /string\.char,\s*string\.byte,\s*table\.concat,\s*table\.pack,\s*table\.unpack,\s*select,\s*type,\s*math\.floor,\s*getfenv/.test(code),
     "top-level chunk should emit runtime toolkit bundle",
   );
 }
@@ -251,6 +309,181 @@ async function runGotoLabelSupport() {
   assert.ok(hasVmLoop(code), "goto/label should be virtualized");
 }
 
+async function runRecursiveLocalFunction() {
+  const recursiveSource = [
+    "local function fact(n)",
+    "  if n == 0 then",
+    "    return 1",
+    "  end",
+    "  return fact(n - 1) * n",
+    "end",
+    "print(fact(5))",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(recursiveSource, "fact", "vm-recursive-local");
+  assert.strictEqual(runLuau(code), "120", "local recursive functions should keep self-binding inside the VM");
+}
+
+async function runMultiReturnAssignment() {
+  const multiAssignSource = [
+    "local function pair()",
+    "  return 4, 9",
+    "end",
+    "local function test()",
+    "  local a, b = pair()",
+    "  return a, b",
+    "end",
+    "local x, y = test()",
+    "print(tostring(x) .. '|' .. tostring(y))",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(multiAssignSource, "test", "vm-multi-assign");
+  assert.strictEqual(runLuau(code), "4|9", "last-call multi assignment should preserve multiple return values");
+}
+
+async function runTailReturnExpansion() {
+  const tailReturnSource = [
+    "local function pair()",
+    "  return 'b', 'c', 'd'",
+    "end",
+    "local function test()",
+    "  return 'a', pair()",
+    "end",
+    "local w, x, y, z = test()",
+    "print(table.concat({w, x, y, z}, '|'))",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(tailReturnSource, "test", "vm-tail-return");
+  assert.strictEqual(runLuau(code), "a|b|c|d", "tail-call returns should preserve all results");
+}
+
+async function runTableTailCallExpansion() {
+  const tableTailSource = [
+    "local function pair()",
+    "  return 'x', 'y', 'z'",
+    "end",
+    "local function test()",
+    "  local values = { pair() }",
+    "  return table.concat(values, '|')",
+    "end",
+    "print(test())",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(tableTailSource, "test", "vm-table-tail");
+  assert.strictEqual(runLuau(code), "x|y|z", "table constructors should expand tail call results");
+}
+
+async function runAssignmentTargetOrdering() {
+  const assignmentSource = [
+    "local function test()",
+    "  local t = { [1] = 'one', value = 'v' }",
+    "  local i = 1",
+    "  t.value = 'x'",
+    "  t[i] = 'y'",
+    "  i, t[i] = 2, 'z'",
+    "  return t.value .. '|' .. t[1] .. '|' .. (t[2] or 'nil') .. '|' .. i",
+    "end",
+    "print(test())",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(assignmentSource, "test", "vm-assign-targets");
+  assert.strictEqual(runLuau(code), "x|z|nil|2", "assignment targets should keep Luau evaluation order");
+}
+
+async function runElseScopeIsolation() {
+  const sourceWithElseLocal = [
+    "x = 99",
+    "local function test(flag)",
+    "  if flag then",
+    "  else",
+    "    local x = 1",
+    "  end",
+    "  return x",
+    "end",
+    "print(test(true), test(false))",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(sourceWithElseLocal, "test", "vm-else-scope");
+  assert.strictEqual(runLuau(code), "99\t99", "else branch locals should not leak into the outer scope");
+}
+
+async function runRepeatConditionScope() {
+  const repeatScopeSource = [
+    "local function test()",
+    "  local n = 0",
+    "  local first = true",
+    "  repeat",
+    "    local x = first",
+    "    first = false",
+    "    n += 1",
+    "  until not x",
+    "  return n",
+    "end",
+    "print(test())",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(repeatScopeSource, "test", "vm-repeat-scope");
+  assert.strictEqual(runLuau(code), "2", "repeat-until conditions should see locals declared in the loop body");
+}
+
+async function runCallArgumentExpansion() {
+  const callArgSource = [
+    "local function pair()",
+    "  return 1, 2",
+    "end",
+    "local function f(...)",
+    "  local n = select('#', ...)",
+    "  local a, b = ...",
+    "  return n, a, b",
+    "end",
+    "local function test()",
+    "  return f(pair())",
+    "end",
+    "local n, a, b = test()",
+    "print(n, a, b)",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(callArgSource, "test", "vm-call-arg-expand");
+  assert.strictEqual(runLuau(code), "2\t1\t2", "last call arguments should expand all return values");
+}
+
+async function runSingleAssignmentOrdering() {
+  const singleAssignSource = [
+    "local function test()",
+    "  local out = {}",
+    "  local function idx()",
+    "    out[#out + 1] = 'idx'",
+    "    return 'k'",
+    "  end",
+    "  local function rhs()",
+    "    out[#out + 1] = 'rhs'",
+    "    return 'v'",
+    "  end",
+    "  local t = {}",
+    "  t[idx()] = rhs()",
+    "  return table.concat(out, ',')",
+    "end",
+    "print(test())",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(singleAssignSource, "test", "vm-single-assign-order");
+  assert.strictEqual(runLuau(code), "idx,rhs", "single table assignments should evaluate index expressions before the RHS");
+}
+
+async function runCapturedLocalWriteback() {
+  const upvalueWriteSource = [
+    "local x = 0",
+    "local function inc()",
+    "  x = x + 1",
+    "  return x",
+    "end",
+    "print(inc(), x)",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(upvalueWriteSource, "inc", "vm-upvalue-writeback");
+  assert.strictEqual(runLuau(code), "1\t1", "writes to captured outer locals should be reflected outside the VM");
+}
+
 (async () => {
   await runCustom();
   await runCustomLayered();
@@ -260,6 +493,16 @@ async function runGotoLabelSupport() {
   await runNestedCallbackLiftWithParams();
   await runCompoundAssignmentTargets();
   await runGotoLabelSupport();
+  await runRecursiveLocalFunction();
+  await runMultiReturnAssignment();
+  await runTailReturnExpansion();
+  await runTableTailCallExpansion();
+  await runAssignmentTargetOrdering();
+  await runElseScopeIsolation();
+  await runRepeatConditionScope();
+  await runCallArgumentExpansion();
+  await runSingleAssignmentOrdering();
+  await runCapturedLocalWriteback();
   console.log("luau-vm: ok");
 })().catch((err) => {
   console.error(err);
