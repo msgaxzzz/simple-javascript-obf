@@ -1,0 +1,4 @@
+[submodule "third_party/luau"]
+	path = third_party/luau
+	url = https://github.com/Roblox/luau
+	branch = master
