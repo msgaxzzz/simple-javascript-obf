@@ -49,43 +49,6 @@ function buildBinary(operator, left, right) {
   };
 }
 
-function identifier(name) {
-  return {
-    type: "Identifier",
-    name,
-  };
-}
-
-function bit32Call(name, args) {
-  return {
-    type: "CallExpression",
-    base: {
-      type: "MemberExpression",
-      base: identifier("bit32"),
-      identifier: identifier(name),
-      indexer: ".",
-    },
-    arguments: args,
-  };
-}
-
-function tryBuildBitwiseMba(value, ctx, depth, options) {
-  if (!isInt32Like(value)) {
-    return null;
-  }
-  const leftValue = ctx.rng.int(0, value);
-  const rightValue = value - leftValue;
-  if (!Number.isSafeInteger(leftValue) || !Number.isSafeInteger(rightValue)) {
-    return null;
-  }
-  const leftExpr = buildExpression(leftValue, ctx, depth + 1, options);
-  const rightExpr = buildExpression(rightValue, ctx, depth + 1, options);
-  const xorExpr = bit32Call("bxor", [leftExpr, rightExpr]);
-  const andExpr = bit32Call("band", [leftExpr, rightExpr]);
-  const carryExpr = bit32Call("lshift", [andExpr, numericLiteral(1)]);
-  return buildBinary("+", xorExpr, carryExpr);
-}
-
 function tryBuildMulDivMba(value, ctx, depth, options) {
   if (!Number.isSafeInteger(value)) {
     return null;
@@ -115,9 +78,6 @@ function buildNonLinearExpression(value, ctx, depth, options) {
     return null;
   }
   const candidates = [];
-  if (isInt32Like(value)) {
-    candidates.push(() => tryBuildBitwiseMba(value, ctx, depth, options));
-  }
   if (Number.isSafeInteger(value)) {
     candidates.push(() => tryBuildMulDivMba(value, ctx, depth, options));
   }

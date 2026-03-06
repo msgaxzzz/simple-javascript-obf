@@ -195,11 +195,6 @@ function encodeNumberLiteral(value, rng) {
   if (!rng || !Number.isSafeInteger(num)) {
     return plain;
   }
-  if (num >= 0 && num <= 0x3fffffff && rng.bool(0.55)) {
-    const left = rng.int(0, num);
-    const right = num - left;
-    return `(bit32.bxor(${left}, ${right}) + bit32.lshift(bit32.band(${left}, ${right}), 1))`;
-  }
   if (rng.bool(0.75)) {
     const mul = rng.int(3, 11);
     const shift = rng.int(-2048, 2048) || 1;

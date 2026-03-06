@@ -52,9 +52,17 @@ function luaString(value) {
   return `"${escaped}"`;
 }
 
+function luaCharString(value) {
+  const bytes = Array.from(Buffer.from(String(value), "utf8"));
+  if (!bytes.length) {
+    return '""';
+  }
+  return `string.char(${bytes.join(", ")})`;
+}
+
 function buildRuntime({ lock, rng }) {
-  const errIntegrity = luaString("Integrity check failed");
-  const errRuntime = luaString("Runtime integrity violation");
+  const errIntegrity = luaCharString("invalid state");
+  const errRuntime = luaCharString("operation unavailable");
   const used = new Set();
   const failName = makeName(rng, used);
   const envName = makeName(rng, used);

@@ -55,6 +55,7 @@ async function runNumbersExpressions() {
   parseCustom(transformed);
   assert.notStrictEqual(plain, transformed, "numbers pass should change output");
   assert.ok(!transformed.includes("9876543"), "numbers pass should hide sentinel literal");
+  assert.ok(!/\bbit32\b/.test(transformed), "numbers pass should not expose bit32 helper names");
 }
 
 async function runConstArrayBase64() {
@@ -103,10 +104,31 @@ async function runBlockDispatchCustom() {
   assert.ok(!code.includes("inst = bc[pc]"), "block dispatch should omit bc table loop");
 }
 
+async function runSignatureHiding() {
+  const { code } = await obfuscateLuau(vmSource, {
+    lang: "luau",
+    luauParser: "custom",
+    preset: "low",
+    strings: false,
+    rename: false,
+    cff: false,
+    dead: false,
+    antiHook: { enabled: true, lock: true },
+    vm: { enabled: true },
+    seed: "vm-signature-hiding",
+  });
+
+  parseCustom(code);
+  assert.ok(!code.includes("Integrity check failed"), "anti-hook output should not expose integrity failure text");
+  assert.ok(!code.includes("Runtime integrity violation"), "anti-hook output should not expose runtime failure text");
+  assert.ok(!/\bbxor\b/.test(code), "vm runtime should not expose bxor helper names");
+}
+
 (async () => {
   await runNumbersExpressions();
   await runConstArrayBase64();
   await runBlockDispatchCustom();
+  await runSignatureHiding();
   console.log("luau-advanced: ok");
 })().catch((err) => {
   console.error(err);

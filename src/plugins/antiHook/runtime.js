@@ -2,8 +2,8 @@ const parser = require("@babel/parser");
 const { buildCharCodeExpr } = require("../../utils/runtime");
 
 function buildRuntime({ lock, timing, behavior }) {
-  const errIntegrity = buildCharCodeExpr("Integrity check failed");
-  const errRuntime = buildCharCodeExpr("Runtime integrity violation");
+  const errIntegrity = buildCharCodeExpr("invalid state");
+  const errRuntime = buildCharCodeExpr("operation unavailable");
   const code = `
 (function () {
   const g = typeof globalThis !== "undefined"
