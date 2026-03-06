@@ -61,6 +61,9 @@ jobs:
       - name: Run Luau custom scope tests
         run: node test/luau-custom-scope.js
 
+      - name: Run JavaScript obfuscation smoke tests
+        run: node test/obf-smoke.js
+
       - name: Run Luau classic CFF tests
         run: node test/luau-cff.js
 

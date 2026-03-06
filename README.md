@@ -86,7 +86,7 @@ If you run this project in GitHub Actions, configure repository secrets:
 - `APPWRITE_API_KEY` (optional)
 
 The default workflow (`.github/workflows/node.js.yml`) reads these secrets into CI environment variables.
-It also installs the latest official Luau CLI for Linux from `luau-lang/luau` and runs the Luau custom-scope, classic-CFF, VM, and roundtrip regression suites.
+It also installs the latest official Luau CLI for Linux from `luau-lang/luau` and runs the JavaScript obfuscation smoke test plus the Luau custom-scope, classic-CFF, VM, and roundtrip regression suites.
 
 ## CLI options
 - `-o, --output <file>` Output file
