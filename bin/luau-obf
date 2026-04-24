@@ -17,7 +17,8 @@ for (let i = 0; i < args.length; i += 1) {
 }
 
 const argv = hasLang ? args : ["--lang", "luau", ...args];
-const result = spawnSync(process.execPath, [path.join(__dirname, "js-obf"), ...argv], {
+const script = path.join(__dirname, "js-obf");
+const result = spawnSync(process.execPath, [script, ...argv], {
   stdio: "inherit",
 });
 

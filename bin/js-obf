@@ -2,7 +2,9 @@
 
 const fs = require("fs");
 const path = require("path");
-const { obfuscate } = require("../src/index");
+const builtEntry = path.join(__dirname, "..", "build", "src", "index.js");
+const sourceEntry = path.join(__dirname, "..", "src", "index.js");
+const { obfuscate } = require(fs.existsSync(builtEntry) ? builtEntry : sourceEntry);
 
 function printHelp() {
   const text = `

@@ -8,7 +8,9 @@
     "luau-obf": "bin/luau-obf"
   },
   "scripts": {
-    "obf": "node bin/js-obf"
+    "obf": "node bin/js-obf",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:ts": "tsc -p tsconfig.build.json"
   },
   "keywords": [
     "javascript",
@@ -27,5 +29,9 @@
     "luacodegen": "^1.0.2",
     "luaparse": "^0.3.1",
     "terser": "^5.44.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3"
   }
 }
