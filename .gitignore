@@ -4,6 +4,7 @@ package-lock.json
 Deobf
 
 .codex
+.worktrees/
 
 .env
 .env.*
