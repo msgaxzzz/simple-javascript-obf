@@ -1,0 +1,31 @@
+{
+  "name": "simple-javascript-obf",
+  "version": "1.2.3-A",
+  "description": "Modular JavaScript obfuscator with optional VM and CFF",
+  "main": "src/index.js",
+  "bin": {
+    "js-obf": "bin/js-obf",
+    "luau-obf": "bin/luau-obf"
+  },
+  "scripts": {
+    "obf": "node bin/js-obf"
+  },
+  "keywords": [
+    "javascript",
+    "obfuscator",
+    "vm",
+    "control-flow-flattening"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@babel/generator": "^7.26.0",
+    "@babel/parser": "^7.26.0",
+    "@babel/traverse": "^7.26.0",
+    "@babel/types": "^7.26.0",
+    "appwrite": "^22.4.1",
+    "dotenv": "^17.3.1",
+    "luacodegen": "^1.0.2",
+    "luaparse": "^0.3.1",
+    "terser": "^5.44.1"
+  }
+}

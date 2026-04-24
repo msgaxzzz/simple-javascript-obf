@@ -15,7 +15,7 @@ function functionName(name) {
 
 function buildFunctionDeclaration(name, body, isCustom) {
   if (isCustom) {
-    return {
+    const node = {
       type: "FunctionDeclaration",
       name: functionName(name),
       parameters: [],
@@ -26,14 +26,18 @@ function buildFunctionDeclaration(name, body, isCustom) {
       isLocal: true,
       body: { type: "Block", body },
     };
+    node.__obf_skip_vm = true;
+    return node;
   }
-  return {
+  const node = {
     type: "FunctionDeclaration",
     identifier: identifier(name),
     parameters: [],
     isLocal: true,
     body,
   };
+  node.__obf_skip_vm = true;
+  return node;
 }
 
 function buildReturnCall(name) {
@@ -56,7 +60,6 @@ function wrapOnce(ast, nameGen, isCustom) {
   const name = nameGen();
   const originalBody = ast.body;
   const fn = buildFunctionDeclaration(name, originalBody, isCustom);
-  fn.__obf_skip_vm = true;
   const returnCall = buildReturnCall(name);
   ast.body = [fn, returnCall];
 }

@@ -4,6 +4,12 @@ const { addSSAUsedNamesFromRoot } = require("./ssa-utils");
 const BASE_RESERVED = new Set(["_ENV", "_G"]);
 const NAME_RESERVED = new Set(["_ENV", "_G", "type", "getfenv"]);
 
+function tracePass(ctx, event) {
+  if (ctx && typeof ctx.debugTrace === "function") {
+    ctx.debugTrace(event);
+  }
+}
+
 function createScope(parent = null) {
   return { parent, bindings: new Set() };
 }
@@ -197,6 +203,10 @@ function maskExpression(expr, scope, envAlias, reserved, ctx) {
   switch (expr.type) {
     case "Identifier":
       if (shouldMask(expr.name, scope, reserved)) {
+        tracePass(ctx, {
+          kind: "mask-global",
+          name: expr.name,
+        });
         return envIndex(expr.name, envAlias, ctx);
       }
       return expr;
@@ -356,7 +366,11 @@ function maskStatement(stmt, scope, envAlias, reserved, ctx) {
       return;
     case "RepeatStatement": {
       const repeatScope = createScope(scope);
-      maskScopedBody(stmt.body, repeatScope, envAlias, reserved, ctx);
+      if (Array.isArray(stmt.body)) {
+        maskStatementList(stmt.body, repeatScope, envAlias, reserved, ctx);
+      } else if (stmt.body && Array.isArray(stmt.body.body)) {
+        maskStatementList(stmt.body.body, repeatScope, envAlias, reserved, ctx);
+      }
       stmt.condition = maskExpression(stmt.condition, repeatScope, envAlias, reserved, ctx);
       return;
     }
@@ -422,6 +436,10 @@ function maskFunctionDeclaration(stmt, scope, envAlias, reserved, ctx) {
   if (isLocal && fnId) {
     defineName(scope, fnId.name);
     defineName(fnScope, fnId.name);
+  }
+
+  if (stmt.name && stmt.name.type === "FunctionName" && stmt.name.method) {
+    defineName(fnScope, "self");
   }
 
   if (stmt.parameters && stmt.parameters.length) {

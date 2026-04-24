@@ -70,8 +70,38 @@ async function run() {
   assert.ok(!hasCallBase(ast, "print"), "custom: print calls should not remain bare identifiers");
 }
 
+async function runRepeatUntilScopeRegression() {
+  const repeatSource = [
+    "local function test()",
+    "  local n = 0",
+    "  repeat",
+    "    local x = n + 1",
+    "    n = x",
+    "  until x > 1",
+    "  return n",
+    "end",
+    "print(test())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(repeatSource, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: false,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    renameOptions: { maskGlobals: true },
+    seed: "mask-globals-repeat-scope",
+  });
+
+  const ast = parseCustom(code);
+  assert.ok(!hasEnvIndex(ast, "x"), "repeat-until locals should remain visible in the condition");
+}
+
 (async () => {
   await run();
+  await runRepeatUntilScopeRegression();
   console.log("luau-mask-globals: ok");
 })().catch((err) => {
   console.error(err);

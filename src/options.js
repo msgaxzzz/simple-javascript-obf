@@ -79,6 +79,7 @@ function normalizeOptions(userOptions = {}) {
   const numbersUserOptions = userOptions.numbersOptions || {};
   const constArrayUserOptions = userOptions.constArrayOptions || {};
   const padFooterUserOptions = userOptions.padFooterOptions || {};
+  const debugUserOptions = userOptions.debugLuauTransforms || {};
   const cffModeRaw = typeof cffUserOptions.mode === "string"
     ? cffUserOptions.mode.toLowerCase()
     : null;
@@ -129,7 +130,9 @@ function normalizeOptions(userOptions = {}) {
   const constArrayPerScopeDefault = !vmLikeFlow;
 
   const isLuauHighPreset = lang === "luau" && presetName === "high";
-  const compactDefault = lang === "luau" ? true : Boolean(userOptions.compact);
+  const compactDefault = lang === "luau"
+    ? (userOptions.compact ?? true)
+    : Boolean(userOptions.compact);
   const defaultStringMinLength = lang === "luau" ? 1 : 3;
   const options = {
     preset: presetName,
@@ -215,6 +218,16 @@ function normalizeOptions(userOptions = {}) {
       enabled: false,
       lock: false,
     },
+    debugLuauTransforms: {
+      enabled: Boolean(debugUserOptions.enabled),
+      passes: Array.isArray(debugUserOptions.passes) ? debugUserOptions.passes.slice() : [],
+      outputDir: typeof debugUserOptions.outputDir === "string"
+        ? debugUserOptions.outputDir
+        : "dist/.luau-debug",
+      includeAst: debugUserOptions.includeAst !== false,
+      includeChanges: debugUserOptions.includeChanges !== false,
+      includeTrace: debugUserOptions.includeTrace !== false,
+    },
   };
 
   if (typeof antiHookUserOptions === "boolean") {
@@ -230,6 +243,7 @@ function normalizeOptions(userOptions = {}) {
   const vmOptions = options.vm || {};
   const cffEnabled = options.cff !== false;
   const vmCffEnabled = lang === "luau" && cffEnabled && options.cffOptions.mode === "vm";
+  const luauVmFeatureDefaults = lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled);
   const vmLayers = normalizeCount(vmOptions.layers, 1, { min: 1, max: 3 });
   const vmRuntimeKey = vmOptions.runtimeKey !== false;
   const vmRuntimeSplit = vmOptions.runtimeSplit !== false;
@@ -257,6 +271,14 @@ function normalizeOptions(userOptions = {}) {
   const vmInstructionFusion = vmOptions.instructionFusion;
   const vmSemanticMisdirection = vmOptions.semanticMisdirection;
   const vmDynamicCoupling = vmOptions.dynamicCoupling;
+  const vmShellStyle = typeof vmOptions.shellStyle === "string"
+    ? vmOptions.shellStyle.toLowerCase()
+    : null;
+  const vmExplicitScope = {
+    include: Array.isArray(vmOptions.include),
+    all: vmOptions.all !== undefined,
+    topLevel: vmOptions.topLevel !== undefined,
+  };
   let fakeOpcodes = vmOptions.fakeOpcodes;
   if (fakeOpcodes === undefined || fakeOpcodes === true) {
     fakeOpcodes = 0.15;
@@ -269,14 +291,31 @@ function normalizeOptions(userOptions = {}) {
     }
   }
   fakeOpcodes = Math.max(0, Math.min(1, fakeOpcodes));
+  let vmAll = vmOptions.all === undefined
+    ? (lang === "js" && Boolean(vmOptions.enabled) && (!Array.isArray(vmOptions.include) || vmOptions.include.length === 0))
+    : Boolean(vmOptions.all);
+  let vmTopLevel = Boolean(vmOptions.topLevel);
+
+  if (
+    lang === "luau" &&
+    Boolean(vmOptions.enabled) &&
+    vmShellStyle === "packed" &&
+    !vmExplicitScope.include &&
+    !vmExplicitScope.all &&
+    !vmExplicitScope.topLevel
+  ) {
+    vmAll = true;
+    vmTopLevel = true;
+  }
+
   options.vm = {
     enabled: Boolean(vmOptions.enabled),
     include: vmOptions.include || [],
-    all: vmOptions.all === undefined
-      ? (lang === "js" && Boolean(vmOptions.enabled) && (!Array.isArray(vmOptions.include) || vmOptions.include.length === 0))
-      : Boolean(vmOptions.all),
+    all: vmAll,
     layers: vmLayers,
-    topLevel: Boolean(vmOptions.topLevel),
+    topLevel: vmTopLevel,
+    shellStyle: vmShellStyle,
+    explicitScope: vmExplicitScope,
     opcodeShuffle: vmOptions.opcodeShuffle !== false,
     runtimeKey: vmRuntimeKey,
     runtimeSplit: vmRuntimeSplit,
@@ -292,18 +331,18 @@ function normalizeOptions(userOptions = {}) {
     isaPolymorph: vmIsaPolymorph === undefined ? false : vmIsaPolymorph,
     fakeEdges: vmFakeEdges === undefined ? false : Boolean(vmFakeEdges),
     numericStyle: vmNumericStyle || (lang === "luau" && Boolean(vmOptions.enabled) ? "mixed" : "plain"),
-    decoyRuntime: vmDecoyRuntime === undefined ? false : Boolean(vmDecoyRuntime),
+    decoyRuntime: vmDecoyRuntime === undefined ? luauVmFeatureDefaults : Boolean(vmDecoyRuntime),
     decoyProbability: vmDecoyProbability,
     decoyStrings: vmDecoyStrings,
-    symbolNoise: vmSymbolNoise === undefined ? false : Boolean(vmSymbolNoise),
+    symbolNoise: vmSymbolNoise === undefined ? luauVmFeatureDefaults : Boolean(vmSymbolNoise),
     instructionFusion: vmInstructionFusion === undefined
       ? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled))
       : Boolean(vmInstructionFusion),
     semanticMisdirection: vmSemanticMisdirection === undefined
-      ? false
+      ? luauVmFeatureDefaults
       : Boolean(vmSemanticMisdirection),
     dynamicCoupling: vmDynamicCoupling === undefined
-      ? false
+      ? luauVmFeatureDefaults
       : Boolean(vmDynamicCoupling),
     downlevel: Boolean(vmOptions.downlevel),
     debug: Boolean(vmOptions.debug),

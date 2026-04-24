@@ -3,7 +3,8 @@ const { makeDiagnosticErrorFromNode } = require("./diagnostics");
 let COMPACT = false;
 
 function printChunk(ast, options = {}) {
-  const compact = Boolean(options.compact);
+  const sourceMap = Boolean(options.sourceMap);
+  const compact = Boolean(options.compact) && !sourceMap;
   const previousCompact = COMPACT;
   COMPACT = compact;
   if (compact) {
@@ -12,9 +13,16 @@ function printChunk(ast, options = {}) {
     return code;
   }
   const out = [];
-  printBlock(ast.body, out, 0);
+  const tracker = sourceMap ? { entries: [], currentLine: 0 } : null;
+  printBlock(ast.body, out, 0, tracker);
   const result = out.join("\n");
   COMPACT = previousCompact;
+  if (sourceMap) {
+    return {
+      code: result,
+      mappings: tracker.entries,
+    };
+  }
   return result;
 }
 
@@ -59,14 +67,74 @@ function printBlockInline(body) {
   return parts.join("; ");
 }
 
-function printBlock(body, out, indent) {
+function countLines(text) {
+  if (!text) {
+    return 1;
+  }
+  let count = 1;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\n") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function createNestedTracker(tracker, startLine) {
+  if (!tracker) {
+    return null;
+  }
+  return {
+    entries: tracker.entries,
+    currentLine: startLine,
+  };
+}
+
+function recordStatementMapping(stmt, indent, tracker) {
+  recordNodeMapping(stmt, tracker ? tracker.currentLine : 0, indent * 2, tracker);
+}
+
+function recordNodeMapping(node, generatedLine, generatedColumn, tracker) {
+  if (!tracker || !node || !node.loc || !node.loc.start) {
+    return;
+  }
+  tracker.entries.push({
+    generatedLine,
+    generatedColumn,
+    sourceLine: Math.max(0, node.loc.start.line - 1),
+    sourceColumn: Math.max(0, node.loc.start.column - 1),
+  });
+}
+
+function printExpressionListTracked(expressions, tracker, generatedLine, startColumn) {
+  let column = startColumn;
+  return expressions.map((expr, index) => {
+    recordNodeMapping(expr, generatedLine, column, tracker);
+    const text = printExpression(expr);
+    column += text.length;
+    if (index < expressions.length - 1) {
+      column += 2;
+    }
+    return text;
+  }).join(", ");
+}
+
+function printBlock(body, out, indent, tracker = null) {
   for (const stmt of body) {
     if (stmt.attributes && stmt.attributes.length) {
       for (const attr of stmt.attributes) {
         out.push(`${"  ".repeat(indent)}${printAttribute(attr)}`);
+        if (tracker) {
+          tracker.currentLine += 1;
+        }
       }
     }
-    out.push(`${"  ".repeat(indent)}${printStatement(stmt, indent, false)}`);
+    recordStatementMapping(stmt, indent, tracker);
+    const text = printStatement(stmt, indent, false, tracker);
+    out.push(`${"  ".repeat(indent)}${text}`);
+    if (tracker) {
+      tracker.currentLine += countLines(text);
+    }
   }
 }
 
@@ -81,20 +149,33 @@ function printAttribute(attr) {
   return `@${name}(${attr.arguments.map((arg) => printExpression(arg)).join(", ")})`;
 }
 
-function printStatement(stmt, indent, compact) {
+function printStatement(stmt, indent, compact, tracker = null) {
   switch (stmt.type) {
     case "LocalStatement": {
       const names = stmt.variables.map(printTypedIdentifier).join(", ");
-      const init = stmt.init && stmt.init.length ? ` = ${stmt.init.map((arg) => printExpression(arg)).join(", ")}` : "";
+      let init = "";
+      if (stmt.init && stmt.init.length) {
+        const startColumn = indent * 2 + `local ${names} = `.length;
+        init = ` = ${printExpressionListTracked(stmt.init, tracker, tracker ? tracker.currentLine : 0, startColumn)}`;
+      }
       return `local ${names}${init}`;
     }
-    case "AssignmentStatement":
-      return `${stmt.variables.map((arg) => printExpression(arg)).join(", ")} = ${stmt.init
-        .map((arg) => printExpression(arg))
-        .join(", ")}`;
-    case "CompoundAssignmentStatement":
-      return `${printExpression(stmt.variable)} ${stmt.operator} ${printExpression(stmt.value)}`;
+    case "AssignmentStatement": {
+      const line = tracker ? tracker.currentLine : 0;
+      const left = printExpressionListTracked(stmt.variables, tracker, line, indent * 2);
+      const right = printExpressionListTracked(stmt.init, tracker, line, indent * 2 + left.length + 3);
+      return `${left} = ${right}`;
+    }
+    case "CompoundAssignmentStatement": {
+      const line = tracker ? tracker.currentLine : 0;
+      recordNodeMapping(stmt.variable, line, indent * 2, tracker);
+      const variable = printExpression(stmt.variable);
+      const valueColumn = indent * 2 + variable.length + stmt.operator.length + 2;
+      recordNodeMapping(stmt.value, line, valueColumn, tracker);
+      return `${variable} ${stmt.operator} ${printExpression(stmt.value)}`;
+    }
     case "CallStatement":
+      recordNodeMapping(stmt.expression, tracker ? tracker.currentLine : 0, indent * 2, tracker);
       return printExpression(stmt.expression);
     case "FunctionDeclaration": {
       const params = stmt.parameters.map(printTypedIdentifier).join(", ");
@@ -109,7 +190,7 @@ function printStatement(stmt, indent, compact) {
         return `${header} ${name}${typeParams}(${args})${returnType}${bodyText}end`;
       }
       const lines = [`${header} ${name}${typeParams}(${args})${returnType}`];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
@@ -124,7 +205,7 @@ function printStatement(stmt, indent, compact) {
         return `function${typeParams}(${args})${returnType}${bodyText}end`;
       }
       const lines = [`function${typeParams}(${args})${returnType}`];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
@@ -146,14 +227,21 @@ function printStatement(stmt, indent, compact) {
         return parts.join(" ");
       }
       const lines = [];
+      const nestedTracker = createNestedTracker(tracker, tracker ? tracker.currentLine : 0);
       stmt.clauses.forEach((clause, idx) => {
         const head = idx === 0 ? "if" : "elseif";
         lines.push(`${head} ${printExpression(clause.condition)} then`);
-        printBlock(clause.body.body, lines, indent + 1);
+        if (nestedTracker) {
+          nestedTracker.currentLine += 1;
+        }
+        printBlock(clause.body.body, lines, indent + 1, nestedTracker);
       });
       if (stmt.elseBody) {
         lines.push(`${"  ".repeat(indent)}else`);
-        printBlock(stmt.elseBody.body, lines, indent + 1);
+        if (nestedTracker) {
+          nestedTracker.currentLine += 1;
+        }
+        printBlock(stmt.elseBody.body, lines, indent + 1, nestedTracker);
       }
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
@@ -165,7 +253,7 @@ function printStatement(stmt, indent, compact) {
         return `while ${printExpression(stmt.condition)} do${bodyText}end`;
       }
       const lines = [`while ${printExpression(stmt.condition)} do`];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
@@ -176,15 +264,23 @@ function printStatement(stmt, indent, compact) {
         return `repeat${bodyText}until ${printExpression(stmt.condition)}`;
       }
       const lines = ["repeat"];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}until ${printExpression(stmt.condition)}`);
       return lines.join("\n" + "  ".repeat(indent));
     }
     case "ForNumericStatement": {
+      const line = tracker ? tracker.currentLine : 0;
+      const prefix = `for ${printTypedIdentifier(stmt.variable)} = `;
+      recordNodeMapping(stmt.start, line, indent * 2 + prefix.length, tracker);
+      const startText = printExpression(stmt.start);
+      const endColumn = indent * 2 + prefix.length + startText.length + 2;
+      recordNodeMapping(stmt.end, line, endColumn, tracker);
       const parts = [
-        `for ${printTypedIdentifier(stmt.variable)} = ${printExpression(stmt.start)}, ${printExpression(stmt.end)}`,
+        `${prefix}${startText}, ${printExpression(stmt.end)}`,
       ];
       if (stmt.step) {
+        const stepColumn = indent * 2 + parts.join("").length + 2;
+        recordNodeMapping(stmt.step, line, stepColumn, tracker);
         parts.push(`, ${printExpression(stmt.step)}`);
       }
       if (compact) {
@@ -193,20 +289,25 @@ function printStatement(stmt, indent, compact) {
         return `${parts.join("")} do${bodyText}end`;
       }
       const lines = [parts.join("") + " do"];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
     case "ForGenericStatement": {
       const vars = stmt.variables.map(printTypedIdentifier).join(", ");
-      const iter = stmt.iterators.map((arg) => printExpression(arg)).join(", ");
+      const iter = printExpressionListTracked(
+        stmt.iterators,
+        tracker,
+        tracker ? tracker.currentLine : 0,
+        indent * 2 + `for ${vars} in `.length,
+      );
       if (compact) {
         const body = printBlockInline(stmt.body.body);
         const bodyText = body ? ` ${body} ` : " ";
         return `for ${vars} in ${iter} do${bodyText}end`;
       }
       const lines = [`for ${vars} in ${iter} do`];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
@@ -217,13 +318,13 @@ function printStatement(stmt, indent, compact) {
         return `do${bodyText}end`;
       }
       const lines = ["do"];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
     case "ReturnStatement":
       return stmt.arguments.length
-        ? `return ${stmt.arguments.map((arg) => printExpression(arg)).join(", ")}`
+        ? `return ${printExpressionListTracked(stmt.arguments, tracker, tracker ? tracker.currentLine : 0, indent * 2 + 7)}`
         : "return";
     case "BreakStatement":
       return "break";
@@ -252,7 +353,7 @@ function printStatement(stmt, indent, compact) {
         return `${prefix} ${printIdentifier(stmt.name)}${typeParams}(${args})${returnTypes}${bodyText}end`;
       }
       const lines = [`${prefix} ${printIdentifier(stmt.name)}${typeParams}(${args})${returnTypes}`];
-      printBlock(stmt.body.body, lines, indent + 1);
+      printBlock(stmt.body.body, lines, indent + 1, createNestedTracker(tracker, (tracker ? tracker.currentLine : 0) + 1));
       lines.push(`${"  ".repeat(indent)}end`);
       return lines.join("\n" + "  ".repeat(indent));
     }
@@ -412,7 +513,7 @@ function printExpression(expr, parentPrec = 0, parentOp = null, position = null)
         result = `${attrPrefix}function${typeParams}(${args})${returnType}${bodyText}end`;
       } else {
         const lines = [`${attrPrefix}function${typeParams}(${args})${returnType}`];
-        printBlock(expr.body.body, lines, 1);
+        printBlock(expr.body.body, lines, 1, createNestedTracker(null, 1));
         lines.push("end");
         result = lines.join("\n");
       }

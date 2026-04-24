@@ -4,6 +4,12 @@ const { makeDiagnosticErrorFromNode } = require("./custom/diagnostics");
 
 const DEFAULT_MIN_STATEMENTS = 1;
 
+function tracePass(ctx, event) {
+  if (ctx && typeof ctx.debugTrace === "function") {
+    ctx.debugTrace(event);
+  }
+}
+
 const OPCODES = [
   "NOP",
   "PUSH_CONST",
@@ -2008,6 +2014,7 @@ class VmCompiler {
         this.emit("DUP", 0, 0);
         if (isLastField && isCallLikeExpression(field.value)) {
           this.compileAppendCallLike(field.value, listIndex);
+          this.emit("POP", 0, 0);
         } else {
           this.emit("PUSH_CONST", this.addConst(listIndex), 0);
           this.compileValueExpression(field.value, 1);
@@ -2028,6 +2035,7 @@ class VmCompiler {
         this.emit("DUP", 0, 0);
         if (isLastField && isCallLikeExpression(field.value)) {
           this.compileAppendCallLike(field.value, listIndex);
+          this.emit("POP", 0, 0);
         } else {
           this.emit("PUSH_CONST", this.addConst(listIndex), 0);
           this.compileValueExpression(field.value, 1);
@@ -2117,13 +2125,52 @@ function hasVararg(fnNode, style) {
   return false;
 }
 
+function getFunctionBodyStatements(fnNode, style) {
+  if (!fnNode) {
+    return [];
+  }
+  if (style === "custom") {
+    return fnNode.body && fnNode.body.body ? fnNode.body.body : [];
+  }
+  return Array.isArray(fnNode.body) ? fnNode.body : [];
+}
+
+function isSetMetatableCall(expr) {
+  if (!expr || expr.type !== "CallExpression" || !expr.base) {
+    return false;
+  }
+  return expr.base.type === "Identifier" && expr.base.name === "setmetatable";
+}
+
+function isMetatableConstructor(fnNode, style) {
+  const name = fnNode && typeof fnNode.__obf_original_name === "string"
+    ? fnNode.__obf_original_name
+    : getFunctionName(fnNode);
+  if (!name || !name.endsWith(".new")) {
+    return false;
+  }
+  const body = getFunctionBodyStatements(fnNode, style);
+  return body.some((stmt) => (
+    stmt &&
+    stmt.type === "ReturnStatement" &&
+    Array.isArray(stmt.arguments) &&
+    stmt.arguments.some((arg) => isSetMetatableCall(arg))
+  ));
+}
+
 function shouldVirtualizeFunction(fnNode, options) {
   const include = options.vm && Array.isArray(options.vm.include) ? options.vm.include : [];
   const all = options.vm && options.vm.all;
+  const style = options && options.luauParser === "luaparse" ? "luaparse" : "custom";
+  if (isMetatableConstructor(fnNode, style)) {
+    return false;
+  }
   if (all || include.length === 0) {
     return true;
   }
-  const name = getFunctionName(fnNode);
+  const name = fnNode && typeof fnNode.__obf_original_name === "string"
+    ? fnNode.__obf_original_name
+    : getFunctionName(fnNode);
   return name ? include.includes(name) : false;
 }
 
@@ -2270,8 +2317,25 @@ function collectFunctionLocalNames(fnNode) {
       names.add(param.name);
     }
   });
-  walkAny(fnNode, (node, parent, key) => {
-    if (!node || typeof node !== "object" || !node.type) {
+
+  const visitOwnedNodes = (node, parent = null, key = null) => {
+    if (node === null || node === undefined) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((item) => visitOwnedNodes(item, parent, key));
+      return;
+    }
+    if (typeof node !== "object" || !node.type) {
+      return;
+    }
+    if (node !== fnNode && isFunctionNode(node)) {
+      if (node.type === "FunctionDeclaration" && node.isLocal) {
+        const fnName = getFunctionName(node);
+        if (fnName && !fnName.includes(".")) {
+          names.add(fnName);
+        }
+      }
       return;
     }
     if (node.type === "Identifier" && parent) {
@@ -2294,7 +2358,12 @@ function collectFunctionLocalNames(fnNode) {
         names.add(fnName);
       }
     }
-  });
+    Object.keys(node).forEach((childKey) => {
+      visitOwnedNodes(node[childKey], node, childKey);
+    });
+  };
+
+  visitOwnedNodes(fnNode);
   return names;
 }
 
@@ -2714,10 +2783,10 @@ function buildVmSource(
   }
   const firstAlphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const restAlphabet = `${firstAlphabet}0123456789`;
-  const makeName = () => {
+  const makeUniqueName = (allowSemanticMisdirection = semanticMisdirection) => {
     let out = "";
     while (!out || LUA_KEYWORDS.has(out) || RESERVED_NAMES.has(out) || nameUsed.has(out) || out.toLowerCase().includes("obf")) {
-      if (semanticMisdirection && rng.bool(0.38)) {
+      if (allowSemanticMisdirection && rng.bool(0.38)) {
         const base = rng.pick(misleadingNamePool);
         out = rng.bool(0.72) ? `${base}_${rng.int(11, 9999)}` : base;
         continue;
@@ -2732,6 +2801,8 @@ function buildVmSource(
     nameUsed.add(out);
     return out;
   };
+  const makeName = () => makeUniqueName(true);
+  const makeVmHelperAliasName = () => makeUniqueName(false);
   const bitNames = {
     mod: makeName(),
     bit: makeName(),
@@ -4647,14 +4718,14 @@ function buildVmSource(
   }
   const vmSource = lines.join("\n");
   const coreAliases = {
-    bc: makeName(),
-    bc_keys: makeName(),
-    consts: makeName(),
-    locals: makeName(),
-    stack: makeName(),
-    top: makeName(),
-    pc: makeName(),
-    env: makeName(),
+    bc: makeVmHelperAliasName(),
+    bc_keys: makeVmHelperAliasName(),
+    consts: makeVmHelperAliasName(),
+    locals: makeVmHelperAliasName(),
+    stack: makeVmHelperAliasName(),
+    top: makeVmHelperAliasName(),
+    pc: makeVmHelperAliasName(),
+    env: makeVmHelperAliasName(),
   };
   return { source: vmSource, coreAliases };
 }
@@ -4740,12 +4811,94 @@ function collectTopLevelPreboundLocals(statements) {
   return names;
 }
 
-function collectPreboundLocalsForFunction(ast, fnNode) {
+function findEnclosingStatementList(root, target) {
+  const contexts = findFunctionContext(root, target);
+  return contexts ? contexts.statementList : null;
+}
+
+function isStatementNode(node) {
+  return Boolean(
+    node &&
+    typeof node === "object" &&
+    typeof node.type === "string" &&
+    (node.type.endsWith("Statement") || node.type === "FunctionDeclaration")
+  );
+}
+
+function isStatementList(value) {
+  return Array.isArray(value) && value.some((item) => isStatementNode(item));
+}
+
+function getFunctionCaptureParams(fnNode) {
   const names = [];
   const seen = new Set();
-  const body = ast && Array.isArray(ast.body) ? ast.body : [];
-  for (const stmt of body) {
-    if (stmt === fnNode) {
+  if (!fnNode || !Array.isArray(fnNode.parameters)) {
+    return names;
+  }
+  if (
+    fnNode.type === "FunctionDeclaration" &&
+    fnNode.name &&
+    fnNode.name.type === "FunctionName" &&
+    fnNode.name.method
+  ) {
+    seen.add("self");
+    names.push("self");
+  }
+  fnNode.parameters.forEach((param) => {
+    if (!param || param.type !== "Identifier" || !param.name || seen.has(param.name)) {
+      return;
+    }
+    seen.add(param.name);
+    names.push(param.name);
+  });
+  return names;
+}
+
+function findFunctionContext(root, target, state = {}) {
+  if (root === target) {
+    return state;
+  }
+  if (!root || typeof root !== "object") {
+    return null;
+  }
+  if (Array.isArray(root)) {
+    const nextStatementList = isStatementList(root) ? root : state.statementList || null;
+    for (const item of root) {
+      const nextState = isStatementNode(item)
+        ? {
+            ...state,
+            statementList: nextStatementList,
+            statement: item,
+            frames: [...(state.frames || []), { statementList: nextStatementList, statement: item }],
+          }
+        : { ...state, statementList: nextStatementList };
+      const found = findFunctionContext(item, target, nextState);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  const nextFunction = isFunctionNode(root) ? root : state.enclosingFunction || null;
+  for (const key of Object.keys(root)) {
+    const found = findFunctionContext(root[key], target, {
+      ...state,
+      enclosingFunction: nextFunction,
+    });
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function collectStatementPrefixLocals(statementList, stopStatement, names, seen) {
+  if (!Array.isArray(statementList)) {
+    return;
+  }
+  for (const stmt of statementList) {
+    if (stmt === stopStatement) {
       break;
     }
     if (!stmt || !stmt.type) {
@@ -4763,6 +4916,44 @@ function collectPreboundLocalsForFunction(ast, fnNode) {
     if (stmt.type === "FunctionDeclaration" && stmt.isLocal) {
       pushTopLevelLocalName(names, seen, getFunctionName(stmt));
     }
+  }
+}
+
+function collectStatementScopedBindings(stmt, names, seen) {
+  if (!stmt || !stmt.type) {
+    return;
+  }
+  if (stmt.type === "ForNumericStatement" && stmt.variable && stmt.variable.type === "Identifier") {
+    pushTopLevelLocalName(names, seen, stmt.variable.name);
+    return;
+  }
+  if (stmt.type === "ForGenericStatement" && Array.isArray(stmt.variables)) {
+    stmt.variables.forEach((variable) => {
+      if (variable && variable.type === "Identifier") {
+        pushTopLevelLocalName(names, seen, variable.name);
+      }
+    });
+  }
+}
+
+function collectPreboundLocalsForFunction(ast, fnNode) {
+  const names = [];
+  const seen = new Set();
+  const context = findFunctionContext(ast, fnNode) || {};
+  const frames = Array.isArray(context.frames) && context.frames.length
+    ? context.frames
+    : [{ statementList: context.statementList || (ast && Array.isArray(ast.body) ? ast.body : []), statement: context.statement || fnNode }];
+
+  frames.forEach((frame) => {
+    collectStatementPrefixLocals(frame.statementList, frame.statement, names, seen);
+    collectStatementScopedBindings(frame.statement, names, seen);
+  });
+
+  getFunctionCaptureParams(context.enclosingFunction).forEach((name) => {
+    pushTopLevelLocalName(names, seen, name);
+  });
+  if (context.enclosingFunction && context.enclosingFunction.type === "FunctionDeclaration" && context.enclosingFunction.isLocal) {
+    pushTopLevelLocalName(names, seen, getFunctionName(context.enclosingFunction));
   }
   return names;
 }
@@ -4817,6 +5008,12 @@ function virtualizeLuau(ast, ctx) {
         ? (node.body && node.body.body ? node.body.body : [])
         : Array.isArray(node.body) ? node.body : [];
       if (!body || body.length < minStatements) {
+        tracePass(ctx, {
+          kind: "skip-virtualize-function",
+          reason: "below-min-statements",
+          functionName: fnName || "<anonymous>",
+          statements: Array.isArray(body) ? body.length : 0,
+        });
         return;
       }
 
@@ -4831,6 +5028,11 @@ function virtualizeLuau(ast, ctx) {
           const message = err && err.message ? err.message : String(err);
           console.warn(`[js-obf] luau-vm skipped ${name}: ${message}`);
         }
+        tracePass(ctx, {
+          kind: "skip-virtualize-function",
+          reason: "compile-failed",
+          functionName: getFunctionName(node) || "<anonymous>",
+        });
         return;
       }
 
@@ -4937,6 +5139,13 @@ function virtualizeLuau(ast, ctx) {
       }
       markVmNodes(vmAst);
       replaceFunctionBody(node, vmAst, style);
+      tracePass(ctx, {
+        kind: "virtualize-function",
+        functionName: fnName || "<anonymous>",
+        layer: layer + 1,
+        instructions: program.instructions.length,
+        consts: program.consts.length,
+      });
     });
 
     if (!shouldVirtualizeTopLevelChunk(ast, ctx.options)) {
@@ -4944,6 +5153,11 @@ function virtualizeLuau(ast, ctx) {
     }
     const chunkPlan = buildTopLevelChunkPlan(ast);
     if (!Array.isArray(chunkPlan.statements) || chunkPlan.statements.length < minStatements) {
+      tracePass(ctx, {
+        kind: "skip-virtualize-chunk",
+        reason: "below-min-statements",
+        statements: Array.isArray(chunkPlan.statements) ? chunkPlan.statements.length : 0,
+      });
       continue;
     }
 
@@ -4960,6 +5174,10 @@ function virtualizeLuau(ast, ctx) {
         const message = err && err.message ? err.message : String(err);
         console.warn(`[js-obf] luau-vm skipped <chunk>: ${message}`);
       }
+      tracePass(ctx, {
+        kind: "skip-virtualize-chunk",
+        reason: "compile-failed",
+      });
       continue;
     }
 
@@ -5067,6 +5285,12 @@ function virtualizeLuau(ast, ctx) {
     markVmNodes(vmAst);
     replaceChunkBody(ast, vmAst, chunkPlan.prefix);
     ast.__obf_vm_chunk = true;
+    tracePass(ctx, {
+      kind: "virtualize-chunk",
+      layer: layer + 1,
+      instructions: program.instructions.length,
+      consts: program.consts.length,
+    });
   }
 }
 
