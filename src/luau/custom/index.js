@@ -1,4 +1,6 @@
-const { parse } = require("./parser");
+const parserModule = require("./parser");
+const tokenizerModule = require("./tokenizer");
+const { parse } = parserModule;
 const { printChunk } = require("./printer");
 const { walk } = require("./walk");
 const { traverse } = require("./traverse");
@@ -10,6 +12,7 @@ const { buildSSA } = require("./ssa");
 const { buildIR, buildIRSSA } = require("./ir");
 const { printIR } = require("./ir-printer");
 const diagnostics = require("./diagnostics");
+const { Tokenizer } = tokenizerModule;
 
 const nodes = {
   rootType: "Chunk",
@@ -118,6 +121,8 @@ module.exports = {
   buildIRSSA,
   printIR,
   diagnostics,
+  Parser: parserModule.Parser,
+  Tokenizer,
   types,
   nodes,
   locations,
