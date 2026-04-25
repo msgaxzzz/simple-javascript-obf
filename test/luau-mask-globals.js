@@ -60,6 +60,28 @@ function runAstCompatContract() {
   assert.ok(ast && ast.type === "Chunk", "ast.parseLuau should return a custom-style chunk");
 }
 
+function runAstCompatOptions() {
+  const ast = parseFromAst("local x = 1", { locations: false, ranges: false });
+  let sawLocationData = false;
+
+  walk(ast, (node) => {
+    if (sawLocationData || !node) {
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(node, "loc") || Object.prototype.hasOwnProperty.call(node, "range")) {
+      sawLocationData = true;
+    }
+  });
+
+  assert.ok(!sawLocationData, "ast.parseLuau should honor locations/ranges compatibility flags");
+
+  assert.throws(
+    () => parseFromAst("local x = 1", { luaVersion: "5.4" }),
+    /unsupported luaVersion 5\.4/,
+    "ast.parseLuau should reject unsupported legacy luaVersion values explicitly"
+  );
+}
+
 async function run() {
   const { code } = await obfuscateLuau(source, {
     lang: "luau",
@@ -112,6 +134,7 @@ async function runRepeatUntilScopeRegression() {
 
 (async () => {
   runAstCompatContract();
+  runAstCompatOptions();
   await run();
   await runRepeatUntilScopeRegression();
   console.log("luau-mask-globals: ok");

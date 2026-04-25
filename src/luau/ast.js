@@ -34,8 +34,17 @@ function extractDirectives(source) {
 }
 
 function parseLuau(source, options = {}) {
+  if (
+    options.luaVersion !== undefined &&
+    options.luaVersion !== null &&
+    options.luaVersion !== "5.1" &&
+    options.luaVersion !== "Luau" &&
+    options.luaVersion !== "luau"
+  ) {
+    throw new Error(`[js-obf] luau parse failed: unsupported luaVersion ${options.luaVersion}`);
+  }
   try {
-    return normalizeLegacyNodeShape(parseCustomLuau(source, options));
+    return normalizeLegacyNodeShape(parseCustomLuau(source, options), options);
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     const wrapped = new Error(`[js-obf] luau parse failed: ${message}`);
