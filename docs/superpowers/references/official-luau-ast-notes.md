@@ -7,5 +7,7 @@
 - Statement families use upstream `AstStat*` names. Initial locked targets include `AstStatTypeAlias`, `AstStatFunction`, `AstStatLocalFunction`, and `AstStatDeclareFunction`.
 - Expression families use upstream `AstExpr*` names. Initial locked targets include `AstExprIfElse` and `AstExprInterpString`.
 - Type families use upstream `AstType*` names. Initial locked targets include `AstTypeReference`.
+- Canonical source locations use `begin/end`; temporary `start` support is allowed only as a compatibility field during migration.
+- For `StatTypeAlias`, the canonical conceptual field is official Luau's `type`; if TypeScript contract files temporarily use `annotation` to avoid interface conflicts, that must remain a documented adaptation instead of becoming the canonical runtime spelling.
 - TypeScript parser output should model official terminology first, with any legacy custom node names handled through an explicit compat layer.
 - Current custom output still uses legacy names such as `ExportTypeStatement` and `FunctionDeclaration`; the new red tests intentionally pin the future official-style shape.
