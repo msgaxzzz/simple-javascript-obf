@@ -8,10 +8,26 @@ const { obfuscate } = require("../src");
 const rename = require("../src/luau/rename");
 const maskGlobals = require("../src/luau/maskGlobals");
 const strings = require("../src/luau/strings");
+const { parseLuau } = require("../src/luau/custom");
+const { RNG } = require("../src/utils/rng");
 
 assert.ok(rename, "rename transform should still load");
 assert.ok(maskGlobals, "maskGlobals transform should still load");
 assert.ok(strings, "strings transform should still load");
+
+function runCanonicalStringEncodeContract() {
+  const ast = parseLuau('local s = "abc"');
+  strings.stringEncode(ast, {
+    options: {
+      stringsOptions: {
+        minLength: 1,
+        maxCount: 10,
+      },
+    },
+    rng: new RNG("strings-canonical"),
+  });
+  assert.ok(ast && ast.type === "Chunk", "string encoder should accept canonical official-shape AST");
+}
 
 function runLuau(code) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "js-obf-luau-long-strings-"));
@@ -53,6 +69,7 @@ async function runLongStringRegression() {
 }
 
 (async () => {
+  runCanonicalStringEncodeContract();
   await runLongStringRegression();
   console.log("luau-long-strings: ok");
 })().catch((err) => {

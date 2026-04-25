@@ -4,19 +4,6 @@ const Module = require("module");
 
 function loadParserFromTs() {
   const tsPath = path.join(__dirname, "parser.ts");
-
-  try {
-    return require(tsPath);
-  } catch (error) {
-    const message = String((error && error.message) || error || "");
-    if (
-      !message.includes("Unexpected token") &&
-      !message.includes("require is not defined in ES module scope")
-    ) {
-      throw error;
-    }
-  }
-
   const ts = require("typescript");
   const source = fs.readFileSync(tsPath, "utf8");
   const transpiled = ts.transpileModule(source, {

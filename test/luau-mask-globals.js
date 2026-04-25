@@ -4,8 +4,10 @@ const maskGlobals = require("../src/luau/maskGlobals");
 const strings = require("../src/luau/strings");
 const { obfuscateLuau } = require("../src/luau");
 const { parseLuau: parseFromAst } = require("../src/luau/ast");
+const { parseLuau: parseCanonical } = require("../src/luau/custom");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 const { walk } = require("../src/luau/ast");
+const { RNG } = require("../src/utils/rng");
 
 assert.ok(rename, "rename transform should still load");
 assert.ok(maskGlobals, "maskGlobals transform should still load");
@@ -92,6 +94,15 @@ function runAstCompatOptions() {
   );
 }
 
+function runCanonicalMaskGlobalsContract() {
+  const ast = parseCanonical("print(foo)");
+  maskGlobals.maskGlobalsLuau(ast, {
+    options: { renameOptions: { maskGlobals: true } },
+    rng: new RNG("mask-globals-canonical"),
+  });
+  assert.ok(ast && ast.type === "Chunk", "maskGlobals should accept canonical official-shape AST");
+}
+
 async function run() {
   const { code } = await obfuscateLuau(source, {
     lang: "luau",
@@ -145,6 +156,7 @@ async function runRepeatUntilScopeRegression() {
 (async () => {
   runAstCompatContract();
   runAstCompatOptions();
+  runCanonicalMaskGlobalsContract();
   await run();
   await runRepeatUntilScopeRegression();
   console.log("luau-mask-globals: ok");

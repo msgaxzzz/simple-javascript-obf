@@ -10,6 +10,7 @@ const { obfuscateLuau } = require("../src/luau");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 const { walk } = require("../src/luau/ast");
 const { renameLuau } = rename;
+const { parseLuau } = require("../src/luau/custom");
 const { RNG } = require("../src/utils/rng");
 
 assert.ok(rename, "rename transform should still load");
@@ -183,6 +184,21 @@ function runLocalTableMemberRename() {
   });
   assert.strictEqual(countMemberName(ast, "foo"), 0, "custom: local table member 'foo' should be renamed");
   assert.strictEqual(countMemberName(ast, "bar"), 0, "custom: nested local table member 'bar' should be renamed");
+}
+
+function runCanonicalOfficialShapeRename() {
+  const ast = parseLuau("local t = { foo = 1 } return t.foo");
+  renameLuau(ast, {
+    options: {
+      renameOptions: {
+        renameMembers: true,
+        renameGlobals: false,
+        reserved: [],
+      },
+    },
+    rng: new RNG("official-shape"),
+  });
+  assert.ok(ast && ast.type === "Chunk", "rename should accept canonical official-shape AST");
 }
 
 async function runCustom() {
@@ -683,6 +699,7 @@ async function runDynamicMapRecordAliasGuard() {
 }
 
 (async () => {
+  runCanonicalOfficialShapeRename();
   runEnvAliasMemberGuard();
   runExternalServiceMemberGuard();
   runLocalTableMemberRename();
