@@ -1,6 +1,9 @@
 const assert = require("assert");
 const vm = require("vm");
-const { obfuscate } = require("../src");
+const api = require("../src");
+const { obfuscate } = api;
+
+assert.ok(typeof api.obfuscate === "function", "top-level obfuscate API should still be exported");
 
 function runCode(code, timeoutMs = 5000) {
   const logs = [];
