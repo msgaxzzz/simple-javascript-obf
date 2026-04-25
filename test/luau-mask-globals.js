@@ -65,6 +65,9 @@ function runAstCompatContract() {
   ].join("\n"));
 
   assert.ok(ast && ast.type === "Chunk", "ast.parseLuau should return a custom-style chunk");
+  assert.strictEqual(ast.body[0].type, "TypeAliasStatement", "ast.parseLuau should translate official type aliases back to legacy shape");
+  assert.strictEqual(ast.body[0].typeParameters[0].name, "T", "legacy compat should preserve generic parameters");
+  assert.strictEqual(ast.body[1].type, "LocalStatement", "ast.parseLuau should keep transform-facing statement shapes consumable");
 }
 
 function runAstCompatOptions() {

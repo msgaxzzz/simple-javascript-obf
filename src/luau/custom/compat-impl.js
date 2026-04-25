@@ -34,7 +34,7 @@ function normalizeLegacyNodeShape(node, options = {}) {
   if (!isOfficialStyleChunk(node)) {
     throw new Error("Expected a custom Luau Chunk root");
   }
-  return stripLocationFields(node, options);
+  return stripLocationFields(toLegacyNode(node), options);
 }
 
 function cloneValue(value) {
@@ -146,6 +146,120 @@ function normalizeOfficialNodeShape(node) {
     throw new Error("Expected a custom Luau Chunk root");
   }
   return toOfficialNode(node);
+}
+
+function toLegacyNode(node) {
+  if (Array.isArray(node)) {
+    return node.map(toLegacyNode);
+  }
+  if (!isNode(node)) {
+    return cloneValue(node);
+  }
+
+  const out = {};
+  for (const key of Object.keys(node)) {
+    if (key === "loc") {
+      out.loc = withLegacyLocation(node.loc);
+      continue;
+    }
+    out[key] = toLegacyNode(node[key]);
+  }
+
+  switch (node.type) {
+    case "Chunk":
+      return out;
+    case "StatTypeAlias":
+      out.type = node.exported ? "ExportTypeStatement" : "TypeAliasStatement";
+      out.typeParameters = node.generics || [];
+      out.value = toLegacyType(node.annotation);
+      delete out.generics;
+      delete out.genericPacks;
+      delete out.annotation;
+      delete out.exported;
+      return out;
+    case "StatLocalFunction":
+      out.type = "FunctionDeclaration";
+      out.isLocal = true;
+      return out;
+    case "StatFunction":
+      out.type = "FunctionDeclaration";
+      out.isLocal = false;
+      return out;
+    case "StatDeclareFunction":
+      out.type = "DeclareFunctionStatement";
+      return out;
+    case "ExprIfElse":
+      out.type = "IfExpression";
+      out.clauses = [
+        {
+          condition: toLegacyNode(node.condition),
+          value: toLegacyNode(node.trueExpression),
+        },
+      ];
+      out.elseValue = toLegacyNode(node.falseExpression);
+      delete out.condition;
+      delete out.trueExpression;
+      delete out.falseExpression;
+      return out;
+    case "ExprInterpString":
+      out.type = "InterpolatedString";
+      return out;
+    default:
+      return out;
+  }
+}
+
+function withLegacyLocation(loc) {
+  if (!loc || typeof loc !== "object") {
+    return loc;
+  }
+  const start = loc.start || loc.begin || null;
+  const end = loc.end || null;
+  const out = { ...loc };
+  if (start) {
+    out.start = start;
+  }
+  if (end) {
+    out.end = end;
+  }
+  delete out.begin;
+  return out;
+}
+
+function toLegacyType(node) {
+  if (Array.isArray(node)) {
+    return node.map(toLegacyType);
+  }
+  if (!isNode(node)) {
+    return cloneValue(node);
+  }
+
+  const out = {};
+  for (const key of Object.keys(node)) {
+    if (key === "loc") {
+      out.loc = withLegacyLocation(node.loc);
+      continue;
+    }
+    out[key] = toLegacyType(node[key]);
+  }
+
+  switch (node.type) {
+    case "TypeReference":
+      if (node.prefix) {
+        const prefix = Array.isArray(node.prefix) ? node.prefix : [node.prefix];
+        out.name = [...prefix, node.name];
+      } else {
+        out.name = Array.isArray(node.name) ? node.name : [node.name];
+      }
+      if (node.parameters) {
+        out.typeArguments = toLegacyType(node.parameters);
+      }
+      delete out.prefix;
+      delete out.parameters;
+      return out;
+    default:
+      return out;
+  }
 }
 
 function isOfficialStyleChunk(node) {
