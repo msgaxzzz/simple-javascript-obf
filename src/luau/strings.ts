@@ -1,9 +1,19 @@
 import type { Chunk } from "./custom/nodes";
 
-export interface StringEncodeContext {
-  options: {
-    stringsOptions?: Record<string, unknown>;
+export interface StringEncodeOptions {
+  stringsOptions: {
+    minLength: number;
+    maxCount: number;
+    segmentSize?: number;
+    sampleRate?: number;
+    split?: boolean;
+    splitMin?: number;
+    splitMaxParts?: number;
   };
+}
+
+export interface StringEncodeContext {
+  options: StringEncodeOptions;
   rng: {
     int(min: number, max: number): number;
     shuffle<T>(items: T[]): T[];
@@ -19,7 +29,6 @@ const stringsImpl = require("./strings-impl") as {
 
 export const decodeRawString = stringsImpl.decodeRawString;
 
-export function stringEncode(ast: Chunk, ctx: StringEncodeContext): Chunk {
+export function stringEncode(ast: Chunk, ctx: StringEncodeContext): void {
   stringsImpl.stringEncode(ast, ctx);
-  return ast;
 }

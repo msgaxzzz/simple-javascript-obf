@@ -1,11 +1,24 @@
 import type { Chunk } from "./custom/nodes";
 
-export interface RenameContext {
-  options: Record<string, unknown>;
-  rng: {
-    int(min: number, max: number): number;
-    shuffle<T>(items: T[]): T[];
+export interface RenameOptions {
+  renameOptions: {
+    reserved?: string[];
+    renameGlobals?: boolean;
+    renameMembers?: boolean;
+    homoglyphs?: boolean;
   };
+}
+
+export interface RenameRng {
+  int(min: number, max: number): number;
+  shuffle<T>(items: T[]): T[];
+}
+
+export interface RenameContext {
+  options: RenameOptions;
+  rng: RenameRng;
+  getSSA?: () => unknown;
+  constructorMemberHints?: Map<string, Set<string>>;
   dynamicIndexBaseNames?: Set<string>;
   dynamicIndexRecordBaseNames?: Set<string>;
   dynamicIndexRecordBaseMemberNames?: Set<string>;
@@ -37,7 +50,6 @@ export const collectDynamicIndexMemberNames = renameImpl.collectDynamicIndexMemb
 export const collectExternalSchemaLocalNames = renameImpl.collectExternalSchemaLocalNames;
 export const collectSafeFunctionParameterHints = renameImpl.collectSafeFunctionParameterHints;
 
-export function renameLuau(ast: Chunk, ctx: RenameContext): Chunk {
+export function renameLuau(ast: Chunk, ctx: RenameContext): void {
   renameImpl.renameLuau(ast, ctx);
-  return ast;
 }
