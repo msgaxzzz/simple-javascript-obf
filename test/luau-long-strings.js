@@ -5,6 +5,14 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 const { obfuscate } = require("../src");
 
+const rename = require("../src/luau/rename");
+const maskGlobals = require("../src/luau/maskGlobals");
+const strings = require("../src/luau/strings");
+
+assert.ok(rename, "rename transform should still load");
+assert.ok(maskGlobals, "maskGlobals transform should still load");
+assert.ok(strings, "strings transform should still load");
+
 function runLuau(code) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "js-obf-luau-long-strings-"));
   const file = path.join(dir, "case.luau");
