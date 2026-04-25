@@ -31,6 +31,22 @@ function shouldThrow(name, fn) {
   assert.ok(printed.includes("return x"), "public printer API should round-trip return statements");
 }
 
+{
+  const source = "local x = if ok then 1 else 2";
+  const ast = custom.parseLuau(source);
+  const printed = custom.generateLuau(ast);
+
+  assert.ok(printed.includes("if ok then 1 else 2"), "public printer API should print canonical if-expressions");
+}
+
+{
+  const source = "local function f() return 1 end";
+  const ast = custom.parseLuau(source);
+  const printed = custom.generateLuau(ast);
+
+  assert.ok(printed.includes("local function f"), "public printer API should print canonical local functions");
+}
+
 roundTrip(
   "numeric-literals",
   [

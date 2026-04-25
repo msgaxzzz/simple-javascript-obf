@@ -1,14 +1,12 @@
-import type { BaseNode } from "./nodes";
+// @ts-nocheck
+const { traverse } = require("./traverse.ts");
 
-export type WalkVisitor = (
-  node: BaseNode,
-  parent: BaseNode | null,
-  key: string | null,
-  index: number | null,
-) => void;
+function walk(node, visitor) {
+  traverse(node, (value, parent, key, index) => {
+    visitor(value, parent, key, index);
+  });
+}
 
-const walkImpl = require("./walk-impl") as {
-  walk: (node: BaseNode, visitor: WalkVisitor) => void;
+module.exports = {
+  walk,
 };
-
-export const walk = walkImpl.walk;

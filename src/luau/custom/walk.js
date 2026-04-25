@@ -1,1 +1,1 @@
-module.exports = require("./walk-impl");
+module.exports = require("./walk.ts");

@@ -1,1 +1,1 @@
-module.exports = require("./printer-impl");
+module.exports = require("./printer.ts");

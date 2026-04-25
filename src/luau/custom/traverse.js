@@ -1,1 +1,1 @@
-module.exports = require("./traverse-impl");
+module.exports = require("./traverse.ts");

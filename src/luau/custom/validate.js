@@ -1,1 +1,1 @@
-module.exports = require("./validate-impl");
+module.exports = require("./validate.ts");

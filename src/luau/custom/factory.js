@@ -1,1 +1,1 @@
-module.exports = require("./factory-impl");
+module.exports = require("./factory.ts");
