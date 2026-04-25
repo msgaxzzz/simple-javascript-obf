@@ -2,6 +2,10 @@ const { DEFAULT_RESERVED } = require("./utils/reserved");
 
 const DEFAULT_ECMA = 2020;
 
+function normalizeLuauParser() {
+  return "custom";
+}
+
 function normalizeEcma(value) {
   if (value === undefined || value === null || value === "") {
     return DEFAULT_ECMA;
@@ -92,7 +96,7 @@ function normalizeOptions(userOptions = {}) {
     : null;
   const effectiveCffMode = cffMode || defaultCffMode;
   const luauStyle = "default";
-  const luauParser = "custom";
+  const luauParser = normalizeLuauParser(userOptions.luauParser);
   const maxCount = normalizeCount(stringsUserOptions.maxCount, 5000, { min: 0 });
   const segmentDefault = lang === "luau" ? Math.min(maxCount, 120) : maxCount;
   const segmentSize = normalizeCount(

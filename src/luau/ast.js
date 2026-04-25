@@ -1,5 +1,5 @@
-const luaparse = require("luaparse");
-const luacodegen = require("luacodegen");
+const { parseLuau: parseCustomLuau, generateLuau: generateCustomLuau } = require("./custom");
+const { normalizeLegacyNodeShape } = require("./custom/compat");
 const { traverse } = require("./custom/traverse");
 const { buildScope } = require("./custom/scope");
 const factory = require("./custom/factory");
@@ -35,13 +35,7 @@ function extractDirectives(source) {
 
 function parseLuau(source, options = {}) {
   try {
-    return luaparse.parse(source, {
-      luaVersion: options.luaVersion || "5.1",
-      locations: options.locations !== undefined ? options.locations : true,
-      ranges: options.ranges !== undefined ? options.ranges : true,
-      scope: false,
-      comments: false,
-    });
+    return normalizeLegacyNodeShape(parseCustomLuau(source, options));
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     const wrapped = new Error(`[js-obf] luau parse failed: ${message}`);
@@ -50,8 +44,8 @@ function parseLuau(source, options = {}) {
   }
 }
 
-function generateLuau(ast) {
-  return luacodegen(ast);
+function generateLuau(ast, options) {
+  return generateCustomLuau(normalizeLegacyNodeShape(ast), options);
 }
 
 function insertAtTop(ast, nodes) {

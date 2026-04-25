@@ -1,9 +1,12 @@
 const { normalizeOptions } = require("../options");
 const { RNG } = require("../utils/rng");
-const { extractDirectives, walk: walkLuauAst } = require("./ast");
 const {
-  parseLuau: parseLuauCustom,
-  generateLuau: generateLuauCustom,
+  extractDirectives,
+  walk: walkLuauAst,
+  parseLuau: parseLuauAst,
+  generateLuau: generateLuauAst,
+} = require("./ast");
+const {
   validate: validateLuau,
   buildCFG: buildLuauCFG,
   buildSSA: buildLuauSSA,
@@ -516,7 +519,7 @@ async function obfuscateLuau(source, options) {
     ? options.cffOptions.mode
     : "classic";
   const useVmCff = Boolean(options.cff && cffMode === "vm");
-  const ast = parseLuauCustom(source);
+  const ast = parseLuauAst(source);
   annotateOriginalFunctionNames(ast);
   const constructorMemberHints = collectConstructorMemberHints(ast);
   const dynamicIndexBaseNames = collectDynamicIndexBaseNames(ast);
@@ -575,8 +578,8 @@ async function obfuscateLuau(source, options) {
   const ctx = {
     options,
     rng,
-    parseCustom: parseLuauCustom,
-    parseLuaparse: parseLuauCustom,
+    parseCustom: parseLuauAst,
+    parseLuaparse: parseLuauAst,
     traverse: traverseLuau,
     buildScope: buildLuauScope,
     buildCFG: buildLuauCFG,
@@ -818,7 +821,7 @@ async function obfuscateLuau(source, options) {
   }
   const usePackedShell = options.lang === "luau" && vmEnabled && options.vm && options.vm.shellStyle === "packed";
   const shouldGenerateSourceMap = Boolean(options.sourceMap && !usePackedShell);
-  const generated = generateLuauCustom(ast, {
+  const generated = generateLuauAst(ast, {
     compact: shouldGenerateSourceMap ? false : options.compact,
     sourceMap: shouldGenerateSourceMap,
   });

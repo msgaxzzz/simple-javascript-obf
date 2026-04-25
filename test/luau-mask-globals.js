@@ -1,5 +1,6 @@
 const assert = require("assert");
 const { obfuscateLuau } = require("../src/luau");
+const { parseLuau: parseFromAst } = require("../src/luau/ast");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 const { walk } = require("../src/luau/ast");
 
@@ -47,6 +48,16 @@ function hasCallBase(ast, name) {
     }
   });
   return found;
+}
+
+function runAstCompatContract() {
+  const ast = parseFromAst([
+    "type Pair<T> = { value: T }",
+    "local x: Pair<number> = { value = 1 }",
+    "return x.value",
+  ].join("\n"));
+
+  assert.ok(ast && ast.type === "Chunk", "ast.parseLuau should return a custom-style chunk");
 }
 
 async function run() {
@@ -100,6 +111,7 @@ async function runRepeatUntilScopeRegression() {
 }
 
 (async () => {
+  runAstCompatContract();
   await run();
   await runRepeatUntilScopeRegression();
   console.log("luau-mask-globals: ok");
