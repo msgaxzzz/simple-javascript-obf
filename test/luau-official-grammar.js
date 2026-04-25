@@ -64,6 +64,7 @@ const accepted = [
   "type Result<T, E> = T | E",
   "declare function id<T>(x: T): T",
   "local x = if ok then 1 else 2",
+  "continue",
   "x += 1",
   "@native function f() end",
   "local s = `hello {name}`",
@@ -71,4 +72,22 @@ const accepted = [
 
 for (const source of accepted) {
   assert.doesNotThrow(() => custom.parseLuau(source), source);
+}
+
+{
+  const ast = custom.parseLuau("local x = if ok then 1 else 2");
+  assert.strictEqual(ast.body[0].init[0].type, "ExprIfElse");
+  assert.strictEqual(ast.body[0].init[0].condition.name, "ok");
+}
+
+{
+  const ast = custom.parseLuau("x += 1");
+  assert.strictEqual(ast.body[0].type, "CompoundAssignmentStatement");
+  assert.strictEqual(ast.body[0].operator, "+=");
+}
+
+{
+  const ast = custom.parseLuau("local s = `hello {name}`");
+  assert.strictEqual(ast.body[0].init[0].type, "ExprInterpString");
+  assert.strictEqual(ast.body[0].init[0].parts[0].raw, "hello ");
 }
