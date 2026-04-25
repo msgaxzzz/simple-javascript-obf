@@ -1,6 +1,10 @@
 const assert = require("assert");
 const custom = require("../src/luau/custom");
 
+assert.ok(custom.types.nodes.nodeTypes.includes("StatTypeAlias"));
+assert.ok(custom.types.nodes.nodeTypes.includes("ExprIfElse"));
+assert.ok(custom.types.nodes.nodeTypes.includes("TypeReference"));
+
 const ast = custom.parseLuau([
   "export type Pair<T> = { value: T }",
   "local function f<T>(x: T): T",

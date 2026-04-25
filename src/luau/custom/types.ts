@@ -6,13 +6,16 @@ export interface NodeContracts {
 
 export interface LocationContracts {
   positionFields: readonly string[];
-  sourceLocationFields: readonly string[];
+  locationFields: readonly string[];
+  sourceLocationFields?: readonly string[];
   baseNodeFields: readonly string[];
 }
 
 export interface DiagnosticContracts {
-  fields: readonly string[];
-  tokenFields: readonly string[];
+  diagnosticFields: readonly string[];
+  diagnosticTokenFields: readonly string[];
+  fields?: readonly string[];
+  tokenFields?: readonly string[];
 }
 
 export interface CustomAstTypeMetadata {

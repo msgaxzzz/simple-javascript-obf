@@ -4,8 +4,9 @@ export interface Position {
 }
 
 export interface SourceLocation {
-  start: Position;
+  begin: Position;
   end: Position;
+  start?: Position;
 }
 
 export interface BaseNode {
@@ -15,5 +16,6 @@ export interface BaseNode {
 }
 
 export const positionFields = ["line", "column"] as const;
-export const sourceLocationFields = ["start", "end"] as const;
+export const locationFields = ["begin", "end"] as const;
+export const sourceLocationFields = locationFields;
 export const baseNodeFields = ["type", "range", "loc"] as const;

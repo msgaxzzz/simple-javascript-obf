@@ -4,8 +4,9 @@ export interface Position {
 }
 
 export interface SourceLocation {
-  start: Position;
+  begin: Position;
   end: Position;
+  start?: Position;
 }
 
 export interface DiagnosticTokenShape {
@@ -17,9 +18,12 @@ export interface DiagnosticShape {
   message: string;
   expected?: string[] | null;
   token?: DiagnosticTokenShape | null;
+  location?: SourceLocation | null;
   range?: [number, number] | null;
   loc?: SourceLocation | null;
 }
 
-export const fields = ["message", "expected", "token", "loc", "range"] as const;
-export const tokenFields = ["type", "value"] as const;
+export const diagnosticFields = ["message", "expected", "token", "location", "range"] as const;
+export const diagnosticTokenFields = ["type", "value", "location"] as const;
+export const fields = diagnosticFields;
+export const tokenFields = diagnosticTokenFields;
