@@ -1,4 +1,4 @@
-const { traverse } = require("./traverse");
+const { traverse } = require("./traverse-impl");
 
 function walk(node, visitor) {
   traverse(node, (value, parent, key, index) => {

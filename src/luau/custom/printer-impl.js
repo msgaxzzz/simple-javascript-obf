@@ -7,23 +7,24 @@ function printChunk(ast, options = {}) {
   const compact = Boolean(options.compact) && !sourceMap;
   const previousCompact = COMPACT;
   COMPACT = compact;
-  if (compact) {
-    const code = printBlockInline(ast.body);
+  try {
+    if (compact) {
+      return printBlockInline(ast.body);
+    }
+    const out = [];
+    const tracker = sourceMap ? { entries: [], currentLine: 0 } : null;
+    printBlock(ast.body, out, 0, tracker);
+    const result = out.join("\n");
+    if (sourceMap) {
+      return {
+        code: result,
+        mappings: tracker.entries,
+      };
+    }
+    return result;
+  } finally {
     COMPACT = previousCompact;
-    return code;
   }
-  const out = [];
-  const tracker = sourceMap ? { entries: [], currentLine: 0 } : null;
-  printBlock(ast.body, out, 0, tracker);
-  const result = out.join("\n");
-  COMPACT = previousCompact;
-  if (sourceMap) {
-    return {
-      code: result,
-      mappings: tracker.entries,
-    };
-  }
-  return result;
 }
 
 const BINARY_PRECEDENCE = {
