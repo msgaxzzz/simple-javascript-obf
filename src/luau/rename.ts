@@ -1,4 +1,4 @@
-import type { Chunk, BaseNode } from "./custom/nodes";
+import type { Chunk } from "./custom/nodes";
 
 export interface RenameContext {
   options: Record<string, unknown>;
@@ -12,7 +12,7 @@ export interface RenameContext {
   dynamicIndexRecordMemberNames?: Set<string>;
   dynamicIndexMemberNames?: Set<string>;
   externalSchemaLocalNames?: Set<string>;
-  safeFunctionParameterHints?: Map<string, Set<string>>;
+  safeFunctionParameterHints?: Map<string, Set<number>>;
   debugTrace?: (event: unknown) => void;
 }
 
@@ -24,7 +24,7 @@ const renameImpl = require("./rename-impl") as {
   collectDynamicIndexRecordMemberNames: (ast: Chunk) => Set<string>;
   collectDynamicIndexMemberNames: (ast: Chunk) => Set<string>;
   collectExternalSchemaLocalNames: (ast: Chunk) => Set<string>;
-  collectSafeFunctionParameterHints: (ast: Chunk) => Map<string, Set<string>>;
+  collectSafeFunctionParameterHints: (ast: Chunk) => Map<string, Set<number>>;
   renameLuau: (ast: Chunk, ctx: RenameContext) => void;
 };
 

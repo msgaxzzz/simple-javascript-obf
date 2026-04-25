@@ -1,4 +1,4 @@
-import type { Chunk, BaseNode } from "./custom/nodes";
+import type { Chunk } from "./custom/nodes";
 
 export interface StringEncodeContext {
   options: {
@@ -7,7 +7,7 @@ export interface StringEncodeContext {
   rng: {
     int(min: number, max: number): number;
     shuffle<T>(items: T[]): T[];
-    chance?(probability: number): boolean;
+    bool(probability: number): boolean;
   };
   debugTrace?: (event: unknown) => void;
 }
