@@ -1,8 +1,15 @@
 const assert = require("assert");
+const rename = require("../src/luau/rename");
+const maskGlobals = require("../src/luau/maskGlobals");
+const strings = require("../src/luau/strings");
 const { obfuscateLuau } = require("../src/luau");
 const { parseLuau: parseFromAst } = require("../src/luau/ast");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 const { walk } = require("../src/luau/ast");
+
+assert.ok(rename, "rename transform should still load");
+assert.ok(maskGlobals, "maskGlobals transform should still load");
+assert.ok(strings, "strings transform should still load");
 
 const source = [
   "local function foo()",
