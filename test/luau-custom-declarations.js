@@ -5,10 +5,13 @@ const path = require("path");
 const { spawnSync } = require("child_process");
 
 const repoRoot = path.resolve(__dirname, "..");
+const pkg = require(path.join(repoRoot, "package.json"));
 const buildRoot = path.join(repoRoot, "build", "src", "luau", "custom");
 const parserDecl = path.join(buildRoot, "parser.d.ts");
 const tokenizerDecl = path.join(buildRoot, "tokenizer.d.ts");
 const tscPath = path.join(repoRoot, "node_modules", "typescript", "bin", "tsc");
+
+assert.ok(pkg.types, "package.json should advertise a root types entry");
 
 const buildResult = spawnSync("npm", ["run", "build:ts"], {
   cwd: repoRoot,

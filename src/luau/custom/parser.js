@@ -8,7 +8,11 @@ function loadParserFromTs() {
   try {
     return require(tsPath);
   } catch (error) {
-    if (!error || !String(error.message || error).includes("Unexpected token")) {
+    const message = String((error && error.message) || error || "");
+    if (
+      !message.includes("Unexpected token") &&
+      !message.includes("require is not defined in ES module scope")
+    ) {
       throw error;
     }
   }

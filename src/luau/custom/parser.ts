@@ -1,4 +1,7 @@
 // @ts-nocheck
+import type { Chunk } from "./nodes";
+import type { Token, TokenizerInstance } from "./tokenizer";
+
 const { Tokenizer } = require("./tokenizer");
 const { makeDiagnosticError } = require("./diagnostics");
 
@@ -29,6 +32,23 @@ const PRECEDENCE = {
 const RIGHT_ASSOC = new Set(["..", "^"]);
 const COMPOUND_ASSIGN = new Set(["+=", "-=", "*=", "/=", "%=", "^=", "//=", "..="]);
 const CONTINUE_EXPRESSION_START = new Set(["=", ",", ".", "[", ":", "(", "{"]);
+
+export interface ParserInstance {
+  tokenizer: TokenizerInstance;
+  current: Token;
+  last: Token | null;
+  parse(): Chunk;
+  advance(): Token;
+  is(type: string, value?: string): boolean;
+  eat(type: string, value?: string): Token | null;
+  expect(type: string, value?: string): Token;
+  raise(message: string, token?: Token, expected?: string | null): never;
+  peek(): Token;
+}
+
+export interface ParserConstructor {
+  new (source: string): ParserInstance;
+}
 
 class Parser {
   constructor(source) {
@@ -1471,7 +1491,12 @@ function findInterpolationEnd(source, start) {
   return -1;
 }
 
+const ParserExport: ParserConstructor = Parser;
+const parseExport: (source: string) => Chunk = parse;
+
 module.exports = {
   parse,
   Parser,
 };
+
+export { ParserExport as Parser, parseExport as parse };
