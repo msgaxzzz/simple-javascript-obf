@@ -1,4 +1,5 @@
 const parserModule = require("./parser");
+const compatModule = require("./compat");
 const tokenizerModule = require("./tokenizer");
 const printerModule = require("./printer");
 const walkModule = require("./walk");
@@ -17,6 +18,7 @@ const { buildIR, buildIRSSA } = require("./ir");
 const { printIR } = require("./ir-printer");
 const diagnostics = require("./diagnostics");
 const { Tokenizer } = tokenizerModule;
+const { normalizeOfficialNodeShape } = compatModule;
 
 const nodes = {
   rootType: "Chunk",
@@ -109,7 +111,7 @@ const types = {
 };
 
 function parseLuau(source) {
-  return parse(source);
+  return normalizeOfficialNodeShape(parse(source));
 }
 
 function generateLuau(ast, options) {

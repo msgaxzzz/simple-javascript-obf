@@ -10,6 +10,7 @@ function normalizeExpected(expected) {
 
 function makeDiagnostic(message, token, expected) {
   const normExpected = normalizeExpected(expected);
+  const location = token && token.loc ? token.loc : null;
   return {
     message,
     expected: normExpected,
@@ -19,7 +20,8 @@ function makeDiagnostic(message, token, expected) {
           value: token.value,
         }
       : null,
-    loc: token && token.loc ? token.loc : null,
+    loc: location,
+    location,
     range: token && token.range ? token.range : null,
   };
 }
