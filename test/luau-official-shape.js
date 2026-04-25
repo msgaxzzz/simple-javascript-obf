@@ -11,4 +11,4 @@ const ast = custom.parseLuau([
 assert.strictEqual(ast.type, "Chunk");
 assert.ok(Array.isArray(ast.body), "Chunk body should be an array");
 assert.strictEqual(ast.body[0].type, "StatTypeAlias", "type alias should use official-style statement naming");
-assert.strictEqual(ast.body[1].type, "StatFunction", "function declaration should use official-style statement naming");
+assert.strictEqual(ast.body[1].type, "StatLocalFunction", "local function should use official-style local function naming");
