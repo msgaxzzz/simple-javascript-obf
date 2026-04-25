@@ -1,4 +1,5 @@
 const assert = require("assert");
+const cp = require("child_process");
 const custom = require("../src/luau/custom");
 const { Tokenizer } = require("../src/luau/custom/tokenizer");
 
@@ -42,6 +43,21 @@ assert.deepStrictEqual(
     ["keyword", "else"],
     ["number", "2"],
   ],
+);
+
+const sourceLoad = cp.spawnSync(
+  process.execPath,
+  ["--no-experimental-strip-types", "-e", "require('./src/luau/custom/tokenizer.js')"],
+  {
+    cwd: require("path").join(__dirname, ".."),
+    encoding: "utf8",
+  },
+);
+
+assert.strictEqual(
+  sourceLoad.status,
+  0,
+  `tokenizer.js should load without Node strip-types support: ${sourceLoad.stderr || sourceLoad.stdout}`,
 );
 
 const accepted = [
