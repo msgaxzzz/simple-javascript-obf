@@ -63,7 +63,7 @@ interface FactoryModule {
   makeVariadicType(value: BaseNode): BaseNode;
   makeTypeLiteral(raw: string): BaseNode;
   makeTypeofType(expression: BaseNode): BaseNode;
-  makeTypeReference(name: Identifier[], typeArguments?: BaseNode[], typeArgumentsExplicit?: boolean): BaseNode;
+  makeTypeReference(name: Identifier[], typeArguments?: BaseNode[]): BaseNode;
   makeTableType(fields?: BaseNode[]): BaseNode;
   makeTableTypeField(kind: string, data: Record<string, unknown>): BaseNode;
   makeTableTypeFieldIndex(key: BaseNode, value: BaseNode, access?: string | null): BaseNode;
