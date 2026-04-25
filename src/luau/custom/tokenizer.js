@@ -1,1 +1,1 @@
-module.exports = require("./tokenizer-impl");
+module.exports = require("./tokenizer.ts");
