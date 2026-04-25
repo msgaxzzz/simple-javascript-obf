@@ -1,4 +1,5 @@
 const assert = require("assert");
+const custom = require("../src/luau/custom");
 const { parse } = require("../src/luau/custom/parser");
 const { printChunk } = require("../src/luau/custom/printer");
 
@@ -18,6 +19,16 @@ function shouldThrow(name, fn) {
     threw = true;
   }
   assert.ok(threw, `${name}: expected error`);
+}
+
+{
+  const source = "local x = 1\nreturn x";
+  const ast = custom.parseLuau(source);
+  const printed = custom.generateLuau(ast);
+
+  assert.ok(typeof printed === "string", "public printer API should return a string by default");
+  assert.ok(printed.includes("local x = 1"), "public printer API should round-trip local statements");
+  assert.ok(printed.includes("return x"), "public printer API should round-trip return statements");
 }
 
 roundTrip(
