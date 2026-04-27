@@ -9,3 +9,12 @@ Deobf
 .env
 .env.*
 !.env.example
+
+# Temporary cache directories
+.deploy_tmp*/
+dist/
+
+# Test/build outputs
+*.lua
+*.tar.gz
+Protected_*.lua.txt
