@@ -1,5 +1,5 @@
 const { walk } = require("./ast");
-const { collectSSAReadNamesFromRoot } = require("./ssa-utils");
+const { getCachedSSAReadNamesFromRoot } = require("./ssa-utils");
 
 const LUA_KEYWORDS = new Set([
   "and",
@@ -32,6 +32,7 @@ const LUA_KEYWORDS = new Set([
 ]);
 const LUA_RESERVED_GLOBALS = new Set(["_ENV", "_G"]);
 const LUA_METAMETHOD_PREFIX = "__";
+const SAFE_FUNCTION_EXPR_PARAM_NAME = /^(deps|state|node|runtime|self|engine|ctx|context)$/i;
 const EXTERNAL_SCHEMA_PARAM_NAME = /^(payload|input|params|options|config)$/i;
 const EXTERNAL_SCHEMA_LOCAL_NAME = /^(payload|input|summary|report)$/i;
 const BUILTIN_LIBS = new Set([
@@ -252,6 +253,9 @@ function isDynamicKeyMapAccess(expr, scope, ctx) {
   if (!expr || typeof expr !== "object") {
     return false;
   }
+  if (expr.type === "Identifier" && resolveDynamicMapRecordAlias(scope, expr.name)) {
+    return true;
+  }
   const exprPath = getMemberPath(expr);
   if (exprPath && ctx.dynamicIndexBaseNames && ctx.dynamicIndexBaseNames.has(exprPath)) {
     return true;
@@ -358,6 +362,151 @@ function getMemberPath(expr) {
     return `${base}.${expr.identifier.name}`;
   }
   return null;
+}
+
+function markExternalShapePath(scope, expr) {
+  if (!scope || !expr) {
+    return;
+  }
+  const path = getMemberPath(expr);
+  if (!path) {
+    return;
+  }
+  if (!scope.externalShapePaths) {
+    scope.externalShapePaths = new Set();
+  }
+  const parts = path.split(".");
+  for (let i = 1; i <= parts.length; i += 1) {
+    scope.externalShapePaths.add(parts.slice(0, i).join("."));
+  }
+}
+
+function markExternalShapeBinding(scope, originalName, mappedName) {
+  const names = [originalName, mappedName];
+  const seen = new Set();
+  names.forEach((name) => {
+    if (typeof name !== "string" || !name || seen.has(name)) {
+      return;
+    }
+    seen.add(name);
+    markExternalShapePath(scope, { type: "Identifier", name });
+  });
+}
+
+function markExternalShapeMemberBinding(scope, originalName, mappedName, memberName) {
+  const names = [originalName, mappedName];
+  const seen = new Set();
+  names.forEach((name) => {
+    if (typeof name !== "string" || !name || seen.has(name)) {
+      return;
+    }
+    seen.add(name);
+    markExternalShapePath(scope, {
+      type: "MemberExpression",
+      base: { type: "Identifier", name },
+      identifier: { type: "Identifier", name: memberName },
+    });
+  });
+}
+
+function markDynamicMapRecordAlias(scope, originalName, mappedName, ctx = null) {
+  if (!scope) {
+    return;
+  }
+  if (!scope.dynamicMapRecordAliases) {
+    scope.dynamicMapRecordAliases = new Set();
+  }
+  [originalName, mappedName].forEach((name) => {
+    if (typeof name === "string" && name) {
+      scope.dynamicMapRecordAliases.add(name);
+    }
+  });
+  traceRename(ctx, {
+    kind: "mark-dynamic-map-record-alias",
+    originalName,
+    mappedName,
+  });
+}
+
+function resolveDynamicMapRecordAlias(scope, name) {
+  let current = scope;
+  while (current) {
+    if (current.dynamicMapRecordAliases && current.dynamicMapRecordAliases.has(name)) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+function resolveExternalShapePath(scope, expr) {
+  const path = getMemberPath(expr);
+  if (!path) {
+    return false;
+  }
+  let current = scope;
+  while (current) {
+    if (current.externalShapePaths && current.externalShapePaths.has(path)) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+function shouldPropagateExternalShapeFromValue(value, scope) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (resolveExternalShapePath(scope, value)) {
+    return true;
+  }
+  if (value.type === "GroupExpression") {
+    return shouldPropagateExternalShapeFromValue(value.expression, scope);
+  }
+  if (
+    (value.type === "CallExpression" || value.type === "MethodCallExpression") &&
+    Array.isArray(value.arguments) &&
+    value.arguments.length > 0
+  ) {
+    return resolveExternalShapePath(scope, value.arguments[0]);
+  }
+  return false;
+}
+
+function isExternalShapeValueSource(value, scope) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (resolveExternalShapePath(scope, value)) {
+    return true;
+  }
+  if (value.type === "GroupExpression") {
+    return isExternalShapeValueSource(value.expression, scope);
+  }
+  if (value.type === "MemberExpression" || value.type === "IndexExpression") {
+    return Boolean(value.base && resolveExternalShapePath(scope, value.base));
+  }
+  return false;
+}
+
+function isDynamicMapFunctionCall(expr, ctx) {
+  if (!expr || typeof expr !== "object" || !ctx || !ctx.dynamicMapFunctionNames) {
+    return false;
+  }
+  if (expr.type === "CallExpression") {
+    if (expr.base && expr.base.type === "MemberExpression" && expr.base.identifier && expr.base.identifier.type === "Identifier") {
+      return ctx.dynamicMapFunctionNames.has(expr.base.identifier.name);
+    }
+    if (expr.base && expr.base.type === "Identifier") {
+      return ctx.dynamicMapFunctionNames.has(expr.base.name);
+    }
+    return false;
+  }
+  if (expr.type === "MethodCallExpression") {
+    return Boolean(expr.method && expr.method.type === "Identifier" && ctx.dynamicMapFunctionNames.has(expr.method.name));
+  }
+  return false;
 }
 
 function registerConstructorMember(ctx, ownerNames, memberNames) {
@@ -644,7 +793,7 @@ function collectDynamicIndexMemberNames(ast) {
   return names;
 }
 
-function functionReturnsDynamicKeyMap(stmt) {
+function functionReturnsDynamicKeyMap(stmt, inheritedLocalMapVars = null) {
   if (!stmt || !stmt.body) {
     return false;
   }
@@ -653,7 +802,7 @@ function functionReturnsDynamicKeyMap(stmt) {
     return false;
   }
 
-  const localMapVars = new Set();
+  const localMapVars = inheritedLocalMapVars ? new Set(inheritedLocalMapVars) : new Set();
   for (const entry of body) {
     if (!entry || typeof entry !== "object") {
       continue;
@@ -687,9 +836,23 @@ function functionReturnsDynamicKeyMap(stmt) {
       }
       continue;
     }
-    if (entry.type === "ForGenericStatement" || entry.type === "ForNumericStatement" || entry.type === "WhileStatement" || entry.type === "RepeatStatement" || entry.type === "IfStatement" || entry.type === "DoStatement") {
+    if (entry.type === "IfStatement") {
+      const clauses = Array.isArray(entry.clauses) ? entry.clauses : [];
+      for (const clause of clauses) {
+        const nestedBody = clause && clause.body && clause.body.body ? clause.body.body : clause && clause.body;
+        if (functionReturnsDynamicKeyMap({ body: nestedBody }, localMapVars)) {
+          return true;
+        }
+      }
+      const elseBody = entry.elseBody && entry.elseBody.body ? entry.elseBody.body : entry.elseBody;
+      if (functionReturnsDynamicKeyMap({ body: elseBody }, localMapVars)) {
+        return true;
+      }
+      continue;
+    }
+    if (entry.type === "ForGenericStatement" || entry.type === "ForNumericStatement" || entry.type === "WhileStatement" || entry.type === "RepeatStatement" || entry.type === "DoStatement") {
       const nestedBody = entry.body && entry.body.body ? entry.body.body : entry.body;
-      if (functionReturnsDynamicKeyMap({ body: nestedBody })) {
+      if (functionReturnsDynamicKeyMap({ body: nestedBody }, localMapVars)) {
         return true;
       }
     }
@@ -814,8 +977,6 @@ function collectSafeFunctionParameterHints(ast) {
   const dynamicIndexRecordMemberNames = collectDynamicIndexRecordMemberNames(ast);
   const dynamicIndexMemberNames = collectDynamicIndexMemberNames(ast);
   const SAFE_CALLBACK_PARAM_NAME = /^(handler|callback|cb|fn|thunk|resolver)$/i;
-  const SAFE_FUNCTION_EXPR_PARAM_NAME = /^(runtime|self|engine|ctx|context)$/i;
-
   function visitDeep(value, visitor) {
     if (!value || typeof value !== "object") {
       return;
@@ -1077,23 +1238,43 @@ function collectSafeFunctionParameterHints(ast) {
       let fnName = null;
       if (node.type === "CallExpression" && node.base && node.base.type === "Identifier") {
         fnName = node.base.name;
+      } else if (
+        node.type === "CallExpression" &&
+        node.base &&
+        node.base.type === "MemberExpression" &&
+        node.base.identifier &&
+        node.base.identifier.type === "Identifier"
+      ) {
+        fnName = node.base.identifier.name;
       } else if (node.type === "MethodCallExpression" && node.method && node.method.type === "Identifier") {
         fnName = node.method.name;
       } else {
         return;
       }
-      const params = functionParams.get(fnName);
-      if (!params || !params.length) {
-        return;
-      }
+      const params = functionParams.get(fnName) || [];
       const args = node.arguments;
       args.forEach((arg, index) => {
-        if (index >= params.length) {
-          return;
-        }
-        const paramName = params[index];
         const safeArg = isSafeArgumentExpr(arg);
-        if (safeArg) {
+        const paramName = index < params.length ? params[index] : null;
+        const isLocalSortComparator = Boolean(
+          arg &&
+          (arg.type === "FunctionExpression" || arg.type === "FunctionDeclaration") &&
+          node &&
+          node.type === "CallExpression" &&
+          node.base &&
+          node.base.type === "MemberExpression" &&
+          node.base.base &&
+          node.base.base.type === "Identifier" &&
+          node.base.base.name === "table" &&
+          node.base.identifier &&
+          node.base.identifier.type === "Identifier" &&
+          node.base.identifier.name === "sort" &&
+          Array.isArray(node.arguments) &&
+          node.arguments[1] === arg &&
+          node.arguments.length >= 2 &&
+          (isSafeArgumentExpr(node.arguments[0]) || isSafeLocalTableExpr(node.arguments[0]))
+        );
+        if (safeArg && index < params.length) {
           let safeIndexes = hints.get(fnName);
           if (!safeIndexes) {
             safeIndexes = new Set();
@@ -1107,23 +1288,52 @@ function collectSafeFunctionParameterHints(ast) {
           typeof arg === "object" &&
           (
             safeArg ||
-            (typeof paramName === "string" && SAFE_CALLBACK_PARAM_NAME.test(paramName))
+            isLocalSortComparator ||
+            (typeof paramName === "string" && SAFE_CALLBACK_PARAM_NAME.test(paramName)) ||
+            (
+              node.type === "MethodCallExpression" &&
+              node.method &&
+              node.method.type === "Identifier" &&
+              node.method.name === "register"
+            ) ||
+            (
+              node.type === "CallExpression" &&
+              node.base &&
+              node.base.type === "MemberExpression" &&
+              node.base.identifier &&
+              node.base.identifier.type === "Identifier" &&
+              node.base.identifier.name === "register"
+            )
           )
         ) {
-          if (!arg.__obf_safe_param_indexes) {
-            arg.__obf_safe_param_indexes = new Set();
-          }
-          if (safeArg && Array.isArray(arg.parameters)) {
-            for (let paramIndex = 0; paramIndex < arg.parameters.length; paramIndex += 1) {
-              arg.__obf_safe_param_indexes.add(paramIndex);
+          const callbackSafeIndexes = getSafeCallbackParamIndexesForArgument(node, arg, safeArg, {
+            isLocalSortComparator,
+          });
+          if (callbackSafeIndexes && callbackSafeIndexes.size) {
+            if (!arg.__obf_safe_param_indexes) {
+              arg.__obf_safe_param_indexes = new Set();
             }
-          } else if (Array.isArray(arg.parameters)) {
-            arg.parameters.forEach((param, paramIndex) => {
-              const nestedName = getIdentifierName(param);
-              if (nestedName && SAFE_FUNCTION_EXPR_PARAM_NAME.test(nestedName)) {
-                arg.__obf_safe_param_indexes.add(paramIndex);
-              }
+            callbackSafeIndexes.forEach((safeIndex) => {
+              arg.__obf_safe_param_indexes.add(safeIndex);
             });
+          }
+          if (
+            (
+              node.type === "MethodCallExpression" &&
+              node.method &&
+              node.method.type === "Identifier" &&
+              node.method.name === "register"
+            ) ||
+            (
+              node.type === "CallExpression" &&
+              node.base &&
+              node.base.type === "MemberExpression" &&
+              node.base.identifier &&
+              node.base.identifier.type === "Identifier" &&
+              node.base.identifier.name === "register"
+            )
+          ) {
+            arg.__obf_rename_return_table_fields = true;
           }
         }
       });
@@ -1237,6 +1447,9 @@ function renameMemberName(node, ctx) {
   if (ctx.dynamicIndexRecordBaseMemberNames && ctx.dynamicIndexRecordBaseMemberNames.has(name)) {
     ctx.dynamicIndexRecordBaseMemberNames.add(mapped);
   }
+  if (ctx.dynamicMapFunctionNames && ctx.dynamicMapFunctionNames.has(name)) {
+    ctx.dynamicMapFunctionNames.add(mapped);
+  }
   node.name = mapped;
 }
 
@@ -1253,6 +1466,9 @@ function isDefinitelyLocalTable(expr, scope, ctx) {
     case "GroupExpression":
       return isDefinitelyLocalTable(expr.expression, scope, ctx);
     case "Identifier":
+      if (resolveDynamicMapRecordAlias(scope, expr.name)) {
+        return true;
+      }
       return resolveMemberSafety(scope, expr.name);
     case "CallExpression":
       if (
@@ -1290,6 +1506,14 @@ function isDefinitelyLocalTable(expr, scope, ctx) {
 function isDynamicMapRecordAccess(expr, scope, ctx) {
   if (!expr || typeof expr !== "object" || !ctx || !ctx.dynamicIndexRecordBaseNames) {
     return false;
+  }
+  if (
+    expr.type === "MemberExpression" &&
+    expr.base &&
+    expr.base.type === "Identifier" &&
+    resolveDynamicMapRecordAlias(scope, expr.base.name)
+  ) {
+    return true;
   }
   if (
     expr.type === "MemberExpression" &&
@@ -1377,6 +1601,15 @@ function updateMemberSafetyFromAssignment(variable, value, scope, ctx) {
 }
 
 function shouldSkipMemberRename(base, scope, ctx) {
+  if (resolveExternalShapePath(scope, base)) {
+    traceRename(ctx, {
+      kind: "skip-member-rename",
+      reason: "external-shape-path",
+      baseType: base && base.type ? base.type : null,
+      basePath: getMemberPath(base),
+    });
+    return true;
+  }
   if (isBuiltinLibBase(base, scope, ctx)) {
     traceRename(ctx, {
       kind: "skip-member-rename",
@@ -1387,11 +1620,22 @@ function shouldSkipMemberRename(base, scope, ctx) {
     return true;
   }
   if (isDynamicKeyMapAccess(base, scope, ctx) && !isDynamicMapRecordAccess(base, scope, ctx)) {
+    const basePath = getMemberPath(base);
+    if (
+      base &&
+      base.type === "MemberExpression" &&
+      basePath &&
+      base.base &&
+      base.base.type === "Identifier" &&
+      resolveDynamicMapRecordAlias(scope, base.base.name)
+    ) {
+      return false;
+    }
     traceRename(ctx, {
       kind: "skip-member-rename",
       reason: "dynamic-key-map-access",
       baseType: base && base.type ? base.type : null,
-      basePath: getMemberPath(base),
+      basePath,
     });
     return true;
   }
@@ -1431,7 +1675,7 @@ function renameExpression(expr, scope, ctx, allowTableFieldRename = false) {
       renameExpression(expr.index, scope, ctx);
       return;
     case "MemberExpression":
-      const skipMemberRename = shouldSkipMemberRename(expr.base, scope, ctx);
+      const skipMemberRename = shouldSkipMemberRename(expr.base, scope, ctx) || resolveExternalShapePath(scope, expr);
       renameExpression(expr.base, scope, ctx);
       if (!skipMemberRename) {
         renameMemberName(expr.identifier, ctx);
@@ -1439,7 +1683,10 @@ function renameExpression(expr, scope, ctx, allowTableFieldRename = false) {
       return;
     case "CallExpression":
       renameExpression(expr.base, scope, ctx);
-      expr.arguments.forEach((arg) => renameExpression(arg, scope, ctx));
+      expr.arguments.forEach((arg) => {
+        const allowTableFieldRename = shouldRenameCallArgumentFields(expr, arg, scope, ctx);
+        renameExpression(arg, scope, ctx, allowTableFieldRename);
+      });
       return;
     case "MethodCallExpression":
       const skipMethodRename = shouldSkipMemberRename(expr.base, scope, ctx);
@@ -1447,7 +1694,10 @@ function renameExpression(expr, scope, ctx, allowTableFieldRename = false) {
       if (!skipMethodRename) {
         renameMemberName(expr.method, ctx);
       }
-      expr.arguments.forEach((arg) => renameExpression(arg, scope, ctx));
+      expr.arguments.forEach((arg) => {
+        const allowTableFieldRename = shouldRenameCallArgumentFields(expr, arg, scope, ctx);
+        renameExpression(arg, scope, ctx, allowTableFieldRename);
+      });
       return;
     case "TableCallExpression":
       renameExpression(expr.base, scope, ctx);
@@ -1574,6 +1824,158 @@ function shouldRenameAssignedValueFieldsForTarget(target, value, scope, ctx) {
   return false;
 }
 
+function shouldRenameReturnedTableFields(scope) {
+  let current = scope;
+  while (current) {
+    if (current.shouldRenameReturnTableFields) {
+      return true;
+    }
+    current = current.parent;
+  }
+  return false;
+}
+
+function shouldRenameCallArgumentFields(callExpr, arg, scope, ctx) {
+  if (!callExpr || !arg || arg.type !== "TableConstructorExpression") {
+    return false;
+  }
+  if (callExpr.type === "CallExpression") {
+    const base = callExpr.base;
+    const args = Array.isArray(callExpr.arguments) ? callExpr.arguments : [];
+    return Boolean(
+      base &&
+      base.type === "MemberExpression" &&
+      base.base &&
+      base.base.type === "Identifier" &&
+      base.base.name === "table" &&
+      base.identifier &&
+      base.identifier.type === "Identifier" &&
+      base.identifier.name === "insert" &&
+      args.length >= 2 &&
+      arg === args[1] &&
+      isDefinitelyLocalTable(args[0], scope, ctx)
+    );
+  }
+  if (callExpr.type === "MethodCallExpression") {
+    const args = Array.isArray(callExpr.arguments) ? callExpr.arguments : [];
+    return Boolean(
+      callExpr.method &&
+      callExpr.method.type === "Identifier" &&
+      callExpr.method.name === "insert" &&
+      args.length >= 1 &&
+      arg === args[0] &&
+      isDefinitelyLocalTable(callExpr.base, scope, ctx)
+    );
+  }
+  return false;
+}
+
+function getSafeCallbackParamIndexesForArgument(callExpr, arg, safeArg, options = {}) {
+  if (!arg || (arg.type !== "FunctionExpression" && arg.type !== "FunctionDeclaration")) {
+    return null;
+  }
+  if (safeArg && Array.isArray(arg.parameters)) {
+    const safeIndexes = new Set();
+    for (let paramIndex = 0; paramIndex < arg.parameters.length; paramIndex += 1) {
+      safeIndexes.add(paramIndex);
+    }
+    return safeIndexes;
+  }
+
+  const safeIndexes = new Set();
+  if (Array.isArray(arg.parameters)) {
+    arg.parameters.forEach((param, paramIndex) => {
+      const nestedName = getIdentifierName(param);
+      if (nestedName && SAFE_FUNCTION_EXPR_PARAM_NAME.test(nestedName)) {
+        safeIndexes.add(paramIndex);
+      }
+    });
+  }
+
+  const isRegisterMethodCallback = Boolean(
+    callExpr &&
+    callExpr.type === "MethodCallExpression" &&
+    callExpr.method &&
+    callExpr.method.type === "Identifier" &&
+    callExpr.method.name === "register" &&
+    Array.isArray(callExpr.arguments) &&
+    callExpr.arguments[1] === arg
+  );
+  const isRegisterCallCallback = Boolean(
+    callExpr &&
+    callExpr.type === "CallExpression" &&
+    callExpr.base &&
+    callExpr.base.type === "MemberExpression" &&
+    callExpr.base.identifier &&
+    callExpr.base.identifier.type === "Identifier" &&
+    callExpr.base.identifier.name === "register" &&
+    Array.isArray(callExpr.arguments) &&
+    callExpr.arguments[2] === arg
+  );
+  if (isRegisterMethodCallback || isRegisterCallCallback) {
+    [0, 2, 3].forEach((index) => {
+      if (Array.isArray(arg.parameters) && index < arg.parameters.length) {
+        safeIndexes.add(index);
+      }
+    });
+    safeIndexes.delete(1);
+  }
+
+  if (options.isLocalSortComparator && Array.isArray(arg.parameters)) {
+    for (let paramIndex = 0; paramIndex < arg.parameters.length; paramIndex += 1) {
+      safeIndexes.add(paramIndex);
+    }
+  }
+
+  return safeIndexes.size ? safeIndexes : null;
+}
+
+function getSafeForGenericValueIndexes(stmt, scope, ctx) {
+  const safeIndexes = new Set();
+  const iterators = Array.isArray(stmt && stmt.iterators) ? stmt.iterators : [];
+  if (iterators.length !== 1) {
+    return safeIndexes;
+  }
+  const iterator = iterators[0];
+  if (!iterator || iterator.type !== "CallExpression" || !iterator.base || !Array.isArray(iterator.arguments)) {
+    return safeIndexes;
+  }
+  if (iterator.base.type !== "Identifier" || (iterator.base.name !== "ipairs" && iterator.base.name !== "pairs")) {
+    return safeIndexes;
+  }
+  if (iterator.arguments.length < 1 || !isDefinitelyLocalTable(iterator.arguments[0], scope, ctx)) {
+    return safeIndexes;
+  }
+  const variables = Array.isArray(stmt && stmt.variables) ? stmt.variables : [];
+  if (variables.length >= 2) {
+    safeIndexes.add(1);
+  }
+  return safeIndexes;
+}
+
+function getExternalShapeForGenericValueIndexes(stmt, scope) {
+  const safeIndexes = new Set();
+  const iterators = Array.isArray(stmt && stmt.iterators) ? stmt.iterators : [];
+  if (iterators.length !== 1) {
+    return safeIndexes;
+  }
+  const iterator = iterators[0];
+  if (!iterator || iterator.type !== "CallExpression" || !iterator.base || !Array.isArray(iterator.arguments)) {
+    return safeIndexes;
+  }
+  if (iterator.base.type !== "Identifier" || (iterator.base.name !== "ipairs" && iterator.base.name !== "pairs")) {
+    return safeIndexes;
+  }
+  if (iterator.arguments.length < 1 || !isExternalShapeValueSource(iterator.arguments[0], scope)) {
+    return safeIndexes;
+  }
+  const variables = Array.isArray(stmt && stmt.variables) ? stmt.variables : [];
+  if (variables.length >= 2) {
+    safeIndexes.add(1);
+  }
+  return safeIndexes;
+}
+
 function isDynamicMapAliasInitializer(expr, scope, ctx) {
   return isDynamicKeyMapAccess(expr, scope, ctx) && !isDynamicMapRecordAccess(expr, scope, ctx);
 }
@@ -1594,6 +1996,7 @@ function renameStatement(stmt, scope, ctx) {
         stmt.init.forEach((expr, index) => {
           const variable = Array.isArray(stmt.variables) ? stmt.variables[index] : null;
           const allowTableFieldRename =
+            (expr && expr.type === "TableConstructorExpression" && shouldRenameReturnedTableFields(scope)) ||
             shouldRenameLocalTableInitializer(variable, expr, scope, ctx) ||
             shouldRenameTableFieldsForTarget(variable, scope, ctx);
           renameExpression(expr, scope, ctx, allowTableFieldRename);
@@ -1611,6 +2014,12 @@ function renameStatement(stmt, scope, ctx) {
         const newName = defineName(scope, originalName, ctx);
         markLocalMemberSafety(scope, originalName, newName, safe);
         variable.name = newName;
+        if (isDynamicMapFunctionCall(initExpr, ctx)) {
+          markDynamicMapRecordAlias(scope, originalName, newName, ctx);
+        }
+        if (shouldPropagateExternalShapeFromValue(initExpr, scope)) {
+          markExternalShapeBinding(scope, originalName, newName);
+        }
       });
       return;
     }
@@ -1618,6 +2027,9 @@ function renameStatement(stmt, scope, ctx) {
       stmt.variables.forEach((variable, index) => {
         const value = Array.isArray(stmt.init) ? stmt.init[index] : null;
         updateMemberSafetyFromAssignment(variable, value, scope, ctx);
+        if (shouldPropagateExternalShapeFromValue(value, scope)) {
+          markExternalShapePath(scope, variable);
+        }
       });
       stmt.variables.forEach((variable) => renameExpression(variable, scope, ctx));
       stmt.init.forEach((expr, index) => {
@@ -1634,7 +2046,11 @@ function renameStatement(stmt, scope, ctx) {
       renameExpression(stmt.expression, scope, ctx);
       return;
     case "ReturnStatement":
-      stmt.arguments.forEach((expr) => renameExpression(expr, scope, ctx));
+      stmt.arguments.forEach((expr) => {
+        const allowTableFieldRename =
+          expr && expr.type === "TableConstructorExpression" && shouldRenameReturnedTableFields(scope);
+        renameExpression(expr, scope, ctx, allowTableFieldRename);
+      });
       return;
     case "FunctionDeclaration":
       renameFunctionDeclaration(stmt, scope, ctx);
@@ -1676,14 +2092,19 @@ function renameStatement(stmt, scope, ctx) {
     case "ForGenericStatement": {
       stmt.iterators.forEach((expr) => renameExpression(expr, scope, ctx));
       const loopScope = createScope(scope);
-      stmt.variables.forEach((variable) => {
+      const safeIndexes = getSafeForGenericValueIndexes(stmt, scope, ctx);
+      const externalShapeIndexes = getExternalShapeForGenericValueIndexes(stmt, scope);
+      stmt.variables.forEach((variable, index) => {
         if (!variable || variable.type !== "Identifier") {
           return;
         }
         const originalName = variable.name;
         const newName = defineName(loopScope, originalName, ctx);
-        markLocalMemberSafety(loopScope, originalName, newName, false);
+        markLocalMemberSafety(loopScope, originalName, newName, safeIndexes.has(index));
         variable.name = newName;
+        if (externalShapeIndexes.has(index)) {
+          markExternalShapeBinding(loopScope, originalName, newName);
+        }
       });
       renameScopedBody(stmt.body, loopScope, ctx);
       return;
@@ -1783,24 +2204,31 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
   }
 
   const fnScope = createScope(scope);
-    if (fnMember && fnMember.type === "FunctionName" && fnMember.method) {
-      const skipImplicitSelfMemberRename = shouldSkipMemberRename(fnMember.base, scope, ctx);
-      if (!skipImplicitSelfMemberRename) {
-        markLocalMemberSafety(fnScope, "self", "self", true);
-      }
+  if (fnMember && fnMember.type === "FunctionName" && fnMember.method) {
+    fnScope.bindings.set("self", "self");
+    const skipImplicitSelfMemberRename = shouldSkipMemberRename(fnMember.base, scope, ctx);
+    if (!skipImplicitSelfMemberRename) {
+      markLocalMemberSafety(fnScope, "self", "self", true);
     }
+  }
   if (stmt.parameters && stmt.parameters.length) {
     const safeParameterIndexes =
       fnOriginalName && ctx.safeFunctionParameterHints
         ? ctx.safeFunctionParameterHints.get(fnOriginalName) || null
         : null;
-    stmt.parameters.forEach((param) => {
+    stmt.parameters.forEach((param, index) => {
       if (param && param.type === "Identifier") {
         const originalName = param.name;
         const newName = defineName(fnScope, originalName, ctx);
         const safe = Boolean(safeParameterIndexes && safeParameterIndexes.has(Array.isArray(stmt.parameters) ? stmt.parameters.indexOf(param) : -1));
         markLocalMemberSafety(fnScope, originalName, newName, safe);
         param.name = newName;
+        if (EXTERNAL_SCHEMA_PARAM_NAME.test(originalName) && !safe) {
+          markExternalShapeBinding(fnScope, originalName, newName);
+        }
+        if (fnOriginalName === "register" && index === 0 && originalName === "deps") {
+          markExternalShapeMemberBinding(fnScope, originalName, newName, "input");
+        }
       }
     });
   }
@@ -1815,6 +2243,14 @@ function renameFunctionDeclaration(stmt, scope, ctx) {
 
 function renameFunctionExpression(expr, scope, ctx) {
   const fnScope = createScope(scope);
+  if (expr.__obf_rename_return_table_fields) {
+    fnScope.shouldRenameReturnTableFields = true;
+  }
+  const isRegisterStyleCallback = Boolean(
+    expr.__obf_safe_param_indexes &&
+    expr.__obf_safe_param_indexes instanceof Set &&
+    (expr.__obf_safe_param_indexes.has(0) || expr.__obf_safe_param_indexes.has(2) || expr.__obf_safe_param_indexes.has(3))
+  );
   if (expr.parameters && expr.parameters.length) {
     const safeParameterIndexes = expr.__obf_safe_param_indexes || null;
     expr.parameters.forEach((param, index) => {
@@ -1824,6 +2260,12 @@ function renameFunctionExpression(expr, scope, ctx) {
         const safe = Boolean(safeParameterIndexes && safeParameterIndexes.has(index));
         markLocalMemberSafety(fnScope, originalName, newName, safe);
         param.name = newName;
+        if (EXTERNAL_SCHEMA_PARAM_NAME.test(originalName) && !safe) {
+          markExternalShapeBinding(fnScope, originalName, newName);
+        }
+        if (isRegisterStyleCallback && index === 0 && originalName === "deps") {
+          markExternalShapeMemberBinding(fnScope, originalName, newName, "input");
+        }
       }
     });
   }
@@ -1872,7 +2314,7 @@ function renameLuau(ast, ctx) {
   const used = collectIdentifiers(ast);
   const readNames =
     ctx && typeof ctx.getSSA === "function"
-      ? collectSSAReadNamesFromRoot(ctx.getSSA())
+      ? getCachedSSAReadNamesFromRoot(ctx.getSSA())
       : null;
   const useHomoglyphs = Boolean(ctx.options.renameOptions?.homoglyphs);
   const alphabets = useHomoglyphs
@@ -1895,8 +2337,7 @@ function renameLuau(ast, ctx) {
   const dynamicIndexMemberNames = ctx.dynamicIndexMemberNames || collectDynamicIndexMemberNames(ast);
   const externalSchemaLocalNames = ctx.externalSchemaLocalNames || collectExternalSchemaLocalNames(ast);
   const dynamicMapFunctionNames = new Set();
-  const rootBody = ast && Array.isArray(ast.body) ? ast.body : [];
-  rootBody.forEach((stmt) => {
+  walk(ast, (stmt) => {
     if (!stmt || stmt.type !== "FunctionDeclaration") {
       return;
     }

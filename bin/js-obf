@@ -68,6 +68,8 @@ Options:
   --no-cff-opaque            Disable opaque predicates
   --no-dead                  Disable dead code injection
   --vm                       Enable VM virtualization (see README limits)
+  --vm-mode <compact|balanced|max>  Luau VM behavior profile (default: compact when VM is enabled)
+  --vm-opcode-encoding <mask|pairs>  Luau VM opcode table encoding style (default: mask)
   --vm-layers <n>            VM layers (Luau, default 1)
   --vm-top-level             Virtualize Luau top-level chunk
   --no-vm-top-level          Do not virtualize Luau top-level chunk (default)
@@ -207,6 +209,16 @@ function parseArgs(argv) {
     }
     if (arg === "--vm") {
       options.vm = true;
+      continue;
+    }
+    if (arg === "--vm-mode") {
+      options.vmMode = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg === "--vm-opcode-encoding") {
+      options.vmOpcodeEncoding = args[i + 1];
+      i += 1;
       continue;
     }
     if (arg === "--vm-layers") {
@@ -721,6 +733,8 @@ async function main() {
       : undefined,
     vm: {
       enabled: Boolean(options.vm),
+      mode: options.vmMode,
+      opcodeEncoding: options.vmOpcodeEncoding,
       include: options.vmInclude,
       layers: options.vmLayers,
       topLevel: options.vmTopLevel,

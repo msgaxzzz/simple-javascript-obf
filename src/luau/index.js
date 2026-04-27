@@ -48,7 +48,7 @@ const WATERMARK_URL = "https://github.com/msgaxzzz/simple-javascript-obf";
 const LUAU_WATERMARK = `-- This file was protected using simple-javascript-obfuscator v${PACKAGE_VERSION} [${WATERMARK_URL}]`;
 const MAX_LUAU_OUTPUT_BYTES = 5 * 1024 * 1024;
 const PACKED_PAYLOAD_RADIX = 85;
-const PACKED_PAYLOAD_ASCII_OFFSET = 33;
+const PACKED_PAYLOAD_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#";
 
 function isWordChar(ch) {
   return !!ch && /[A-Za-z0-9_]/.test(ch);
@@ -345,7 +345,7 @@ function buildPackedPayloadEncoding(source) {
     let value = (((a * 256) + b) * 256 + c) * 256 + d;
     const block = new Array(5);
     for (let cursor = 4; cursor >= 0; cursor -= 1) {
-      block[cursor] = String.fromCharCode((value % PACKED_PAYLOAD_RADIX) + PACKED_PAYLOAD_ASCII_OFFSET);
+      block[cursor] = PACKED_PAYLOAD_ALPHABET.charAt(value % PACKED_PAYLOAD_RADIX);
       value = Math.floor(value / PACKED_PAYLOAD_RADIX);
     }
     payload += block.join("");
@@ -405,6 +405,7 @@ function buildPackedLuauShell(code, rng) {
   const stateVar = makePackedIdentifier(rng);
   const joinVar = makePackedIdentifier(rng);
   const concatKeyVar = makePackedIdentifier(rng);
+  const alphabetVar = makePackedIdentifier(rng);
   const loadAKeyVar = makePackedIdentifier(rng);
   const loadBKeyVar = makePackedIdentifier(rng);
   const loadAHeadVar = makePackedIdentifier(rng);
@@ -427,8 +428,9 @@ function buildPackedLuauShell(code, rng) {
       lines.push(`local function ${pushVar}(${blockVar})${partsVar}[#${partsVar}+1]=${blockVar};end;`);
     }
     if (index === 2) {
+      lines.push(`local ${alphabetVar}=${makeLongBracketLiteral(PACKED_PAYLOAD_ALPHABET)};`);
       lines.push(`local function ${decodeVar}(${blockVar})`);
-      lines.push(`local ${valueVar}=((((string.byte(${blockVar},1)-${PACKED_PAYLOAD_ASCII_OFFSET})*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},2)-${PACKED_PAYLOAD_ASCII_OFFSET}))*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},3)-${PACKED_PAYLOAD_ASCII_OFFSET}))*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},4)-${PACKED_PAYLOAD_ASCII_OFFSET}))*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},5)-${PACKED_PAYLOAD_ASCII_OFFSET});`);
+      lines.push(`local ${valueVar}=((((string.find(${alphabetVar},string.sub(${blockVar},1,1),1,true)-1)*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},2,2),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},3,3),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},4,4),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},5,5),1,true)-1);`);
       lines.push(`local ${byte0Var}=math.floor(${valueVar}/16777216)%256;`);
       lines.push(`local ${byte1Var}=math.floor(${valueVar}/65536)%256;`);
       lines.push(`local ${byte2Var}=math.floor(${valueVar}/256)%256;`);
@@ -453,8 +455,9 @@ function buildPackedLuauShell(code, rng) {
   }
 
   if (fragments.length < 3) {
+    lines.push(`local ${alphabetVar}=${makeLongBracketLiteral(PACKED_PAYLOAD_ALPHABET)};`);
     lines.push(`local function ${decodeVar}(${blockVar})`);
-    lines.push(`local ${valueVar}=((((string.byte(${blockVar},1)-${PACKED_PAYLOAD_ASCII_OFFSET})*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},2)-${PACKED_PAYLOAD_ASCII_OFFSET}))*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},3)-${PACKED_PAYLOAD_ASCII_OFFSET}))*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},4)-${PACKED_PAYLOAD_ASCII_OFFSET}))*${PACKED_PAYLOAD_RADIX}+(string.byte(${blockVar},5)-${PACKED_PAYLOAD_ASCII_OFFSET});`);
+    lines.push(`local ${valueVar}=((((string.find(${alphabetVar},string.sub(${blockVar},1,1),1,true)-1)*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},2,2),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},3,3),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},4,4),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},5,5),1,true)-1);`);
     lines.push(`local ${byte0Var}=math.floor(${valueVar}/16777216)%256;`);
     lines.push(`local ${byte1Var}=math.floor(${valueVar}/65536)%256;`);
     lines.push(`local ${byte2Var}=math.floor(${valueVar}/256)%256;`);
@@ -674,6 +677,9 @@ async function obfuscateLuau(source, options) {
   const enqueueLuauPass = (name, fn) => {
     queuedLuauPasses.push({ name, fn });
   };
+  const vmEnabledSafe = Boolean(vmEnabled && !useVmCff);
+  const skipClassicConstArrayForVm = Boolean(vmEnabledSafe && options.constArray);
+  const skipClassicCffForVm = Boolean(vmEnabled && options.cff && !useVmCff);
 
   const makePassPluginCtx = (name, passHandle) => {
     const traceablePasses = new Set([
@@ -700,7 +706,7 @@ async function obfuscateLuau(source, options) {
     enqueueLuauPass("luau-wrap", () => wrapInFunction(ast, ctx));
   }
 
-  if (options.constArray) {
+  if (options.constArray && !skipClassicConstArrayForVm) {
     enqueueLuauPass("luau-const-array", () => constantArrayLuau(ast, ctx));
   }
 
@@ -712,7 +718,7 @@ async function obfuscateLuau(source, options) {
     enqueueLuauPass("luau-numbers", () => numbersToExpressions(ast, ctx));
   }
 
-  const runClassicCffBeforeVm = Boolean(options.cff && !useVmCff && vmEnabled);
+  const runClassicCffBeforeVm = Boolean(options.cff && !useVmCff && vmEnabled && !skipClassicCffForVm);
   if (runClassicCffBeforeVm) {
     enqueueLuauPass("luau-cff", () => controlFlowFlatten(ast, ctx));
   }
@@ -739,7 +745,7 @@ async function obfuscateLuau(source, options) {
         ...makePassPluginCtx("luau-vm-cff", passHandle),
         options: { ...options, vm: vmOptions },
       }));
-    } else if (!runClassicCffBeforeVm) {
+    } else if (!runClassicCffBeforeVm && !skipClassicCffForVm) {
       enqueueLuauPass("luau-cff", () => controlFlowFlatten(ast, ctx));
     }
   }

@@ -44,6 +44,10 @@ function normalizeCount(value, fallback, { min = 0, max = Number.MAX_SAFE_INTEGE
   return clamped;
 }
 
+function hasOwn(object, key) {
+  return Boolean(object) && Object.prototype.hasOwnProperty.call(object, key);
+}
+
 const PRESETS = {
   high: {
     rename: true,
@@ -247,12 +251,60 @@ function normalizeOptions(userOptions = {}) {
   const vmLayers = normalizeCount(vmOptions.layers, 1, { min: 1, max: 3 });
   const vmRuntimeKey = vmOptions.runtimeKey !== false;
   const vmRuntimeSplit = vmOptions.runtimeSplit !== false;
+  const vmMode = typeof vmOptions.mode === "string"
+    ? vmOptions.mode.toLowerCase()
+    : null;
+  const normalizedVmMode = vmMode === "compact" || vmMode === "balanced" || vmMode === "max"
+    ? vmMode
+    : (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled) ? "compact" : "max");
+  const vmOpcodeEncoding = typeof vmOptions.opcodeEncoding === "string"
+    ? vmOptions.opcodeEncoding.toLowerCase()
+    : "mask";
   const vmConstsEncoding = typeof vmOptions.constsEncoding === "string"
     ? vmOptions.constsEncoding.toLowerCase()
     : "table";
-  const vmConstsSplit = vmOptions.constsSplit !== false;
+  const vmCompactDefaults = {
+    fakeOpcodes: 0,
+    constsSplit: false,
+    decoyRuntime: false,
+    symbolNoise: false,
+    instructionFusion: false,
+    semanticMisdirection: false,
+    dynamicCoupling: false,
+    blockDispatch: false,
+  };
+  const vmBalancedDefaults = {
+    fakeOpcodes: 0,
+    constsSplit: false,
+    decoyRuntime: false,
+    symbolNoise: false,
+    instructionFusion: true,
+    semanticMisdirection: false,
+    dynamicCoupling: false,
+    blockDispatch: true,
+  };
+  const vmMaxDefaults = {
+    fakeOpcodes: 0.15,
+    constsSplit: true,
+    decoyRuntime: true,
+    symbolNoise: true,
+    instructionFusion: true,
+    semanticMisdirection: true,
+    dynamicCoupling: true,
+    blockDispatch: true,
+  };
+  const vmModeDefaults = normalizedVmMode === "compact"
+    ? vmCompactDefaults
+    : normalizedVmMode === "balanced"
+      ? vmBalancedDefaults
+      : vmMaxDefaults;
+  const vmConstsSplit = hasOwn(vmOptions, "constsSplit")
+    ? vmOptions.constsSplit !== false
+    : vmModeDefaults.constsSplit;
   const vmConstsSplitSize = normalizeCount(vmOptions.constsSplitSize, 24, { min: 4, max: 200 });
-  const vmBlockDispatch = vmOptions.blockDispatch ?? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled));
+  const vmBlockDispatch = hasOwn(vmOptions, "blockDispatch")
+    ? vmOptions.blockDispatch
+    : vmModeDefaults.blockDispatch;
   const vmDispatchGraph = typeof vmOptions.dispatchGraph === "string"
     ? vmOptions.dispatchGraph.toLowerCase()
     : null;
@@ -281,13 +333,13 @@ function normalizeOptions(userOptions = {}) {
   };
   let fakeOpcodes = vmOptions.fakeOpcodes;
   if (fakeOpcodes === undefined || fakeOpcodes === true) {
-    fakeOpcodes = 0.15;
+    fakeOpcodes = vmModeDefaults.fakeOpcodes;
   } else if (fakeOpcodes === false) {
     fakeOpcodes = 0;
   } else {
     fakeOpcodes = Number(fakeOpcodes);
     if (Number.isNaN(fakeOpcodes)) {
-      fakeOpcodes = 0.15;
+      fakeOpcodes = vmModeDefaults.fakeOpcodes;
     }
   }
   fakeOpcodes = Math.max(0, Math.min(1, fakeOpcodes));
@@ -316,6 +368,8 @@ function normalizeOptions(userOptions = {}) {
     topLevel: vmTopLevel,
     shellStyle: vmShellStyle,
     explicitScope: vmExplicitScope,
+    mode: normalizedVmMode,
+    opcodeEncoding: vmOpcodeEncoding === "pairs" ? "pairs" : "mask",
     opcodeShuffle: vmOptions.opcodeShuffle !== false,
     runtimeKey: vmRuntimeKey,
     runtimeSplit: vmRuntimeSplit,
@@ -331,18 +385,18 @@ function normalizeOptions(userOptions = {}) {
     isaPolymorph: vmIsaPolymorph === undefined ? false : vmIsaPolymorph,
     fakeEdges: vmFakeEdges === undefined ? false : Boolean(vmFakeEdges),
     numericStyle: vmNumericStyle || (lang === "luau" && Boolean(vmOptions.enabled) ? "mixed" : "plain"),
-    decoyRuntime: vmDecoyRuntime === undefined ? luauVmFeatureDefaults : Boolean(vmDecoyRuntime),
+    decoyRuntime: vmDecoyRuntime === undefined ? vmModeDefaults.decoyRuntime : Boolean(vmDecoyRuntime),
     decoyProbability: vmDecoyProbability,
     decoyStrings: vmDecoyStrings,
-    symbolNoise: vmSymbolNoise === undefined ? luauVmFeatureDefaults : Boolean(vmSymbolNoise),
+    symbolNoise: vmSymbolNoise === undefined ? vmModeDefaults.symbolNoise : Boolean(vmSymbolNoise),
     instructionFusion: vmInstructionFusion === undefined
-      ? (lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled))
+      ? vmModeDefaults.instructionFusion
       : Boolean(vmInstructionFusion),
     semanticMisdirection: vmSemanticMisdirection === undefined
-      ? luauVmFeatureDefaults
+      ? vmModeDefaults.semanticMisdirection
       : Boolean(vmSemanticMisdirection),
     dynamicCoupling: vmDynamicCoupling === undefined
-      ? luauVmFeatureDefaults
+      ? vmModeDefaults.dynamicCoupling
       : Boolean(vmDynamicCoupling),
     downlevel: Boolean(vmOptions.downlevel),
     debug: Boolean(vmOptions.debug),

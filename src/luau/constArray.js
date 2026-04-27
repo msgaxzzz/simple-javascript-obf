@@ -1,8 +1,7 @@
 const { walk, traverse } = require("./ast");
 const { decodeRawString } = require("./strings");
 const { collectIdentifierNames, makeNameFactory } = require("./names");
-const { addSSAReadNames, collectSSAReadNamesFromRoot, findSSAForNode } = require("./ssa-utils");
-const { addSSAUsedNamesFromRoot } = require("./ssa-utils");
+const { addSSAReadNames, findSSAForNode, getCachedSSAReadNamesFromRoot, getCachedSSAUsedNamesFromRoot } = require("./ssa-utils");
 
 function luaString(value) {
   const text = String(value);
@@ -41,6 +40,41 @@ function callExpression(name, index) {
 
 function isFunctionNode(node) {
   return node && (node.type === "FunctionDeclaration" || node.type === "FunctionExpression");
+}
+
+function getFunctionName(fnNode) {
+  if (!fnNode) {
+    return null;
+  }
+  if (fnNode.name && fnNode.name.type === "FunctionName") {
+    const parts = [fnNode.name.base.name, ...(fnNode.name.members || []).map((m) => m.name)];
+    if (fnNode.name.method) {
+      parts.push(fnNode.name.method.name);
+    }
+    return parts.join(".");
+  }
+  if (fnNode.identifier && fnNode.identifier.type === "Identifier") {
+    return fnNode.identifier.name;
+  }
+  return null;
+}
+
+function isVmTargetScope(node, options) {
+  if (!options || !options.vm || options.vm.enabled === false || !node) {
+    return false;
+  }
+  if (node.type === "Chunk") {
+    return options.vm.topLevel === true;
+  }
+  if (!isFunctionNode(node)) {
+    return false;
+  }
+  const include = Array.isArray(options.vm.include) ? options.vm.include : [];
+  if (options.vm.all || include.length === 0) {
+    return true;
+  }
+  const name = getFunctionName(node);
+  return Boolean(name && include.includes(name));
 }
 
 function getScopeBody(node) {
@@ -294,10 +328,10 @@ function constantArrayLuau(ast, ctx) {
 
   const used = collectIdentifierNames(ast, ctx);
   if (ctx && typeof ctx.getSSA === "function") {
-    addSSAUsedNamesFromRoot(ctx.getSSA(), used);
+    getCachedSSAUsedNamesFromRoot(ctx.getSSA()).forEach((name) => used.add(name));
   }
   const ssaRoot = ctx && typeof ctx.getSSA === "function" ? ctx.getSSA() : null;
-  const globalSSAReads = ssaRoot ? collectSSAReadNamesFromRoot(ssaRoot) : null;
+  const globalSSAReads = ssaRoot ? getCachedSSAReadNamesFromRoot(ssaRoot) : null;
   const scopeRoot = ctx && typeof ctx.getScope === "function" ? ctx.getScope() : null;
   const scopeMap = new Map();
   if (scopeRoot) {
@@ -308,6 +342,9 @@ function constantArrayLuau(ast, ctx) {
 
   scopes.forEach(({ node, body }) => {
     if (!body) {
+      return;
+    }
+    if (isVmTargetScope(node, ctx.options)) {
       return;
     }
     const entries = [];

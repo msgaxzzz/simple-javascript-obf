@@ -9,6 +9,9 @@ function baseName(value) {
   return value.slice(0, idx);
 }
 
+const ssaRootReadNamesCache = new WeakMap();
+const ssaRootUsedNamesCache = new WeakMap();
+
 function addName(target, name) {
   if (!target || !name) {
     return;
@@ -68,6 +71,20 @@ function addSSAUsedNamesFromRoot(ssaRoot, target) {
   return target;
 }
 
+function getCachedSSAUsedNamesFromRoot(ssaRoot) {
+  if (!ssaRoot || typeof ssaRoot !== "object") {
+    return new Set();
+  }
+  const cached = ssaRootUsedNamesCache.get(ssaRoot);
+  if (cached) {
+    return cached;
+  }
+  const out = new Set();
+  addSSAUsedNamesFromRoot(ssaRoot, out);
+  ssaRootUsedNamesCache.set(ssaRoot, out);
+  return out;
+}
+
 function addSSAReadNames(ssa, target) {
   if (!ssa || !target) {
     return target;
@@ -103,6 +120,19 @@ function collectSSAReadNamesFromRoot(ssaRoot) {
   return out;
 }
 
+function getCachedSSAReadNamesFromRoot(ssaRoot) {
+  if (!ssaRoot || typeof ssaRoot !== "object") {
+    return new Set();
+  }
+  const cached = ssaRootReadNamesCache.get(ssaRoot);
+  if (cached) {
+    return cached;
+  }
+  const out = collectSSAReadNamesFromRoot(ssaRoot);
+  ssaRootReadNamesCache.set(ssaRoot, out);
+  return out;
+}
+
 function findSSAForNode(ssaRoot, node) {
   if (!ssaRoot || !Array.isArray(ssaRoot.functions)) {
     return null;
@@ -118,7 +148,9 @@ function findSSAForNode(ssaRoot, node) {
 module.exports = {
   addSSAUsedNames,
   addSSAUsedNamesFromRoot,
+  getCachedSSAUsedNamesFromRoot,
   addSSAReadNames,
   collectSSAReadNamesFromRoot,
+  getCachedSSAReadNamesFromRoot,
   findSSAForNode,
 };

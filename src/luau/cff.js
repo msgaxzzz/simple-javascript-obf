@@ -46,6 +46,35 @@ function getFunctionStatements(node) {
   return null;
 }
 
+function getFunctionName(fnNode) {
+  if (!fnNode) {
+    return null;
+  }
+  if (fnNode.name && fnNode.name.type === "FunctionName") {
+    const parts = [fnNode.name.base.name, ...(fnNode.name.members || []).map((m) => m.name)];
+    if (fnNode.name.method) {
+      parts.push(fnNode.name.method.name);
+    }
+    return parts.join(".");
+  }
+  if (fnNode.identifier && fnNode.identifier.type === "Identifier") {
+    return fnNode.identifier.name;
+  }
+  return null;
+}
+
+function shouldSkipForVm(node, options) {
+  if (!options || !options.vm || options.vm.enabled === false || !node) {
+    return false;
+  }
+  const include = Array.isArray(options.vm.include) ? options.vm.include : [];
+  if (options.vm.all || include.length === 0) {
+    return true;
+  }
+  const name = getFunctionName(node);
+  return Boolean(name && include.includes(name));
+}
+
 function setFunctionStatements(node, statements, style) {
   if (style === "luaparse") {
     node.body = statements;
@@ -330,6 +359,9 @@ function buildFlattenedStatements(statements, ctx, style, usedNames = null) {
 }
 
 function flattenFunction(node, ctx) {
+  if (shouldSkipForVm(node, ctx && ctx.options)) {
+    return;
+  }
   const info = getFunctionStatements(node);
   if (!info) {
     return;

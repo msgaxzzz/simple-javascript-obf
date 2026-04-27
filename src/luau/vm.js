@@ -237,7 +237,7 @@ function computeSeedFromPieces(pieces, bcLength, constCount) {
     seed = (seed + piece) ^ ((piece << (i % 3)) & 0xff);
     seed &= 0xff;
   }
-  seed = (seed + bcLength + constCount) % 255;
+  seed = (seed + bcLength + constCount) % 256;
   return seed;
 }
 
@@ -293,12 +293,25 @@ function deriveInstructionMasks(key) {
 }
 
 function buildOpcodeEncoding(opcodeMap, rng, seedState, opcodeList = OPCODES) {
+  const encodingMode = "mask";
   const keyPieces = [rng.int(1, 200), rng.int(1, 200)];
   const key = ((keyPieces[0] + keyPieces[1] + seedState.seed) % 255) + 1;
   const encoded = opcodeList.map((name, idx) => (
     opcodeMap[name] ^ ((key + idx * 7) % 255)
   ));
-  return { encoded, keyPieces };
+  return { encoded, keyPieces, encodingMode };
+}
+
+function buildOpcodePairsEncoding(opcodeMap, rng, seedState, opcodeList = OPCODES) {
+  const keyPieces = [rng.int(1, 200), rng.int(1, 200)];
+  const key = ((keyPieces[0] + keyPieces[1] + seedState.seed) % 255) + 1;
+  const encoded = opcodeList.map((name, idx) => {
+    const code = opcodeMap[name] >>> 0;
+    const left = (code ^ ((key + idx * 11) % 255)) % 255;
+    const right = (code ^ left) % 255;
+    return `${left}\\95\\${right}`;
+  });
+  return { encoded, keyPieces, encodingMode: "pairs" };
 }
 
 function buildIndexExpression(index, rng) {
@@ -432,7 +445,11 @@ function renameVmCoreIdentifiers(vmAst, aliases) {
 function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
   const keyPieces = [rng.int(1, 200), rng.int(1, 200)];
   const seedValue = seedState ? seedState.seed : 0;
-  const key = ((keyPieces[0] + keyPieces[1] + seedValue) % 255) + 1;
+  const key = ((keyPieces[0] + keyPieces[1] + seedValue) % 256) & 0xff;
+  const multipliers = [13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53];
+  const multiplier = rng.pick(multipliers);
+  const blockSpan = rng.int(7, 31);
+  const twist = rng.int(1, 255);
   const parts = splitInfo && Array.isArray(splitInfo.parts) && splitInfo.parts.length
     ? splitInfo.parts
     : [instructions];
@@ -454,7 +471,13 @@ function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
       }
     }
     const encoded = bytes.map((byte, idx) => (
-      byte ^ ((key + ((offset + idx) * 17)) % 256)
+      byte ^ (
+        (
+          key
+          + (((offset + idx + 1) * multiplier) % 256)
+          + (((Math.floor((offset + idx) / blockSpan) + 1) * twist) % 256)
+        ) % 256
+      )
     ));
     encodedParts[i] = encoded;
     offset += bytes.length;
@@ -475,6 +498,9 @@ function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
 
   return {
     keyPieces,
+    multiplier,
+    blockSpan,
+    twist,
     parts: storedParts,
     order,
     totalBytes: offset,
@@ -507,8 +533,8 @@ function encodeConstPool(program, rng, seedState) {
   const key = Array.from({ length: keyLength }, () => rng.int(1, 255));
   const maskPieces = [rng.int(1, 200), rng.int(1, 200)];
   const seedValue = seedState ? seedState.seed : 0;
-  const mask = ((maskPieces[0] ^ maskPieces[1]) + seedValue) % 255 + 1;
-  const entries = program.consts.map((value) => {
+  const mask = ((maskPieces[0] ^ maskPieces[1]) + seedValue) % 256;
+  const entries = program.consts.map((value, entryIndex) => {
     let tag = 4;
     let text = "";
     if (value === null || value === undefined) {
@@ -526,12 +552,16 @@ function encodeConstPool(program, rng, seedState) {
     }
     const bytes = Buffer.from(text, "utf8");
     const out = new Array(bytes.length);
+    const salt = rng.int(1, 255);
     for (let i = 0; i < bytes.length; i += 1) {
-      out[i] = (bytes[i] + key[i % key.length]) & 0xff;
+      const mix = (key[i % key.length] + salt + (((entryIndex + 1) * 13) % 256) + ((i * 7) % 251)) & 0xff;
+      out[i] = (bytes[i] + mix) & 0xff;
     }
-    return { tag, data: out };
+    const tagMask = (salt + mask + ((entryIndex + 1) * 3)) % 5;
+    const tagEnc = (tag + tagMask) % 5;
+    return { tagEnc, salt, data: out };
   });
-  const keyEncoded = key.map((value, idx) => value ^ ((mask + idx * 11) % 255));
+  const keyEncoded = key.map((value, idx) => value ^ ((mask + idx * 11) % 256));
   return {
     keyEncoded,
     maskPieces,
@@ -701,6 +731,21 @@ function injectFakeInstructions(program, rng, probability) {
   if (!probability || probability <= 0) {
     return;
   }
+  const hasControlFlowSensitiveOps = Array.isArray(program.instructions) && program.instructions.some((inst) => (
+    Array.isArray(inst) && (
+      inst[0] === "CALL" ||
+      inst[0] === "CALL_EXPAND" ||
+      inst[0] === "RETURN" ||
+      inst[0] === "RETURN_CALL" ||
+      inst[0] === "RETURN_CALL_EXPAND" ||
+      inst[0] === "APPEND_CALL" ||
+      inst[0] === "APPEND_CALL_EXPAND" ||
+      VM_JUMP_OPS.has(inst[0])
+    )
+  ));
+  if (hasControlFlowSensitiveOps) {
+    return;
+  }
   const nilIndex = ensureConst(program, null);
   const original = program.instructions.slice();
   const next = [];
@@ -710,18 +755,11 @@ function injectFakeInstructions(program, rng, probability) {
     indexMap[i + 1] = next.length + 1;
     next.push(inst);
     if (rng.bool(probability)) {
-      const kind = rng.pick(["nop", "push_pop", "noise_read", "noise_write", "noise_branch"]);
+      const kind = rng.pick(["nop", "push_pop"]);
       if (kind === "nop") {
         next.push(["NOISE_NOP", 0, 0]);
       } else if (kind === "push_pop") {
         next.push(["PUSH_CONST", nilIndex, 0], ["POP", 0, 0]);
-      } else if (kind === "noise_read") {
-        next.push(["NOISE_READ", rng.int(1, 0xffff), rng.int(1, 0xffff)]);
-      } else if (kind === "noise_write") {
-        next.push(["NOISE_WRITE", rng.int(1, 0xffff), rng.int(1, 0xffff)]);
-      } else {
-        const target = rng.int(1, Math.max(1, original.length));
-        next.push(["NOISE_BRANCH", target, 0]);
       }
     }
   }
@@ -2504,11 +2542,12 @@ function liftNestedVmCallbacks(ast, ctx, style) {
   });
 
   const makeHelperName = () => {
+    if (!ctx || !ctx.rng || typeof ctx.rng.int !== "function") {
+      throw new Error("liftNestedVmCallbacks requires a deterministic rng");
+    }
     let name = "";
     while (!name || usedNames.has(name)) {
-      const rand = ctx && ctx.rng && typeof ctx.rng.int === "function"
-        ? ctx.rng.int(1, 1_000_000_000)
-        : Math.floor(Math.random() * 1_000_000_000) + 1;
+      const rand = ctx.rng.int(1, 1_000_000_000);
       name = `__vm_lift_${rand}`;
     }
     usedNames.add(name);
@@ -2718,6 +2757,7 @@ function buildVmSource(
   const keyRounds = keySchedule ? keySchedule.rounds : 0;
   const opEncoded = opcodeInfo ? opcodeInfo.encoded : null;
   const opKeyPieces = opcodeInfo ? opcodeInfo.keyPieces : null;
+  const opEncodingMode = opcodeInfo ? opcodeInfo.encodingMode : "mask";
   const LUA_KEYWORDS = new Set([
     "and",
     "break",
@@ -2915,6 +2955,395 @@ function buildVmSource(
     }
     return `{ ${row.join(", ")} }`;
   };
+  const emitSharedOpBody = (opName, config = {}) => {
+    const {
+      mode = "linear",
+      nextExpr = "pc + 1",
+      aExpr = "a",
+      bExpr = "b",
+      getConstExpr = (value) => `${helperNames.getConst}(${value})`,
+      pushLine = "top = top + 1",
+      jumpTargetExpr = aExpr,
+      noiseStateName = null,
+    } = config;
+    const finish = (linesOut) => {
+      if (mode === "block") {
+        return [...linesOut, `pc = ${nextExpr}`];
+      }
+      return [...linesOut, `return ${nextExpr}, false, nil`];
+    };
+    const finishStop = (retExpr) => {
+      if (mode === "block") {
+        return [retExpr];
+      }
+      return [`return 0, true, ${retExpr}`];
+    };
+    switch (opName) {
+      case "NOP":
+      case "NOISE_NOP":
+        return finish([]);
+      case "PUSH_CONST":
+        return finish([pushLine, `stack[top] = ${getConstExpr(aExpr)}`]);
+      case "PUSH_LOCAL":
+        return finish([pushLine, `stack[top] = locals[${aExpr}]`]);
+      case "PUSH_LOCAL_ADD_LOCAL":
+        return finish([pushLine, `stack[top] = locals[${aExpr}] + locals[${bExpr}]`]);
+      case "PUSH_LOCAL_SUB_LOCAL":
+        return finish([pushLine, `stack[top] = locals[${aExpr}] - locals[${bExpr}]`]);
+      case "PUSH_CONST_ADD_CONST":
+        return finish([pushLine, `stack[top] = ${getConstExpr(aExpr)} + ${getConstExpr(bExpr)}`]);
+      case "SET_LOCAL":
+        return finish([
+          `locals[${aExpr}] = stack[top]`,
+          `${helperNames.syncLocal}(${aExpr}, locals[${aExpr}])`,
+          "stack[top] = nil",
+          "top = top - 1",
+        ]);
+      case "PUSH_GLOBAL":
+        return finish([pushLine, `stack[top] = env[${getConstExpr(aExpr)}]`]);
+      case "SET_GLOBAL":
+        return finish([
+          `env[${getConstExpr(aExpr)}] = stack[top]`,
+          "stack[top] = nil",
+          "top = top - 1",
+        ]);
+      case "NEW_TABLE":
+        return finish(["top = top + 1", "stack[top] = {}"]);
+      case "DUP":
+        return finish(["top = top + 1", "stack[top] = stack[top - 1]"]);
+      case "SWAP":
+        return finish(["stack[top], stack[top - 1] = stack[top - 1], stack[top]"]);
+      case "POP":
+        return finish(["stack[top] = nil", "top = top - 1"]);
+      case "GET_TABLE":
+        return finish([
+          "local idx = stack[top]",
+          "stack[top] = nil",
+          "local base = stack[top - 1]",
+          "stack[top - 1] = base[idx]",
+          "top = top - 1",
+        ]);
+      case "SET_TABLE":
+        return finish([
+          "local val = stack[top]",
+          "stack[top] = nil",
+          "local key = stack[top - 1]",
+          "stack[top - 1] = nil",
+          "local base = stack[top - 2]",
+          "base[key] = val",
+          "stack[top - 2] = nil",
+          "top = top - 3",
+        ]);
+      case "CALL":
+        return finish([
+          `local argc = ${aExpr}`,
+          `local retc = ${bExpr}`,
+          "local base = top - argc",
+          "local fn = stack[base]",
+          "if retc == 0 then",
+          "  fn(unpack(stack, base + 1, top))",
+          "  for i = top, base, -1 do",
+          "    stack[i] = nil",
+          "  end",
+          "  top = base - 1",
+          "else",
+          "  local res = pack(fn(unpack(stack, base + 1, top)))",
+          "  for i = top, base, -1 do",
+          "    stack[i] = nil",
+          "  end",
+          "  top = base - 1",
+          "  if retc == 1 then",
+          "    top = top + 1",
+          "    stack[top] = res[1]",
+          "  else",
+          "    for i = 1, retc do",
+          "      top = top + 1",
+          "      stack[top] = res[i]",
+          "    end",
+          "  end",
+          "end",
+        ]);
+      case "CALL_EXPAND":
+        return finish([
+          `local retc = ${aExpr}`,
+          "local tail = stack[top]",
+          "local prefixArgs = stack[top - 1]",
+          "local fn = stack[top - 2]",
+          `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+          "for i = top, top - 2, -1 do",
+          "  stack[i] = nil",
+          "end",
+          "top = top - 3",
+          "if retc == 0 then",
+          ...(mode === "block" ? [`  pc = ${nextExpr}`] : ["  return pc + 1, false, nil"]),
+          "elseif retc == 1 then",
+          "  top = top + 1",
+          "  stack[top] = res[1]",
+          ...(mode === "block" ? [`  pc = ${nextExpr}`] : ["  return pc + 1, false, nil"]),
+          "else",
+          "  for i = 1, retc do",
+          "    top = top + 1",
+          "    stack[top] = res[i]",
+          "  end",
+          ...(mode === "block" ? [`  pc = ${nextExpr}`] : ["  return pc + 1, false, nil"]),
+          "end",
+        ].filter(Boolean));
+      case "RETURN_CALL":
+        if (mode === "block") {
+          return [
+            `local argc = ${aExpr}`,
+            `local prefix = ${bExpr}`,
+            "local base = top - argc",
+            "local fn = stack[base]",
+            "if prefix == 0 then",
+            "  return fn(unpack(stack, base + 1, top))",
+            "end",
+            "local res = pack(fn(unpack(stack, base + 1, top)))",
+            "local merged = { n = prefix + (res.n or #res) }",
+            "local prefixBase = base - prefix",
+            "for i = 1, prefix do",
+            "  merged[i] = stack[prefixBase + i - 1]",
+            "end",
+            "for i = 1, res.n or #res do",
+            "  merged[prefix + i] = res[i]",
+            "end",
+            "return unpack(merged, 1, merged.n)",
+          ];
+        }
+        return finishStop(`(function()
+  local argc = ${aExpr}
+  local prefix = ${bExpr}
+  local base = top - argc
+  local fn = stack[base]
+  if prefix == 0 then
+    return pack(fn(unpack(stack, base + 1, top)))
+  end
+  local res = pack(fn(unpack(stack, base + 1, top)))
+  local merged = { n = prefix + (res.n or #res) }
+  local prefixBase = base - prefix
+  for i = 1, prefix do
+    merged[i] = stack[prefixBase + i - 1]
+  end
+  for i = 1, res.n or #res do
+    merged[prefix + i] = res[i]
+  end
+  return merged
+end)()`);
+      case "RETURN_CALL_EXPAND":
+        if (mode === "block") {
+          return [
+            `local prefix = ${aExpr}`,
+            "local tail = stack[top]",
+            "local prefixArgs = stack[top - 1]",
+            "local fn = stack[top - 2]",
+            `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+            "if prefix == 0 then",
+            "  return unpack(res, 1, res.n or #res)",
+            "end",
+            "local merged = { n = prefix + (res.n or #res) }",
+            "local prefixBase = top - 2 - prefix",
+            "for i = 1, prefix do",
+            "  merged[i] = stack[prefixBase + i - 1]",
+            "end",
+            "for i = 1, res.n or #res do",
+            "  merged[prefix + i] = res[i]",
+            "end",
+            "return unpack(merged, 1, merged.n)",
+          ];
+        }
+        return finishStop(`(function()
+  local prefix = ${aExpr}
+  local tail = stack[top]
+  local prefixArgs = stack[top - 1]
+  local fn = stack[top - 2]
+  local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)
+  if prefix == 0 then
+    return res
+  end
+  local merged = { n = prefix + (res.n or #res) }
+  local prefixBase = top - 2 - prefix
+  for i = 1, prefix do
+    merged[i] = stack[prefixBase + i - 1]
+  end
+  for i = 1, res.n or #res do
+    merged[prefix + i] = res[i]
+  end
+  return merged
+end)()`);
+      case "APPEND_CALL":
+        return finish([
+          `local argc = ${aExpr}`,
+          `local startIndex = ${bExpr}`,
+          "local base = top - argc",
+          "local fn = stack[base]",
+          "local tbl = stack[base - 1]",
+          "local res = pack(fn(unpack(stack, base + 1, top)))",
+          "for i = top, base, -1 do",
+          "  stack[i] = nil",
+          "end",
+          "top = base - 1",
+          "for i = 1, res.n or #res do",
+          "  tbl[startIndex + i - 1] = res[i]",
+          "end",
+          "if tbl.n ~= nil then",
+          "  tbl.n = startIndex + (res.n or #res) - 1",
+          "end",
+        ]);
+      case "APPEND_CALL_EXPAND":
+        return finish([
+          `local startIndex = ${aExpr}`,
+          "local tail = stack[top]",
+          "local prefixArgs = stack[top - 1]",
+          "local fn = stack[top - 2]",
+          "local tbl = stack[top - 3]",
+          `local res = ${helperNames.callExpanded}(fn, prefixArgs, tail)`,
+          "for i = top, top - 2, -1 do",
+          "  stack[i] = nil",
+          "end",
+          "top = top - 3",
+          "for i = 1, res.n or #res do",
+          "  tbl[startIndex + i - 1] = res[i]",
+          "end",
+          "if tbl.n ~= nil then",
+          "  tbl.n = startIndex + (res.n or #res) - 1",
+          "end",
+        ]);
+      case "RETURN":
+        if (mode === "block") {
+          return [
+            `local count = ${aExpr}`,
+            "if count == 0 then",
+            "  return",
+            "elseif count == 1 then",
+            "  return stack[top]",
+            "else",
+            "  local base = top - count + 1",
+            "  return unpack(stack, base, top)",
+            "end",
+          ];
+        }
+        return finishStop(`(function()
+  local count = ${aExpr}
+  if count == 0 then
+    return pack()
+  elseif count == 1 then
+    return pack(stack[top])
+  else
+    local base = top - count + 1
+    return pack(unpack(stack, base, top))
+  end
+end)()`);
+      case "JMP":
+        return finish([], jumpTargetExpr);
+      case "JMP_IF_FALSE":
+        if (mode === "block") {
+          return [
+            "if not stack[top] then",
+            `  pc = ${jumpTargetExpr}`,
+            "else",
+            `  pc = ${nextExpr}`,
+            "end",
+          ];
+        }
+        return [
+          "if not stack[top] then",
+          `  return ${jumpTargetExpr}, false, nil`,
+          "end",
+          "return pc + 1, false, nil",
+        ];
+      case "JMP_IF_TRUE":
+        if (mode === "block") {
+          return [
+            "if stack[top] then",
+            `  pc = ${jumpTargetExpr}`,
+            "else",
+            `  pc = ${nextExpr}`,
+            "end",
+          ];
+        }
+        return [
+          "if stack[top] then",
+          `  return ${jumpTargetExpr}, false, nil`,
+          "end",
+          "return pc + 1, false, nil",
+        ];
+      case "ADD":
+      case "SUB":
+      case "MUL":
+      case "DIV":
+      case "MOD":
+      case "POW":
+      case "CONCAT":
+      case "EQ":
+      case "NE":
+      case "LT":
+      case "LE":
+      case "GT":
+      case "GE": {
+        const opMap = {
+          ADD: "+", SUB: "-", MUL: "*", DIV: "/", MOD: "%", POW: "^", CONCAT: "..",
+          EQ: "==", NE: "~=", LT: "<", LE: "<=", GT: ">", GE: ">=",
+        };
+        return finish([`stack[top - 1] = stack[top - 1] ${opMap[opName]} stack[top]`, "top = top - 1"]);
+      }
+      case "IDIV":
+        return finish([`stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`, "top = top - 1"]);
+      case "BAND":
+      case "BOR":
+      case "BXOR":
+      case "SHL":
+      case "SHR": {
+        const opMap = {
+          BAND: band32("stack[top - 1]", "stack[top]"),
+          BOR: bor32("stack[top - 1]", "stack[top]"),
+          BXOR: bxor32("stack[top - 1]", "stack[top]"),
+          SHL: lshift32("stack[top - 1]", "stack[top]"),
+          SHR: rshift32("stack[top - 1]", "stack[top]"),
+        };
+        return finish([`stack[top - 1] = ${opMap[opName]}`, "top = top - 1"]);
+      }
+      case "UNM":
+        return finish(["stack[top] = -stack[top]"]);
+      case "NOT":
+        return finish(["stack[top] = not stack[top]"]);
+      case "LEN":
+        return finish(["stack[top] = #stack[top]"]);
+      case "BNOT":
+        return finish([`stack[top] = ${bnot32("stack[top]")}`]);
+      case "NOISE_READ":
+        return finish([
+          "local slot = ((a + pc + seed) % 11) + 1",
+          `local ghost = ${noiseStateName}[slot]`,
+          "if ghost == nil then",
+          "  ghost = stack[top]",
+          "end",
+          `${noiseStateName}[slot] = ghost`,
+        ]);
+      case "NOISE_WRITE":
+        return finish([
+          "local slot = ((a + b + pc + seed) % 11) + 1",
+          `local ghost = ${noiseStateName}[slot] or 0`,
+          `${noiseStateName}[slot] = ${bxor32("ghost", "(a + b + pc) % " + bitNames.mod)}`,
+        ]);
+      case "NOISE_BRANCH":
+        return mode === "block"
+          ? [
+              `if ((${aExpr} + pc + seed) % 97) == 211 then`,
+              `  pc = ${jumpTargetExpr}`,
+              "else",
+              `  pc = ${nextExpr}`,
+              "end",
+            ]
+          : [
+              "if ((a + pc + seed) % 97) == 211 then",
+              `  return ${jumpTargetExpr}, false, nil`,
+              "end",
+              "return pc + 1, false, nil",
+            ];
+      default:
+        return null;
+    }
+  };
 
   const lines = [
     `do`,
@@ -3090,8 +3519,8 @@ function buildVmSource(
   lines.push(`  return v % m`);
   lines.push(`end`);
   lines.push(`local function ${bitNames.modSmall}(a)`);
-  lines.push(`  local v = (a[1] % 255) + (a[2] % 255)`);
-  lines.push(`  return v % 255`);
+  lines.push(`  local v = (a[1] % 256) + (a[2] % 256)`);
+  lines.push(`  return v % 256`);
   lines.push(`end`);
   lines.push(`local function ${bitNames.bxor64}(a, b)`);
   lines.push(`  return { ${bitNames.bxor32}(a[1], b[1]), ${bitNames.bxor32}(a[2], b[2]) }`);
@@ -3180,17 +3609,36 @@ function buildVmSource(
   lines.push(`local ${vmMeta.isaKeyB} = ${activeIsa.keyB || 0}`);
 
   if (!blockDispatch && opEncoded && opKeyPieces) {
-    lines.push(`local op_data = { ${opEncoded.join(", ")} }`);
     lines.push(`local op_key = ${opKeyPieces[0]} + ${opKeyPieces[1]} + seed`);
     lines.push(`op_key = (op_key % 255) + 1`);
     lines.push(`local op_map = {}`);
-    lines.push(`for i = 1, #op_data do`);
-    lines.push(`  local mix = i - 1`);
-    lines.push(`  mix = mix * 7`);
-    lines.push(`  mix = mix + op_key`);
-    lines.push(`  mix = mix % 255`);
-    lines.push(`  op_map[i] = ${bxor32("op_data[i]", "mix")}`);
-    lines.push(`end`);
+    if (opEncodingMode === "pairs") {
+      lines.push(`local op_pairs = ${luaString(opEncoded.join("\\95"))}`);
+      lines.push(`local op_pair_cursor = 1`);
+      lines.push(`local op_pair_buffer = {}`);
+      lines.push(`for op_pair_chunk in string.gmatch(op_pairs, "[^\\\\]+") do`);
+      lines.push(`  op_pair_buffer[#op_pair_buffer + 1] = tonumber(op_pair_chunk) or 0`);
+      lines.push(`end`);
+      lines.push(`for i = 1, #op_pair_buffer, 2 do`);
+      lines.push(`  local pair_index = ${runtimeTools.floor}((i + 1) / 2)`);
+      lines.push(`  local left = op_pair_buffer[i] or 0`);
+      lines.push(`  local right = op_pair_buffer[i + 1] or 0`);
+      lines.push(`  local mix = pair_index - 1`);
+      lines.push(`  mix = mix * 11`);
+      lines.push(`  mix = mix + op_key`);
+      lines.push(`  mix = mix % 255`);
+      lines.push(`  op_map[pair_index] = ${bxor32(bxor32("left", "right"), "mix")}`);
+      lines.push(`end`);
+    } else {
+      lines.push(`local op_data = { ${opEncoded.join(", ")} }`);
+      lines.push(`for i = 1, #op_data do`);
+      lines.push(`  local mix = i - 1`);
+      lines.push(`  mix = mix * 7`);
+      lines.push(`  mix = mix + op_key`);
+      lines.push(`  mix = mix % 255`);
+      lines.push(`  op_map[i] = ${bxor32("op_data[i]", "mix")}`);
+      lines.push(`end`);
+    }
   }
 
   if (!blockDispatch && keyEncoded && keyMaskPieces) {
@@ -3312,10 +3760,10 @@ function buildVmSource(
     const constEncoding = vmOptions.constsEncoding === "table" ? "table" : "string";
     const renderConstEntry = (entry) => {
       if (constEncoding === "string") {
-        return `{ ${entry.tag}, ${luaByteString(entry.data)} }`;
+        return `{ ${entry.tagEnc}, ${entry.salt}, ${luaByteString(entry.data)} }`;
       }
       const data = entry.data.join(", ");
-      return `{ ${entry.tag}, { ${data} } }`;
+      return `{ ${entry.tagEnc}, ${entry.salt}, { ${data} } }`;
     };
     if (vmOptions.constsSplit && constInfo.entries.length > (vmOptions.constsSplitSize || 0)) {
       const parts = splitConstEntries(constInfo.entries, rng, vmOptions.constsSplitSize || 24);
@@ -3356,12 +3804,12 @@ function buildVmSource(
     lines.push(`local consts_cache = {}`);
     lines.push(`local consts_ready = {}`);
     lines.push(`local const_key_mask = ${bxor32(String(constInfo.maskPieces[0]), String(constInfo.maskPieces[1]))} + seed`);
-    lines.push(`const_key_mask = (const_key_mask % 255) + 1`);
+    lines.push(`const_key_mask = const_key_mask % 256`);
     lines.push(`for i = 1, #consts_key_enc do`);
     lines.push(`  local mix = i - 1`);
     lines.push(`  mix = mix * 11`);
     lines.push(`  mix = mix + const_key_mask`);
-    lines.push(`  mix = mix % 255`);
+    lines.push(`  mix = mix % 256`);
     lines.push(`  consts_key[i] = ${bxor32("consts_key_enc[i]", "mix")}`);
     lines.push(`end`);
     lines.push(`local keyLen = #consts_key`);
@@ -3377,21 +3825,25 @@ function buildVmSource(
     lines.push(`  if not entry then`);
     lines.push(`    return nil`);
     lines.push(`  end`);
-    lines.push(`  local tag = entry[1]`);
-    lines.push(`  local data = entry[2]`);
+    lines.push(`  local tagEnc = entry[1]`);
+    lines.push(`  local salt = entry[2] or 0`);
+    lines.push(`  local data = entry[3]`);
     lines.push(`  local out = {}`);
     lines.push(`  for j = 1, #data do`);
     lines.push(`    local idx = (j - 1) % keyLen + 1`);
+    lines.push(`    local mix = consts_key[idx] + salt + ((i * 13) % 256) + (((j - 1) * 7) % 251)`);
+    lines.push(`    mix = mix % 256`);
     if (constEncoding === "string") {
-      lines.push(`    local v = const_byte(data, j) - consts_key[idx]`);
+      lines.push(`    local v = const_byte(data, j) - mix`);
     } else {
-      lines.push(`    local v = data[j] - consts_key[idx]`);
+      lines.push(`    local v = data[j] - mix`);
     }
     lines.push(`    if v < 0 then v = v + 256 end`);
     lines.push(`    out[j] = ${runtimeTools.char}(v)`);
     lines.push(`  end`);
     lines.push(`  local s = ${runtimeTools.concat}(out)`);
     lines.push(`  local value`);
+    lines.push(`  local tag = (tagEnc - ((salt + const_key_mask + (i * 3)) % 5)) % 5`);
     lines.push(`  if tag == 0 then`);
     lines.push(`    value = nil`);
     lines.push(`  elseif tag == 1 then`);
@@ -3453,14 +3905,14 @@ function buildVmSource(
   lines.push(`  local args = {}`);
   lines.push(`  local count = 0`);
   lines.push(`  local prefixCount = prefix and (prefix.n or #prefix) or 0`);
-  lines.push(`  for i = 1, prefixCount do`);
-  lines.push(`    count = count + 1`);
-  lines.push(`    args[count] = prefix[i]`);
+  lines.push(`  if prefixCount > 0 then`);
+  lines.push(`    table.move(prefix, 1, prefixCount, 1, args)`);
+  lines.push(`    count = prefixCount`);
   lines.push(`  end`);
   lines.push(`  local tailCount = tail and (tail.n or #tail) or 0`);
-  lines.push(`  for i = 1, tailCount do`);
-  lines.push(`    count = count + 1`);
-  lines.push(`    args[count] = tail[i]`);
+  lines.push(`  if tailCount > 0 then`);
+  lines.push(`    table.move(tail, 1, tailCount, count + 1, args)`);
+  lines.push(`    count = count + tailCount`);
   lines.push(`  end`);
   lines.push(`  args.n = count`);
   lines.push(`  return args`);
@@ -3469,27 +3921,26 @@ function buildVmSource(
   lines.push(`  local args = ${helperNames.expandArgs}(prefix, tail)`);
   lines.push(`  return pack(fn(unpack(args, 1, args.n or #args)))`);
   lines.push(`end`);
-  lines.push(`local function ${helperNames.syncLocal}(idx, value)`);
+  const syncSetterTable = makeName();
+  lines.push(`local ${syncSetterTable} = {}`);
   if (initValues && initValues.length) {
-    let emitted = false;
     initValues.forEach((name, index) => {
       if (!name) {
         return;
       }
-      const prefix = emitted ? "elseif" : "if";
-      lines.push(`  ${prefix} idx == ${index + 1} then`);
-      lines.push(`    ${name} = value`);
-      emitted = true;
+      const setterName = makeVmHelperAliasName();
+      lines.push(`local function ${setterName}(nextValue)`);
+      lines.push(`  ${name} = nextValue`);
+      lines.push(`end`);
+      lines.push(`${syncSetterTable}[${index + 1}] = ${setterName}`);
     });
-    if (!emitted) {
-      lines.push(`  return`);
-    } else {
-      lines.push(`  return`);
-      lines.push(`  end`);
-    }
-  } else {
-    lines.push(`  return`);
   }
+  lines.push(`local function ${helperNames.syncLocal}(idx, value)`);
+  lines.push(`  local setter = ${syncSetterTable}[idx]`);
+  lines.push(`  if setter then`);
+  lines.push(`    setter(value)`);
+  lines.push(`  end`);
+  lines.push(`  return`);
   lines.push(`end`);
   const dynamicCoupling = vmOptions.dynamicCoupling !== false;
   const couplingMul = rng.int(3, 31);
@@ -3520,7 +3971,10 @@ function buildVmSource(
     appendPoolAssignments("bc_order", "bc_order", stream.order.map(String));
     appendPoolAssignments("bc_part_lengths", "bc_part_lengths", logicalPartLengths.map(String));
     lines.push(`local bc_key = ${stream.keyPieces[0]} + ${stream.keyPieces[1]} + seed`);
-    lines.push(`bc_key = (bc_key % 255) + 1`);
+    lines.push(`bc_key = bc_key % 256`);
+    lines.push(`local bc_mul = ${stream.multiplier}`);
+    lines.push(`local bc_span = ${stream.blockSpan}`);
+    lines.push(`local bc_twist = ${stream.twist}`);
     lines.push(`local bc_byte = ${runtimeTools.byte}`);
     lines.push(`local bc_inst_count = ${program.instructions.length}`);
     const streamIndexName = makeName();
@@ -3546,9 +4000,9 @@ function buildVmSource(
     lines.push(`  if b == nil then`);
     lines.push(`    return 0`);
     lines.push(`  end`);
-    lines.push(`  local mix = i - 1`);
-    lines.push(`  mix = mix * 17`);
-    lines.push(`  mix = mix + bc_key`);
+    lines.push(`  local mix = (i * bc_mul) % 256`);
+    lines.push(`  local block = (${runtimeTools.floor}((i - 1) / bc_span) + 1) * bc_twist`);
+    lines.push(`  mix = mix + block + bc_key`);
     lines.push(`  mix = mix % 256`);
     lines.push(`  return ${bxor32("b", "mix")}`);
     lines.push(`end`);
@@ -3629,139 +4083,6 @@ function buildVmSource(
       const nextId = idByIndex.get(block.index + 1) || 0;
       const targetId = idByIndex.get(aValue) || 0;
       switch (opName) {
-        case "NOP":
-          return [`pc = ${nextId}`];
-        case "PUSH_CONST":
-        case "PUSH_CONST_X":
-          return [
-            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
-            `stack[top] = ${helperNames.getConst}(${aExpr})`,
-            `pc = ${nextId}`,
-          ];
-        case "PUSH_LOCAL":
-        case "PUSH_LOCAL_X":
-          return [
-            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
-            `stack[top] = locals[${aExpr}]`,
-            `pc = ${nextId}`,
-          ];
-        case "PUSH_LOCAL_ADD_LOCAL":
-          return [
-            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
-            `stack[top] = locals[${a}] + locals[${b}]`,
-            `pc = ${nextId}`,
-          ];
-        case "PUSH_LOCAL_SUB_LOCAL":
-          return [
-            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
-            `stack[top] = locals[${a}] - locals[${b}]`,
-            `pc = ${nextId}`,
-          ];
-        case "PUSH_CONST_ADD_CONST":
-          return [
-            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
-            `stack[top] = ${helperNames.getConst}(${a}) + ${helperNames.getConst}(${b})`,
-            `pc = ${nextId}`,
-          ];
-        case "SET_LOCAL":
-        case "SET_LOCAL_X":
-          return [
-            `locals[${aExpr}] = stack[top]`,
-            `${helperNames.syncLocal}(${aExpr}, locals[${aExpr}])`,
-            "stack[top] = nil",
-            "top = top - 1",
-            `pc = ${nextId}`,
-          ];
-        case "PUSH_GLOBAL":
-        case "PUSH_GLOBAL_X":
-          return [
-            activeIsa.stackProtocol === "api" ? "top = push(stack, top, nil)" : "top = top + 1",
-            `stack[top] = env[${helperNames.getConst}(${aExpr})]`,
-            `pc = ${nextId}`,
-          ];
-        case "SET_GLOBAL":
-        case "SET_GLOBAL_X":
-          return [
-            `env[${helperNames.getConst}(${aExpr})] = stack[top]`,
-            "stack[top] = nil",
-            "top = top - 1",
-            `pc = ${nextId}`,
-          ];
-        case "NEW_TABLE":
-          return [
-            "top = top + 1",
-            "stack[top] = {}",
-            `pc = ${nextId}`,
-          ];
-        case "DUP":
-          return [
-            "top = top + 1",
-            "stack[top] = stack[top - 1]",
-            `pc = ${nextId}`,
-          ];
-        case "SWAP":
-          return [
-            "stack[top], stack[top - 1] = stack[top - 1], stack[top]",
-            `pc = ${nextId}`,
-          ];
-        case "POP":
-          return [
-            "stack[top] = nil",
-            "top = top - 1",
-            `pc = ${nextId}`,
-          ];
-        case "GET_TABLE":
-          return [
-            "local idx = stack[top]",
-            "stack[top] = nil",
-            "local base = stack[top - 1]",
-            "stack[top - 1] = base[idx]",
-            "top = top - 1",
-            `pc = ${nextId}`,
-          ];
-        case "SET_TABLE":
-          return [
-            "local val = stack[top]",
-            "stack[top] = nil",
-            "local key = stack[top - 1]",
-            "stack[top - 1] = nil",
-            "local base = stack[top - 2]",
-            "base[key] = val",
-            "stack[top - 2] = nil",
-            "top = top - 3",
-            `pc = ${nextId}`,
-          ];
-        case "CALL":
-        case "CALL_X":
-          return [
-            `local argc = ${aExpr}`,
-            `local retc = ${bExpr}`,
-            "local base = top - argc",
-            "local fn = stack[base]",
-            "if retc == 0 then",
-            "  fn(unpack(stack, base + 1, top))",
-            "  for i = top, base, -1 do",
-            "    stack[i] = nil",
-            "  end",
-            "  top = base - 1",
-            "else",
-            "  local res = pack(fn(unpack(stack, base + 1, top)))",
-            "  for i = top, base, -1 do",
-            "    stack[i] = nil",
-            "  end",
-            "  top = base - 1",
-            "  if retc == 1 then",
-            "    top = top + 1",
-            "    stack[top] = res[1]",
-            "  else",
-            "    for i = 1, retc do",
-            "      top = top + 1",
-            "      stack[top] = res[i]",
-            "    end",
-            "  end",
-            "end",
-            `pc = ${nextId}`,
-          ];
         case "CALL_EXPAND":
           return [
             `local retc = ${aExpr}`,
@@ -3903,133 +4224,114 @@ function buildVmSource(
         case "ADD":
           return [
             "stack[top - 1] = stack[top - 1] + stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "SUB":
           return [
             "stack[top - 1] = stack[top - 1] - stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "MUL":
           return [
             "stack[top - 1] = stack[top - 1] * stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "DIV":
           return [
             "stack[top - 1] = stack[top - 1] / stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "IDIV":
           return [
             `stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`,
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "MOD":
           return [
             "stack[top - 1] = stack[top - 1] % stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "POW":
           return [
             "stack[top - 1] = stack[top - 1] ^ stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "CONCAT":
           return [
             "stack[top - 1] = stack[top - 1] .. stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "EQ":
           return [
             "stack[top - 1] = stack[top - 1] == stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "NE":
           return [
             "stack[top - 1] = stack[top - 1] ~= stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "LT":
           return [
             "stack[top - 1] = stack[top - 1] < stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "LE":
           return [
             "stack[top - 1] = stack[top - 1] <= stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "GT":
           return [
             "stack[top - 1] = stack[top - 1] > stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "GE":
           return [
             "stack[top - 1] = stack[top - 1] >= stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "BAND":
           return [
             `stack[top - 1] = ${band32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "BOR":
           return [
             `stack[top - 1] = ${bor32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "BXOR":
           return [
             `stack[top - 1] = ${bxor32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "SHL":
           return [
             `stack[top - 1] = ${lshift32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
         case "SHR":
           return [
             `stack[top - 1] = ${rshift32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             `pc = ${nextId}`,
           ];
@@ -4110,135 +4412,14 @@ function buildVmSource(
       const opName = typeof rawOpName === "string" && rawOpName.endsWith("_X")
         ? rawOpName.slice(0, -2)
         : rawOpName;
+      const sharedBody = emitSharedOpBody(opName, {
+        mode: "linear",
+        nextExpr: "pc + 1",
+        aExpr: "a",
+        bExpr: "b",
+        noiseStateName,
+      });
       switch (opName) {
-        case "NOP":
-        case "NOISE_NOP":
-          return ["return pc + 1, false, nil"];
-        case "PUSH_CONST":
-          return [
-            "top = top + 1",
-            `stack[top] = ${helperNames.getConst}(a)`,
-            "return pc + 1, false, nil",
-          ];
-        case "PUSH_LOCAL":
-          return [
-            "top = top + 1",
-            "stack[top] = locals[a]",
-            "return pc + 1, false, nil",
-          ];
-        case "PUSH_LOCAL_ADD_LOCAL":
-          return [
-            "top = top + 1",
-            "stack[top] = locals[a] + locals[b]",
-            "return pc + 1, false, nil",
-          ];
-        case "PUSH_LOCAL_SUB_LOCAL":
-          return [
-            "top = top + 1",
-            "stack[top] = locals[a] - locals[b]",
-            "return pc + 1, false, nil",
-          ];
-        case "PUSH_CONST_ADD_CONST":
-          return [
-            "top = top + 1",
-            `stack[top] = ${helperNames.getConst}(a) + ${helperNames.getConst}(b)`,
-            "return pc + 1, false, nil",
-          ];
-        case "SET_LOCAL":
-          return [
-            "locals[a] = stack[top]",
-            `${helperNames.syncLocal}(a, locals[a])`,
-            "stack[top] = nil",
-            "top = top - 1",
-            "return pc + 1, false, nil",
-          ];
-        case "PUSH_GLOBAL":
-          return [
-            "top = top + 1",
-            `stack[top] = env[${helperNames.getConst}(a)]`,
-            "return pc + 1, false, nil",
-          ];
-        case "SET_GLOBAL":
-          return [
-            `env[${helperNames.getConst}(a)] = stack[top]`,
-            "stack[top] = nil",
-            "top = top - 1",
-            "return pc + 1, false, nil",
-          ];
-        case "NEW_TABLE":
-          return [
-            "top = top + 1",
-            "stack[top] = {}",
-            "return pc + 1, false, nil",
-          ];
-        case "DUP":
-          return [
-            "top = top + 1",
-            "stack[top] = stack[top - 1]",
-            "return pc + 1, false, nil",
-          ];
-        case "SWAP":
-          return [
-            "stack[top], stack[top - 1] = stack[top - 1], stack[top]",
-            "return pc + 1, false, nil",
-          ];
-        case "POP":
-          return [
-            "stack[top] = nil",
-            "top = top - 1",
-            "return pc + 1, false, nil",
-          ];
-        case "GET_TABLE":
-          return [
-            "local idx = stack[top]",
-            "stack[top] = nil",
-            "local base = stack[top - 1]",
-            "stack[top - 1] = base[idx]",
-            "top = top - 1",
-            "return pc + 1, false, nil",
-          ];
-        case "SET_TABLE":
-          return [
-            "local val = stack[top]",
-            "stack[top] = nil",
-            "local key = stack[top - 1]",
-            "stack[top - 1] = nil",
-            "local base = stack[top - 2]",
-            "base[key] = val",
-            "stack[top - 2] = nil",
-            "top = top - 3",
-            "return pc + 1, false, nil",
-          ];
-        case "CALL":
-          return [
-            "local argc = a",
-            "local retc = b",
-            "local base = top - argc",
-            "local fn = stack[base]",
-            "if retc == 0 then",
-            "  fn(unpack(stack, base + 1, top))",
-            "  for i = top, base, -1 do",
-            "    stack[i] = nil",
-            "  end",
-            "  top = base - 1",
-            "else",
-            "  local res = pack(fn(unpack(stack, base + 1, top)))",
-            "  for i = top, base, -1 do",
-            "    stack[i] = nil",
-            "  end",
-            "  top = base - 1",
-            "  if retc == 1 then",
-            "    top = top + 1",
-            "    stack[top] = res[1]",
-            "  else",
-            "    for i = 1, retc do",
-            "      top = top + 1",
-            "      stack[top] = res[i]",
-            "    end",
-            "  end",
-            "end",
-            "return pc + 1, false, nil",
-          ];
         case "CALL_EXPAND":
           return [
             "local retc = a",
@@ -4374,133 +4555,114 @@ function buildVmSource(
         case "ADD":
           return [
             "stack[top - 1] = stack[top - 1] + stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "SUB":
           return [
             "stack[top - 1] = stack[top - 1] - stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "MUL":
           return [
             "stack[top - 1] = stack[top - 1] * stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "DIV":
           return [
             "stack[top - 1] = stack[top - 1] / stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "IDIV":
           return [
             `stack[top - 1] = ${runtimeTools.floor}(stack[top - 1] / stack[top])`,
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "MOD":
           return [
             "stack[top - 1] = stack[top - 1] % stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "POW":
           return [
             "stack[top - 1] = stack[top - 1] ^ stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "CONCAT":
           return [
             "stack[top - 1] = stack[top - 1] .. stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "EQ":
           return [
             "stack[top - 1] = stack[top - 1] == stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "NE":
           return [
             "stack[top - 1] = stack[top - 1] ~= stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "LT":
           return [
             "stack[top - 1] = stack[top - 1] < stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "LE":
           return [
             "stack[top - 1] = stack[top - 1] <= stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "GT":
           return [
             "stack[top - 1] = stack[top - 1] > stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "GE":
           return [
             "stack[top - 1] = stack[top - 1] >= stack[top]",
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "BAND":
           return [
             `stack[top - 1] = ${band32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "BOR":
           return [
             `stack[top - 1] = ${bor32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "BXOR":
           return [
             `stack[top - 1] = ${bxor32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "SHL":
           return [
             `stack[top - 1] = ${lshift32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
         case "SHR":
           return [
             `stack[top - 1] = ${rshift32("stack[top - 1]", "stack[top]")}`,
-            "stack[top] = nil",
             "top = top - 1",
             "return pc + 1, false, nil",
           ];
@@ -4529,7 +4691,12 @@ function buildVmSource(
             "local slot = ((a + pc + seed) % 11) + 1",
             `local ghost = ${noiseStateName}[slot]`,
             "if ghost == nil then",
-            "  ghost = stack[top]",
+            "  local probe = stack[top]",
+            `  if ${runtimeTools.type}(probe) == "number" then`,
+            "    ghost = probe",
+            "  else",
+            "    ghost = 0",
+            "  end",
             "end",
             `${noiseStateName}[slot] = ghost`,
             "return pc + 1, false, nil",
@@ -4537,7 +4704,10 @@ function buildVmSource(
         case "NOISE_WRITE":
           return [
             "local slot = ((a + b + pc + seed) % 11) + 1",
-            `local ghost = ${noiseStateName}[slot] or 0`,
+            `local ghost = ${noiseStateName}[slot]`,
+            `if ${runtimeTools.type}(ghost) ~= "number" then`,
+            "  ghost = 0",
+            "end",
             `${noiseStateName}[slot] = ${bxor32("ghost", "(a + b + pc) % " + bitNames.mod)}`,
             "return pc + 1, false, nil",
           ];
@@ -4549,7 +4719,7 @@ function buildVmSource(
             "return pc + 1, false, nil",
           ];
         default:
-          return ["return pc + 1, false, nil"];
+          return sharedBody || ["return pc + 1, false, nil"];
       }
     };
 
@@ -4936,7 +5106,7 @@ function collectStatementScopedBindings(stmt, names, seen) {
   }
 }
 
-function collectPreboundLocalsForFunction(ast, fnNode) {
+function collectVisibleOuterBindingsForFunction(ast, fnNode) {
   const names = [];
   const seen = new Set();
   const context = findFunctionContext(ast, fnNode) || {};
@@ -4956,6 +5126,18 @@ function collectPreboundLocalsForFunction(ast, fnNode) {
     pushTopLevelLocalName(names, seen, getFunctionName(context.enclosingFunction));
   }
   return names;
+}
+
+function collectPreboundLocalsForFunction(ast, fnNode) {
+  const visibleBindings = new Set(collectVisibleOuterBindingsForFunction(ast, fnNode));
+  if (!visibleBindings.size) {
+    return [];
+  }
+
+  const declared = collectDeclaredNamesInFunction(fnNode);
+  return collectUsedIdentifierOrder(fnNode).filter((name) => (
+    !declared.has(name) && visibleBindings.has(name)
+  ));
 }
 
 function buildTopLevelChunkPlan(ast) {
@@ -5018,9 +5200,31 @@ function virtualizeLuau(ast, ctx) {
       }
 
       const compiler = new VmCompiler({ style, options: ctx.options });
+      const preboundLocals = collectPreboundLocalsForFunction(ast, node);
+      const selfBoundLocals = new Set(compiler.getFunctionPreboundLocals(node));
+      const externalPreboundLocals = preboundLocals.filter((name) => !selfBoundLocals.has(name));
+      const includeList = Array.isArray(ctx.options.vm?.include) ? ctx.options.vm.include : [];
+      const broadVirtualization = Boolean(ctx.options.vm?.all) || includeList.length === 0;
+      if (node.type === "FunctionExpression" && broadVirtualization) {
+        tracePass(ctx, {
+          kind: "skip-virtualize-function",
+          reason: "anonymous-broad",
+          functionName: fnName || "<anonymous>",
+        });
+        return;
+      }
+      if (externalPreboundLocals.length > 0 && broadVirtualization) {
+        tracePass(ctx, {
+          kind: "skip-virtualize-function",
+          reason: "captured-outer-locals",
+          functionName: fnName || "<anonymous>",
+          locals: externalPreboundLocals,
+        });
+        return;
+      }
       let program;
       try {
-        program = compiler.compileFunction(node, collectPreboundLocalsForFunction(ast, node));
+        program = compiler.compileFunction(node, preboundLocals);
       } catch (err) {
         const debug = Boolean(ctx.options.vm?.debug) || process.env.JS_OBF_VM_DEBUG === "1";
         if (debug) {
@@ -5065,7 +5269,9 @@ function virtualizeLuau(ast, ctx) {
 
       if (!blockDispatch) {
         const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false, opcodeList);
-        opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
+        opcodeInfo = ctx.options.vm?.opcodeEncoding === "pairs"
+          ? buildOpcodePairsEncoding(opcodeMap, ctx.rng, seedState, opcodeList)
+          : buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
 
         program.instructions = program.instructions.map((inst) => {
           const opName = inst[0];
@@ -5134,9 +5340,6 @@ function virtualizeLuau(ast, ctx) {
       const vmAst = style === "custom"
         ? ctx.parseCustom(vmSource)
         : ctx.parseLuaparse(vmSource);
-      if (vmBuild && typeof vmBuild === "object" && vmBuild.coreAliases) {
-        renameVmCoreIdentifiers(vmAst, vmBuild.coreAliases);
-      }
       markVmNodes(vmAst);
       replaceFunctionBody(node, vmAst, style);
       tracePass(ctx, {
@@ -5210,7 +5413,9 @@ function virtualizeLuau(ast, ctx) {
 
     if (!blockDispatch) {
       const opcodeMap = buildOpcodeMap(ctx.rng, ctx.options.vm?.opcodeShuffle !== false, opcodeList);
-      opcodeInfo = buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
+      opcodeInfo = ctx.options.vm?.opcodeEncoding === "pairs"
+        ? buildOpcodePairsEncoding(opcodeMap, ctx.rng, seedState, opcodeList)
+        : buildOpcodeEncoding(opcodeMap, ctx.rng, seedState, opcodeList);
 
       program.instructions = program.instructions.map((inst) => {
         const opName = inst[0];
@@ -5279,9 +5484,6 @@ function virtualizeLuau(ast, ctx) {
     const vmAst = style === "custom"
       ? ctx.parseCustom(vmSource)
       : ctx.parseLuaparse(vmSource);
-    if (vmBuild && typeof vmBuild === "object" && vmBuild.coreAliases) {
-      renameVmCoreIdentifiers(vmAst, vmBuild.coreAliases);
-    }
     markVmNodes(vmAst);
     replaceChunkBody(ast, vmAst, chunkPlan.prefix);
     ast.__obf_vm_chunk = true;
@@ -5296,4 +5498,9 @@ function virtualizeLuau(ast, ctx) {
 
 module.exports = {
   virtualizeLuau,
+  __test: {
+    computeSeedFromPieces,
+    VmCompiler,
+    collectPreboundLocalsForFunction,
+  },
 };

@@ -6,6 +6,7 @@ const { spawnSync } = require("child_process");
 const { obfuscateLuau, MAX_LUAU_OUTPUT_BYTES } = require("../src/luau");
 const { normalizeOptions } = require("../src/options");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
+const { __test: vmInternals } = require("../src/luau/vm");
 
 const source = [
   "local function demo(a, b)",
@@ -65,6 +66,26 @@ function hasPackedFrontLoadedLoaderShape(code) {
   return /"loa"|dstr|"ad"|getfenv|_ENV|_G/.test(head);
 }
 
+function hasOpcodePairsEncodingShape(code) {
+  return code.includes('local op_pairs="') && code.includes("\\95\\");
+}
+
+function hasSyncLocalIfChain(code) {
+  return /local function \w+\(idx, value\)[\s\S]*if idx == \d+ then/.test(code);
+}
+
+function hasSyncLocalSetterTable(code) {
+  return /local \w+=\{\}[\s\S]*\[\d+\]=\w+/.test(code) || /local \w+ = \{\}[\s\S]*\[\d+\] = \w+/.test(code);
+}
+
+function hasFixedBytecodeStride17(code) {
+  return code.includes("mix = mix * 17");
+}
+
+function hasTableMoveExpandArgs(code) {
+  return code.includes(".move(") || code.includes('["table"].move');
+}
+
 function createSemanticVmOptions(functionName) {
   return {
     enabled: true,
@@ -107,15 +128,27 @@ async function obfuscateSemanticVm(sourceText, functionName, seed) {
 function runLuau(code) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "js-obf-luau-vm-"));
   const file = path.join(dir, "case.luau");
+  const keepFailedArtifacts = process.env.JS_OBF_KEEP_FAILED_LUAU === "1";
   try {
     fs.writeFileSync(file, code, "utf8");
     const result = spawnSync("luau", [file], { encoding: "utf8" });
     if (result.status !== 0) {
+      if (keepFailedArtifacts) {
+        const preserved = path.join(os.tmpdir(), `js-obf-luau-vm-failed-${Date.now()}.luau`);
+        fs.copyFileSync(file, preserved);
+        const details = [
+          `preserved failing luau case at ${preserved}`,
+          result.stderr || result.stdout || `luau exited with code ${result.status}`,
+        ].filter(Boolean).join("\n");
+        throw new Error(details);
+      }
       throw new Error(result.stderr || result.stdout || `luau exited with code ${result.status}`);
     }
     return result.stdout.trim();
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    if (!keepFailedArtifacts) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -229,11 +262,206 @@ function runPackedShellNormalizationOverride() {
   assert.deepStrictEqual(options.vm.include, ["beta"], "packed shell should respect explicit include overrides");
 }
 
+function runVmModeNormalizationDefaults() {
+  const options = normalizeOptions({
+    lang: "luau",
+    luauParser: "custom",
+    vm: true,
+  });
+
+  assert.strictEqual(options.vm.mode, "compact", "vm: true should default to compact mode");
+  assert.strictEqual(options.vm.fakeOpcodes, 0, "compact mode should default fake opcodes off");
+  assert.strictEqual(options.vm.decoyRuntime, false, "compact mode should default decoy runtime off");
+  assert.strictEqual(options.vm.symbolNoise, false, "compact mode should default symbol noise off");
+  assert.strictEqual(options.vm.instructionFusion, false, "compact mode should default instruction fusion off");
+  assert.strictEqual(options.vm.semanticMisdirection, false, "compact mode should default semantic misdirection off");
+  assert.strictEqual(options.vm.dynamicCoupling, false, "compact mode should default dynamic coupling off");
+  assert.strictEqual(options.vm.constsSplit, false, "compact mode should default const splitting off");
+}
+
+function runVmModeNormalizationOverride() {
+  const options = normalizeOptions({
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      mode: "max",
+      fakeOpcodes: 0,
+      decoyRuntime: false,
+      symbolNoise: false,
+    },
+  });
+
+  assert.strictEqual(options.vm.mode, "max", "explicit vm mode should be preserved");
+  assert.strictEqual(options.vm.fakeOpcodes, 0, "explicit fake opcode override should win");
+  assert.strictEqual(options.vm.decoyRuntime, false, "explicit decoy override should win");
+  assert.strictEqual(options.vm.symbolNoise, false, "explicit symbol-noise override should win");
+  assert.strictEqual(options.vm.instructionFusion, true, "max mode should keep heavy defaults when not overridden");
+}
+
 function runLuauOutputSizeLimit() {
   assert.strictEqual(
     MAX_LUAU_OUTPUT_BYTES,
     5 * 1024 * 1024,
     "Luau output size limit should allow up to 5 MB before fallback or failure"
+  );
+}
+
+function runSeedRangeFix() {
+  assert(vmInternals && typeof vmInternals.computeSeedFromPieces === "function", "vm internals should expose computeSeedFromPieces");
+  const seen = new Set();
+  for (let a = 1; a <= 32; a += 1) {
+    for (let b = 1; b <= 32; b += 1) {
+      for (let bc = 0; bc <= 32; bc += 1) {
+        const seed = vmInternals.computeSeedFromPieces([a, b], bc, a + b);
+        assert(seed >= 0 && seed <= 255, "seed should stay in byte range");
+        seen.add(seed);
+      }
+    }
+  }
+  assert.strictEqual(
+    vmInternals.computeSeedFromPieces([1], 255, 0),
+    255,
+    "seed generation should be able to reach 255 after widening beyond mod 255"
+  );
+}
+
+function runVmPreboundLocalCaptureNarrowing() {
+  assert(
+    vmInternals && typeof vmInternals.collectPreboundLocalsForFunction === "function",
+    "vm internals should expose collectPreboundLocalsForFunction"
+  );
+
+  const hardProjectSource = fs.readFileSync(
+    path.join(__dirname, "luau-hard-project.lua"),
+    "utf8"
+  );
+  const ast = parseCustom(hardProjectSource);
+  const byName = new Map();
+  walkAst(ast, (node) => {
+    if (node && node.type === "FunctionDeclaration") {
+      const name = node.name && node.name.base && node.name.base.name;
+      if (typeof name === "string") {
+        byName.set(name, node);
+      }
+    }
+  });
+
+  assert.deepStrictEqual(
+    vmInternals.collectPreboundLocalsForFunction(ast, byName.get("stableHash")),
+    [],
+    "top-level local functions should not prebind earlier sibling locals they do not reference"
+  );
+  assert.deepStrictEqual(
+    vmInternals.collectPreboundLocalsForFunction(ast, byName.get("withRetry")),
+    [],
+    "top-level local functions should not prebind unrelated earlier sibling locals"
+  );
+}
+
+async function runSyncLocalLeakHardening() {
+  const capturedNameSource = [
+    "local exposedSecretValue = 1",
+    "local function inc()",
+    "  exposedSecretValue = exposedSecretValue + 1",
+    "  return exposedSecretValue",
+    "end",
+    "print(inc())",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(capturedNameSource, "inc", "vm-sync-local-shield");
+  assert.ok(!hasSyncLocalIfChain(code), "syncLocal should no longer emit a visible if idx == N chain");
+  assert.ok(hasSyncLocalSetterTable(code), "syncLocal should use an indirect setter table");
+}
+
+async function runBytecodeStrideHardening() {
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      mode: "compact",
+      include: ["demo"],
+      opcodeShuffle: false,
+      runtimeKey: false,
+      runtimeSplit: true,
+      bytecodeEncrypt: true,
+      constsEncrypt: false,
+      fakeOpcodes: 0,
+    },
+    cff: false,
+    strings: false,
+    rename: false,
+    seed: "vm-bytecode-hardening",
+  });
+
+  parseCustom(code);
+  assert.ok(!hasFixedBytecodeStride17(code), "bytecode runtime should not expose the fixed stride 17 decoder anymore");
+}
+
+async function runExpandArgsOptimization() {
+  const expandSource = [
+    "local function pair()",
+    "  return 1, 2",
+    "end",
+    "local function f(...)",
+    "  return select('#', ...), ...",
+    "end",
+    "local function test()",
+    "  return f(pair())",
+    "end",
+    "local n, a, b = test()",
+    "print(n, a, b)",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(expandSource, "test", "vm-expand-args-optimized");
+  assert.strictEqual(runLuau(code), "2\t1\t2", "optimized expandArgs path should preserve vararg expansion behavior");
+  assert.ok(hasTableMoveExpandArgs(code), "expandArgs should use table.move when available");
+}
+
+async function runAlternateOpcodeEncodingMode() {
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      mode: "compact",
+      opcodeEncoding: "pairs",
+      opcodeShuffle: false,
+      bytecodeEncrypt: false,
+      constsEncrypt: false,
+      runtimeKey: false,
+      runtimeSplit: false,
+    },
+    cff: false,
+    strings: false,
+    rename: false,
+    seed: "vm-opcode-pairs",
+  });
+
+  parseCustom(code);
+  assert.ok(hasOpcodePairsEncodingShape(code), "alternate opcode encoding should emit escaped pair payload fragments");
+}
+
+async function runMinimalSemanticVmRegression() {
+  const semanticSource = [
+    "local function demo(a, b)",
+    "  local sum = a + b",
+    "  return sum * 2",
+    "end",
+    "print(demo(2, 5))",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(
+    semanticSource,
+    "demo",
+    "vm-minimal-semantic-regression"
+  );
+
+  assert.strictEqual(
+    runLuau(code),
+    "14",
+    "minimal semantic VM function should preserve local loads, stores, const pushes, and arithmetic"
   );
 }
 
@@ -365,7 +593,7 @@ async function runPackedShellHardProjectRegression() {
     "[$REST] alpha => 240 (mixed)",
     "[$REST] gamma => 158 (burst)",
   ];
-  const sharedOptions = {
+  const createSharedOptions = () => ({
     lang: "luau",
     luauParser: "custom",
     filename: "luau-hard-project.lua",
@@ -386,10 +614,10 @@ async function runPackedShellHardProjectRegression() {
       homoglyphs: false,
     },
     seed: "hard-project-sourcemap",
-  };
+  });
 
   const { code: nonPackedCode } = await obfuscateLuau(hardProjectSource, {
-    ...sharedOptions,
+    ...createSharedOptions(),
     vm: {
       enabled: true,
       all: true,
@@ -406,12 +634,16 @@ async function runPackedShellHardProjectRegression() {
   });
 
   const { code: packedCode } = await obfuscateLuau(hardProjectSource, {
-    ...sharedOptions,
+    ...createSharedOptions(),
     vm: {
       enabled: true,
       shellStyle: "packed",
     },
   });
+  assert.ok(
+    hasPackedShellShape(packedCode),
+    "packed hard project regression should emit a packed loader before execution"
+  );
   parseCustom(packedCode);
   const packedOutput = runLuau(packedCode);
   expectedLines.forEach((line) => {
@@ -420,7 +652,6 @@ async function runPackedShellHardProjectRegression() {
       `packed hard project output should include ${line}`
     );
   });
-  assert.ok(hasPackedShellShape(packedCode), "hard project regression should stay on the packed loader path");
   assert.ok(
     !packedCode.includes("authorize_purchase_flow") &&
       !packedCode.includes("refresh_payment_session"),
@@ -641,6 +872,104 @@ async function runRenamedMemberCompoundAssignment() {
   assert.strictEqual(runLuau(code), "3", "virtualized functions should preserve renamed member compound assignments");
 }
 
+async function runRenamedInsertedRecordFields() {
+  const sourceWithInsertedRecords = [
+    "local function demo()",
+    "  local ranked = {}",
+    "  table.insert(ranked, { score = 5, id = 'a' })",
+    "  return ranked[1].score, ranked[1].id",
+    "end",
+    "print(demo())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(sourceWithInsertedRecords, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["demo"],
+      opcodeShuffle: false,
+      fakeOpcodes: 0,
+      bytecodeEncrypt: false,
+      constsEncrypt: false,
+      constsSplit: false,
+      runtimeKey: false,
+      runtimeSplit: false,
+      decoyRuntime: false,
+      symbolNoise: false,
+      instructionFusion: false,
+      semanticMisdirection: false,
+      dynamicCoupling: false,
+      isaPolymorph: false,
+      fakeEdges: false,
+    },
+    cff: false,
+    strings: false,
+    rename: true,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: false,
+      homoglyphs: false,
+    },
+    seed: "vm-renamed-inserted-record-fields",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "5\ta",
+    "virtualized functions should preserve renamed record fields inserted into local arrays"
+  );
+}
+
+async function runRenamedIpairsRecordFields() {
+  const sourceWithIpairsRecords = [
+    "local function demo()",
+    "  local rows = {}",
+    "  table.insert(rows, { id = 'a', weight = 4, flags = { hot = true, cold = false } })",
+    "  local out = {}",
+    "  for _, row in ipairs(rows) do",
+    "    table.insert(out, row.id .. ':' .. tostring(row.weight) .. ':' .. tostring(row.flags.hot))",
+    "  end",
+    "  return table.concat(out, '|')",
+    "end",
+    "print(demo())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(sourceWithIpairsRecords, {
+    lang: "luau",
+    luauParser: "custom",
+    cff: false,
+    strings: false,
+    rename: true,
+    constArray: false,
+    numbers: false,
+    wrap: false,
+    dead: false,
+    proxifyLocals: false,
+    padFooter: false,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: false,
+      homoglyphs: false,
+    },
+    seed: "rename-ipairs-record-fields",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "a:4:true",
+    "renamed local record fields should stay consistent when iterating inserted rows with ipairs"
+  );
+}
+
 async function runMetatableConstructorGuard() {
   const sourceWithMetatableConstructor = [
     "local Engine = {}",
@@ -858,6 +1187,230 @@ async function runWholeProgramNormalizeGraph() {
     runLuau(code),
     "2:amplify:alpha",
     "whole-program VM should preserve normalize graph payload and deps field access"
+  );
+}
+
+async function runWholeProgramStateGraphRegression() {
+  const stateGraphSource = [
+    "local function shallowClone(input)",
+    "  local out = {}",
+    "  for key, value in pairs(input) do",
+    "    out[key] = value",
+    "  end",
+    "  return out",
+    "end",
+    "local function stableHash(text, salt)",
+    "  local acc = salt or 17",
+    "  for i = 1, #text do",
+    "    local byte = string.byte(text, i)",
+    "    acc = (acc * 131 + byte + i * 7) % 2147483647",
+    "  end",
+    "  return acc",
+    "end",
+    "local function makeWindow(size)",
+    "  local values = {}",
+    "  local cursor = 1",
+    "  local length = 0",
+    "  local window = {}",
+    "  function window:push(value)",
+    "    values[cursor] = value",
+    "    cursor += 1",
+    "    if cursor > size then",
+    "      cursor = 1",
+    "    end",
+    "    if length < size then",
+    "      length += 1",
+    "    end",
+    "  end",
+    "  function window:snapshot()",
+    "    local out = {}",
+    "    for i = 1, length do",
+    "      out[i] = values[i]",
+    "    end",
+    "    table.sort(out, function(a, b)",
+    "      return a.name < b.name",
+    "    end)",
+    "    return out",
+    "  end",
+    "  return window",
+    "end",
+    "local Engine = {}",
+    "Engine.__index = Engine",
+    "function Engine.new(seed)",
+    "  local self = {",
+    "    seed = seed,",
+    "    nodes = {},",
+    "    order = {},",
+    "    cache = {},",
+    "    trace = {},",
+    "    window = makeWindow(6),",
+    "  }",
+    "  return setmetatable(self, Engine)",
+    "end",
+    "function Engine:register(name, deps, handler)",
+    "  self.nodes[name] = {",
+    "    name = name,",
+    "    deps = shallowClone(deps),",
+    "    handler = handler,",
+    "  }",
+    "  table.insert(self.order, name)",
+    "end",
+    "function Engine:_ready(node, state)",
+    "  for _, dep in ipairs(node.deps) do",
+    "    if state[dep] == nil then",
+    "      return false",
+    "    end",
+    "  end",
+    "  return true",
+    "end",
+    "function Engine:_resolve(node, state)",
+    "  local resolved = {}",
+    "  for _, dep in ipairs(node.deps) do",
+    "    resolved[dep] = state[dep]",
+    "  end",
+    "  return resolved",
+    "end",
+    "function Engine:_record(name, value)",
+    "  local digest = stableHash(name .. ':' .. tostring(value.score or value.value or value.digest), self.seed)",
+    "  table.insert(self.trace, { name = name, digest = digest, tag = value.tag or value.mode or 'plain' })",
+    "  self.window:push({ name = name, digest = digest })",
+    "end",
+    "function Engine:run(payload)",
+    "  local state = { input = shallowClone(payload) }",
+    "  local pending = shallowClone(self.order)",
+    "  local progress = true",
+    "  repeat",
+    "    progress = false",
+    "    local nextPending = {}",
+    "    for _, name in ipairs(pending) do",
+    "      if state[name] ~= nil then",
+    "        continue",
+    "      end",
+    "      local node = self.nodes[name]",
+    "      if not self:_ready(node, state) then",
+    "        table.insert(nextPending, name)",
+    "      else",
+    "        local deps = self:_resolve(node, state)",
+    "        local value = node.handler(deps, payload, 1, self)",
+    "        state[name] = value",
+    "        self:_record(name, value)",
+    "        progress = true",
+    "      end",
+    "    end",
+    "    pending = nextPending",
+    "  until not progress",
+    "  return state",
+    "end",
+    "local engine = Engine.new(77)",
+    "engine:register('normalize', { 'input' }, function(deps, payload)",
+    "  local rows = {}",
+    "  for _, item in ipairs(deps.input.items) do",
+    "    table.insert(rows, { id = item.id, weight = item.weight })",
+    "  end",
+    "  return { value = #rows, rows = rows, mode = payload.mode }",
+    "end)",
+    "engine:register('expand', { 'normalize' }, function(deps, payload)",
+    "  local rows = {}",
+    "  for _, row in ipairs(deps.normalize.rows) do",
+    "    table.insert(rows, { id = row.id, tag = 'warm', samples = { 1 } })",
+    "  end",
+    "  return { rows = rows, digest = stableHash('expand:' .. tostring(#rows), payload.seed) }",
+    "end)",
+    "local out = engine:run({ seed = 77, mode = 'amplify', items = { { id = 'alpha', weight = 3 } } })",
+    "print((out.normalize and out.normalize.rows[1].id or 'nil') .. '|' .. (out.expand and out.expand.rows[1].id or 'nil'))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(stateGraphSource, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: false,
+    strings: false,
+    dead: false,
+    cff: false,
+    wrap: false,
+    numbers: false,
+    constArray: false,
+    proxifyLocals: false,
+    padFooter: false,
+    vm: {
+      enabled: true,
+      all: true,
+      topLevel: true,
+    },
+    seed: "vm-whole-program-state-graph",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "alpha|alpha",
+    "whole-program VM should preserve state table writes and downstream deps graph reads"
+  );
+}
+
+async function runVmDisablesClassicConstArrayAndCff() {
+  const passthroughSource = [
+    "local function shallowClone(input)",
+    "  local out = {}",
+    "  for key, value in pairs(input) do",
+    "    out[key] = value",
+    "  end",
+    "  return out",
+    "end",
+    "local function stableHash(text, salt)",
+    "  local acc = salt or 17",
+    "  for i = 1, #text do",
+    "    local byte = string.byte(text, i)",
+    "    acc = (acc * 131 + byte + i * 7) % 2147483647",
+    "  end",
+    "  return acc",
+    "end",
+    "local function withRetry(label, limit, thunk)",
+    "  local lastError = 'unknown'",
+    "  for attempt = 1, limit do",
+    "    local ok, result = pcall(thunk, attempt)",
+    "    if ok then",
+    "      return result",
+    "    end",
+    "    lastError = result",
+    "  end",
+    "  error(`step {label} failed after {limit} attempts: {lastError}`)",
+    "end",
+    "local payload = shallowClone({ a = 1, b = 2 })",
+    "print(payload.a, payload.b, stableHash('ab', 3), withRetry('x', 2, function() return 'ok' end))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(passthroughSource, {
+    lang: "luau",
+    luauParser: "custom",
+    wrap: true,
+    rename: true,
+    strings: true,
+    dead: true,
+    cff: true,
+    numbers: true,
+    constArray: true,
+    padFooter: true,
+    proxifyLocals: false,
+    vm: {
+      enabled: true,
+      include: ["shallowClone", "stableHash", "withRetry"],
+      topLevel: false,
+    },
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: true,
+      homoglyphs: false,
+    },
+    seed: "vm-disable-classic-const-cff",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "1\t2\t65219\tok",
+    "vm-targeted functions should stay correct when classic const-array and classic cff are requested"
   );
 }
 
@@ -1135,14 +1688,86 @@ async function runCapturedAnonymousClosureRead() {
   );
 }
 
+async function runFakeOpcodeRetryTableReturnRegression() {
+  const retrySource = [
+    "local function withRetry(limit, thunk)",
+    "  local lastError = 'unknown'",
+    "  for attempt = 1, limit do",
+    "    local ok, result = pcall(thunk, attempt)",
+    "    if ok then",
+    "      return result",
+    "    end",
+    "    lastError = result",
+    "  end",
+    "  error(lastError)",
+    "end",
+    "local function outer()",
+    "  local value = withRetry(3, function(attempt)",
+    "    if attempt == 1 then",
+    "      error('x')",
+    "    end",
+    "    return { score = attempt + 5 }",
+    "  end)",
+    "  return value.score",
+    "end",
+    "print(outer())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(retrySource, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["withRetry"],
+      topLevel: false,
+      instructionFusion: false,
+      fakeOpcodes: 6,
+      opcodeShuffle: false,
+      bytecodeEncrypt: false,
+      constsEncrypt: false,
+      constsSplit: false,
+      runtimeKey: false,
+      runtimeSplit: false,
+      decoyRuntime: false,
+      symbolNoise: false,
+      semanticMisdirection: false,
+      dynamicCoupling: false,
+      isaPolymorph: false,
+      fakeEdges: false,
+    },
+    cff: false,
+    strings: false,
+    rename: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    seed: "vm-fake-opcode-retry-table-return",
+  });
+
+  assert.strictEqual(
+    runLuau(code),
+    "7",
+    "fake opcode insertion should preserve pcall retry table returns"
+  );
+}
+
 (async () => {
   await runCustom();
   await runCustomLayered();
   await runCustomPolymorph();
   await runCustomTopLevel();
+  runVmModeNormalizationDefaults();
+  runVmModeNormalizationOverride();
+  runSeedRangeFix();
+  runVmPreboundLocalCaptureNarrowing();
   runPackedShellNormalizationDefaults();
   runPackedShellNormalizationOverride();
   runLuauOutputSizeLimit();
+  await runAlternateOpcodeEncodingMode();
+  await runMinimalSemanticVmRegression();
+  await runSyncLocalLeakHardening();
+  await runBytecodeStrideHardening();
   await runPackedShellWholeProgramDefault();
   await runPackedShellPayloadConcealment();
   await runPackedShellExplicitIncludeOverride();
@@ -1153,9 +1778,12 @@ async function runCapturedAnonymousClosureRead() {
   await runNestedCallbackInnerLocalGuard();
   await runCompoundAssignmentTargets();
   await runRenamedMemberCompoundAssignment();
+  await runRenamedInsertedRecordFields();
+  await runRenamedIpairsRecordFields();
   await runMetatableConstructorGuard();
   await runWrappedVmMethodRoundtrip();
   await runWholeProgramNormalizeGraph();
+  await runVmDisablesClassicConstArrayAndCff();
   await runGotoLabelSupport();
   await runRecursiveLocalFunction();
   await runMultiReturnAssignment();
@@ -1166,9 +1794,11 @@ async function runCapturedAnonymousClosureRead() {
   await runElseScopeIsolation();
   await runRepeatConditionScope();
   await runCallArgumentExpansion();
+  await runExpandArgsOptimization();
   await runSingleAssignmentOrdering();
   await runCapturedLocalWriteback();
   await runCapturedAnonymousClosureRead();
+  await runFakeOpcodeRetryTableReturnRegression();
   console.log("luau-vm: ok");
 })().catch((err) => {
   console.error(err);

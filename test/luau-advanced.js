@@ -1,4 +1,8 @@
 const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { spawnSync } = require("child_process");
 const { obfuscateLuau } = require("../src/luau");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 
@@ -26,6 +30,21 @@ const vmSource = [
   "  return a - b",
   "end",
 ].join("\n");
+
+function runLuau(code) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "js-obf-luau-advanced-"));
+  const file = path.join(dir, "case.luau");
+  try {
+    fs.writeFileSync(file, code, "utf8");
+    const result = spawnSync("luau", [file], { encoding: "utf8" });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout || `luau exited with code ${result.status}`);
+    }
+    return result.stdout.trim();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 async function runNumbersExpressions() {
   const baseOptions = {
@@ -124,11 +143,48 @@ async function runSignatureHiding() {
   assert.ok(!/\bbxor\b/.test(code), "vm runtime should not expose bxor helper names");
 }
 
+async function runAntiHookLockReadonlyEnvCompatibility() {
+  const source = [
+    "local Engine = {}",
+    "Engine.__index = Engine",
+    "function Engine.new()",
+    "  local self = {}",
+    "  return setmetatable(self, Engine)",
+    "end",
+    "print(Engine.new() ~= nil)",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    preset: "low",
+    strings: false,
+    rename: false,
+    cff: false,
+    dead: false,
+    antiHook: { enabled: true, lock: true },
+    vm: { enabled: false },
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    seed: "anti-hook-readonly-env",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "true",
+    "anti-hook lock should not fail on readonly luau environments"
+  );
+}
+
 (async () => {
   await runNumbersExpressions();
   await runConstArrayBase64();
   await runBlockDispatchCustom();
   await runSignatureHiding();
+  await runAntiHookLockReadonlyEnvCompatibility();
   console.log("luau-advanced: ok");
 })().catch((err) => {
   console.error(err);

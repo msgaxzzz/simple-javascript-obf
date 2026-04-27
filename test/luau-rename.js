@@ -527,6 +527,97 @@ async function runHardProjectLikeRoundtrip() {
   assert.strictEqual(runLuau(code), "3", "hard-project-like member graphs should survive full luau pipeline");
 }
 
+async function runNonVmClonedPayloadSchemaGuard() {
+  const source = [
+    "local function shallowClone(input)",
+    "  local out = {}",
+    "  for key, value in pairs(input) do",
+    "    out[key] = value",
+    "  end",
+    "  return out",
+    "end",
+    "",
+    "local Engine = {}",
+    "Engine.__index = Engine",
+    "",
+    "function Engine.new()",
+    "  local self = { nodes = {}, order = {} }",
+    "  return setmetatable(self, Engine)",
+    "end",
+    "",
+    "function Engine:register(name, deps, handler)",
+    "  self.nodes[name] = { deps = shallowClone(deps), handler = handler }",
+    "  table.insert(self.order, name)",
+    "end",
+    "",
+    "function Engine:_ready(node, state)",
+    "  for _, dep in ipairs(node.deps) do",
+    "    if state[dep] == nil then",
+    "      return false",
+    "    end",
+    "  end",
+    "  return true",
+    "end",
+    "",
+    "function Engine:_resolve(node, state)",
+    "  local resolved = {}",
+    "  for _, dep in ipairs(node.deps) do",
+    "    resolved[dep] = state[dep]",
+    "  end",
+    "  return resolved",
+    "end",
+    "",
+    "function Engine:run(payload)",
+    "  local state = { input = shallowClone(payload) }",
+    "  for _, name in ipairs(self.order) do",
+    "    local node = self.nodes[name]",
+    "    if self:_ready(node, state) then",
+    "      local deps = self:_resolve(node, state)",
+    "      state[name] = node.handler(deps, payload)",
+    "    end",
+    "  end",
+    "  return state",
+    "end",
+    "",
+    "local engine = Engine.new()",
+    "engine:register(\"normalize\", { \"input\" }, function(deps, payload)",
+    "  return { total = #deps.input.items, mode = payload.mode }",
+    "end)",
+    "",
+    "local result = engine:run({ mode = \"amplify\", items = { 1, 2, 3 } })",
+    "print(result.normalize.total .. \":\" .. result.normalize.mode)",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: true,
+    cff: true,
+    dead: true,
+    vm: false,
+    constArray: true,
+    numbers: true,
+    proxifyLocals: false,
+    padFooter: true,
+    wrap: true,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: true,
+      homoglyphs: false,
+    },
+    seed: "non-vm-cloned-payload-schema-guard",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "3:amplify",
+    "non-VM payload schemas cloned into deps.input should keep member access aligned"
+  );
+}
+
 async function runClonedPayloadSchemaGuard() {
   const source = [
     "local function shallowClone(input)",
@@ -698,6 +789,144 @@ async function runDynamicMapRecordAliasGuard() {
   );
 }
 
+async function runExternalIpairsValueShapeGuard() {
+  const source = [
+    "local function test(payload)",
+    "  local total = 0",
+    "  for _, item in ipairs(payload.items) do",
+    "    total += item.weight",
+    "  end",
+    "  return total",
+    "end",
+    "print(test({ items = { { id = 'a', weight = 3 }, { id = 'b', weight = 2 } } }))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    wrap: false,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: false,
+      homoglyphs: false,
+    },
+    seed: "rename-external-ipairs-value-shape",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "5",
+    "ipairs values sourced from external payload arrays should preserve member names"
+  );
+}
+
+async function runLocalSortComparatorShapeGuard() {
+  const source = [
+    "local function rank()",
+    "  local ranked = {}",
+    "  table.insert(ranked, { id = 'a', score = 7, tag = 'warm' })",
+    "  table.insert(ranked, { id = 'b', score = 7, tag = 'warm' })",
+    "  table.sort(ranked, function(a, b)",
+    "    if a.score == b.score then",
+    "      return a.id < b.id",
+    "    end",
+    "    return a.score > b.score",
+    "  end)",
+    "  return ranked[1].id .. ':' .. ranked[1].score",
+    "end",
+    "print(rank())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    wrap: false,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: false,
+      homoglyphs: false,
+    },
+    seed: "rename-local-sort-comparator-shape",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "a:7",
+    "table.sort comparators over local record arrays should preserve aligned member access"
+  );
+}
+
+async function runMetatableDirectFieldRoundtrip() {
+  const source = [
+    "local Engine = {}",
+    "Engine.__index = Engine",
+    "function Engine.new()",
+    "  return setmetatable({ handler = nil }, Engine)",
+    "end",
+    "function Engine:register(handler)",
+    "  self.handler = handler",
+    "end",
+    "local engine = Engine.new()",
+    "engine:register(function()",
+    "  local report = { lines = { 'ok' }, value = 1 }",
+    "  return report",
+    "end)",
+    "local state = { report = engine.handler() }",
+    "print(state.report.lines[1], state.report.value)",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    wrap: false,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: false,
+      homoglyphs: false,
+    },
+    seed: "rename-metatable-direct-field-roundtrip",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "ok\t1",
+    "metatable-backed direct instance fields should stay aligned across constructor, method writes, and reads"
+  );
+}
+
 (async () => {
   runCanonicalOfficialShapeRename();
   runEnvAliasMemberGuard();
@@ -710,7 +939,11 @@ async function runDynamicMapRecordAliasGuard() {
   await runAliasedContainerRecordGuard();
   await runDynamicMapMemberAccessGuard();
   await runDynamicMapRecordAliasGuard();
+  await runExternalIpairsValueShapeGuard();
+  await runLocalSortComparatorShapeGuard();
+  await runMetatableDirectFieldRoundtrip();
   await runHardProjectLikeRoundtrip();
+  await runNonVmClonedPayloadSchemaGuard();
   await runClonedPayloadSchemaGuard();
   console.log("luau-rename: ok");
 })().catch((err) => {

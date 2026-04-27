@@ -5,85 +5,158 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>JS Obfuscator</title>
   <style>
-    @import url("https://fonts.googleapis.com/css2?family=Fira+Code:wght@500;600;700&family=Fira+Sans:wght@400;500;600;700&display=swap");
+    @import url("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap");
 
     :root {
-      color-scheme: light;
-      --bg: #ffffff;
-      --panel: #ffffff;
-      --ink: #111111;
-      --muted: #555555;
-      --line: #d9d9d9;
-      --accent: #111111;
-      --accent-2: #111111;
-      --accent-3: #111111;
-      --shadow: none;
+      color-scheme: dark;
+      --bg: #111111;
+      --bg-2: #1a1a1a;
+      --panel: #1e1e1e;
+      --panel-2: #242424;
+      --panel-solid: #1e1e1e;
+      --ink: #eeeeee;
+      --muted: #888888;
+      --line: rgba(255,255,255,0.08);
+      --line-strong: rgba(255,255,255,0.15);
+      --accent: #f97316;
+      --accent-2: #fb923c;
+      --accent-3: #fbbf24;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
       --radius: 10px;
-      --ring: 0 0 0 3px rgba(17, 17, 17, 0.16);
+      --radius-sm: 7px;
+      --ring: 0 0 0 2px rgba(249,115,22,0.4);
+      --button-shadow: none;
+      --hero-glow: #111111;
+    }
+
+    body[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f5f5f5;
+      --bg-2: #ffffff;
+      --panel: #ffffff;
+      --panel-2: #f9f9f9;
+      --panel-solid: #ffffff;
+      --ink: #111111;
+      --muted: #666666;
+      --line: rgba(0,0,0,0.08);
+      --line-strong: rgba(0,0,0,0.15);
+      --accent: #ea6c00;
+      --accent-2: #c85c00;
+      --accent-3: #d97706;
+      --shadow: 0 2px 12px rgba(0,0,0,0.08);
+      --ring: 0 0 0 2px rgba(234,108,0,0.35);
+      --button-shadow: none;
+      --hero-glow: #f5f5f5;
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      font-family: "Fira Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
       background: var(--bg);
       color: var(--ink);
       min-height: 100vh;
+      transition: background 0.2s, color 0.2s;
     }
 
     header {
       position: relative;
-      padding: 36px 6vw 14px;
-      z-index: 1;
+      padding: 20px 28px 0;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
     }
 
     .hero {
-      max-width: 1180px;
+      max-width: 1200px;
       margin: 0 auto;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 18px;
+      display: flex;
       align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 16px;
     }
 
     .hero h1 {
-      margin: 0 0 10px;
-      font-family: "Fira Code", monospace;
-      font-size: clamp(28px, 4vw, 42px);
-      letter-spacing: -0.01em;
+      margin: 0 0 4px;
+      font-family: "Inter", sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
     }
 
     .hero p {
-      margin: 0 0 14px;
+      margin: 0;
       color: var(--muted);
-      font-size: 15px;
+      font-size: 13px;
+      max-width: 540px;
     }
 
     .eyebrow {
-      font-size: 12px;
-      letter-spacing: 0.3em;
+      font-size: 11px;
+      letter-spacing: 0.08em;
       text-transform: uppercase;
-      color: var(--ink);
+      color: var(--accent);
       font-weight: 600;
-      margin-bottom: 10px;
+      margin-bottom: 4px;
       display: inline-block;
     }
 
+    .hero-topbar {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .hero-copy { max-width: 600px; }
+
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+
+    .theme-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--ink);
+      border-radius: var(--radius);
+      padding: 6px 10px;
+    }
+
+    .theme-toggle span {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 600;
+    }
+
+    .theme-toggle button {
+      padding: 5px 10px;
+      min-width: auto;
+      font-size: 12px;
+    }
+
     .hero-card {
-      background: var(--panel);
+      background: var(--panel-2);
       border-radius: var(--radius);
       border: 1px solid var(--line);
-      padding: 16px;
-      box-shadow: var(--shadow);
+      padding: 14px 18px;
     }
 
     .hero-card h3 {
       margin: 0 0 6px;
-      font-size: 14px;
+      font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 0.18em;
-      color: var(--accent-2);
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-weight: 600;
     }
 
     .hero-card ul {
@@ -91,24 +164,23 @@
       padding: 0;
       margin: 0;
       display: grid;
-      gap: 6px;
+      gap: 4px;
       color: var(--muted);
-      font-size: 13px;
+      font-size: 12px;
     }
 
     main {
       position: relative;
-      padding: 12px 6vw 48px;
+      padding: 20px 28px 48px;
       display: grid;
-      gap: 20px;
-      max-width: 1180px;
+      gap: 16px;
+      max-width: 1200px;
       margin: 0 auto;
-      z-index: 1;
     }
 
     .layout {
       display: grid;
-      gap: 18px;
+      gap: 16px;
     }
 
     @media (min-width: 980px) {
@@ -118,48 +190,31 @@
       }
     }
 
-    .stack {
-      display: grid;
-      gap: 18px;
-    }
+    .stack { display: grid; gap: 16px; }
 
     .panel {
       background: var(--panel);
       border-radius: var(--radius);
-      padding: 18px;
+      padding: 20px;
       border: 1px solid var(--line);
       box-shadow: var(--shadow);
-      position: relative;
-      overflow: hidden;
-      animation: none;
-    }
-
-    .panel::after {
-      content: none;
-    }
-
-    .panel > * {
-      position: relative;
-      z-index: 1;
     }
 
     .panel h2 {
-      margin: 0 0 12px;
-      font-size: 16px;
+      margin: 0 0 4px;
+      font-size: 12px;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.16em;
-      color: var(--accent-2);
-      position: relative;
-      z-index: 1;
+      letter-spacing: 0.08em;
+      color: var(--muted);
     }
 
     label {
       display: block;
       font-size: 12px;
       color: var(--muted);
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      margin-bottom: 5px;
+      font-weight: 500;
     }
 
     input[type="text"],
@@ -167,19 +222,22 @@
     select,
     textarea {
       width: 100%;
-      padding: 11px 12px;
-      border-radius: 8px;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
       border: 1px solid var(--line);
-      font-size: 14px;
+      font-size: 13px;
       font-family: inherit;
-      background: #fff;
+      background: var(--panel-2);
       color: var(--ink);
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
 
     textarea {
       min-height: 200px;
       resize: vertical;
+      font-family: "Fira Code", monospace;
+      font-size: 12px;
+      line-height: 1.6;
     }
 
     input:focus-visible,
@@ -191,228 +249,336 @@
       border-color: var(--accent);
     }
 
-    .row {
-      display: grid;
-      gap: 12px;
-      position: relative;
-      z-index: 1;
-    }
-
-    .row.two {
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-    }
-
-    .row.three {
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    }
-
-    .inline {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
+    .row { display: grid; gap: 10px; }
+    .row.two { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+    .row.three { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
     .chip {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 6px 12px;
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--muted);
-      background: #fff;
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 10px;
       font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: transparent;
+      border-bottom: 1px solid var(--line);
+      margin: 10px 0 6px;
     }
 
     .drop {
-      border: 2px dashed var(--line);
-      border-radius: 10px;
-      padding: 18px;
+      border: 1px dashed var(--line-strong);
+      border-radius: var(--radius-sm);
+      padding: 20px;
       text-align: center;
       color: var(--muted);
-      background: #fafafa;
-      transition: border-color 0.2s, background 0.2s, transform 0.2s;
-      font-size: 14px;
+      background: var(--panel-2);
+      transition: border-color 0.15s, background 0.15s;
+      font-size: 13px;
+      cursor: pointer;
     }
 
     .drop.active {
       border-color: var(--accent);
-      background: #f1f1f1;
+      background: rgba(249,115,22,0.06);
       color: var(--ink);
-      transform: translateY(-2px);
     }
 
     .checkbox {
       display: flex;
       align-items: center;
-      gap: 8px;
-      font-size: 14px;
+      gap: 7px;
+      font-size: 13px;
       color: var(--ink);
-      margin-bottom: 6px;
+      margin-bottom: 5px;
       text-transform: none;
       letter-spacing: normal;
+      cursor: pointer;
     }
 
     .checkbox input {
-      width: 16px;
-      height: 16px;
+      width: 14px;
+      height: 14px;
       accent-color: var(--accent);
+      cursor: pointer;
     }
 
     .actions {
       display: flex;
       flex-wrap: wrap;
-      gap: 12px;
+      gap: 8px;
       align-items: center;
     }
 
     button {
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: 10px 18px;
-      font-size: 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      padding: 7px 14px;
+      font-size: 13px;
       cursor: pointer;
-      font-weight: 600;
-      transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
-      background: #fff;
+      font-weight: 500;
+      font-family: inherit;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+      background: var(--panel-2);
       color: var(--ink);
     }
 
+    button:hover { border-color: var(--accent); }
+
     button.primary {
-      background: #111;
+      background: var(--accent);
       color: #fff;
-      border-color: #111;
-      box-shadow: none;
+      border-color: var(--accent);
+      font-weight: 600;
     }
 
-    button.primary:hover {
-      transform: translateY(-1px);
-    }
+    button.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
 
     button.secondary {
-      background: #fff;
+      background: var(--panel-2);
       color: var(--ink);
     }
 
     button.ghost {
-      background: #fff;
-      border: 1px solid var(--line);
+      background: transparent;
+      border-color: var(--line);
       color: var(--muted);
     }
 
+    button.ghost:hover { color: var(--ink); border-color: var(--line-strong); }
+
     button:disabled {
-      opacity: 0.5;
+      opacity: 0.4;
       cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
+      pointer-events: none;
     }
 
     pre {
       margin: 0;
       padding: 12px;
-      border-radius: 8px;
-      background: #111;
-      color: #fff;
+      border-radius: var(--radius-sm);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      color: var(--muted);
       font-size: 12px;
-      min-height: 120px;
-      max-height: 260px;
+      min-height: 100px;
+      max-height: 240px;
       overflow: auto;
       line-height: 1.5;
+      font-family: "Fira Code", monospace;
     }
 
     .muted { color: var(--muted); font-size: 12px; }
 
-    .lang-group {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
-      padding: 10px 12px;
-      margin-top: 12px;
+    .dev-panel {
+      display: none;
+      margin-top: 10px;
+      padding: 12px;
+      border: 1px dashed var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--panel-2);
     }
 
-    .lang-group[open] {
-      background: #fff;
+    .dev-panel.enabled { display: grid; gap: 10px; }
+
+    .lang-group {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--panel-2);
+      padding: 10px 12px;
+      margin-top: 10px;
     }
+
+    .lang-group[open] { background: var(--panel-2); }
 
     .lang-group > summary {
       cursor: pointer;
       list-style: none;
-      font-size: 12px;
-      font-weight: 700;
+      font-size: 11px;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: var(--accent-2);
+      letter-spacing: 0.08em;
+      color: var(--muted);
       user-select: none;
     }
 
-    .lang-group > summary::-webkit-details-marker {
-      display: none;
-    }
+    .lang-group > summary:hover { color: var(--ink); }
+    .lang-group > summary::-webkit-details-marker { display: none; }
 
     .lang-group > summary::before {
       content: "\25B8";
       display: inline-block;
-      margin-right: 8px;
-      transition: transform 0.2s ease;
+      margin-right: 6px;
+      transition: transform 0.15s;
     }
 
-    .lang-group[open] > summary::before {
-      transform: rotate(90deg);
+    .lang-group[open] > summary::before { transform: rotate(90deg); }
+
+    .lang-group-body { margin-top: 10px; }
+
+    .divider { height: 1px; background: var(--line); margin: 12px 0; }
+
+    .panel-subtitle {
+      margin: 0 0 14px;
+      font-size: 12px;
+      color: var(--muted);
     }
 
-    .lang-group-body {
-      margin-top: 10px;
+    .status-shell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 12px;
     }
 
-    .divider {
-      height: 1px;
-      background: var(--line);
-      margin: 12px 0;
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: var(--radius-sm);
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 500;
     }
 
-    @keyframes lift {
-      from {
-        opacity: 0;
-        transform: translateY(8px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(0,0,0,0.6);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.15s, visibility 0.15s;
+      z-index: 40;
     }
+
+    body[data-theme="light"] .overlay { background: rgba(0,0,0,0.3); }
+
+    .overlay.open {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .overlay-card {
+      width: min(100%, 420px);
+      padding: 28px 24px 22px;
+      border-radius: var(--radius);
+      background: var(--panel-solid);
+      border: 1px solid var(--line-strong);
+      box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+      text-align: center;
+      transform: translateY(8px);
+      transition: transform 0.15s;
+    }
+
+    .overlay.open .overlay-card { transform: translateY(0); }
+
+    .overlay-badge {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 18px;
+      border-radius: var(--radius);
+      display: grid;
+      place-items: center;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+    }
+
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2px solid var(--line-strong);
+      border-top-color: var(--accent);
+      animation: spin 0.7s linear infinite;
+    }
+
+    .overlay-check {
+      display: none;
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1;
+    }
+
+    .overlay.error .overlay-check { color: #ef4444; }
+    .overlay.success .spinner, .overlay.error .spinner { display: none; }
+    .overlay.success .overlay-check, .overlay.error .overlay-check { display: block; }
+
+    .overlay-title {
+      margin: 0 0 8px;
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .overlay-text {
+      margin: 0 auto 16px;
+      max-width: 300px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .overlay-actions {
+      display: none;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .overlay.success .overlay-actions,
+    .overlay.error .overlay-actions { display: flex; }
+
+    .overlay-meta { margin-top: 14px; font-size: 11px; color: var(--muted); }
+
+    .workspace-dim { transition: filter 0.2s, opacity 0.2s; }
+    body.overlay-active .workspace-dim { filter: blur(2px); opacity: 0.6; pointer-events: none; user-select: none; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     @media (prefers-reduced-motion: reduce) {
-      .panel {
-        animation: none;
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
       }
     }
   </style>
 </head>
-<body>
+<body data-theme="dark">
   <header>
     <div class="hero">
-      <div>
-        <span class="eyebrow">Local Obfuscator</span>
-        <h1>JS Obfuscator Console</h1>
-        <p>Upload or paste JavaScript/Luau, tune options, and generate a hardened build.</p>
+      <div class="hero-copy">
+        <div class="hero-topbar">
+          <span class="eyebrow">JS / Luau Obfuscator</span>
+          <h1>Script Protection Toolkit</h1>
+        </div>
+        <p>Upload or paste JS / Luau, pick a preset, run protection, download or copy the result.</p>
       </div>
-      <div class="hero-card">
-        <h3>Workflow</h3>
-        <ul>
-          <li>1. Drop a file or paste source.</li>
-          <li>2. Pick preset or fine-tune options.</li>
-          <li>3. Run, then download output + map.</li>
-        </ul>
+      <div class="hero-actions">
+        <button id="themeToggle" type="button" class="ghost">Switch to Light</button>
       </div>
     </div>
   </header>
 
-  <main>
+  <main class="workspace-dim">
     <div class="layout">
       <div class="stack">
         <section class="panel">
       <h2>Input</h2>
+      <p class="panel-subtitle">Bring in your source file, edit it inline, and keep the output name ready before you run protection.</p>
       <div class="row">
         <label>Source file</label>
         <input id="fileInput" type="file" accept=".js,.mjs,.cjs,.ts,.tsx,.jsx,.lua,.luau" />
@@ -434,10 +600,44 @@
           <input id="outputName" type="text" value="output.obf.js" />
         </div>
       </div>
+      <div class="dev-panel" id="devPanel">
+        <div class="row two">
+          <div>
+            <label for="backendMode">Backend mode</label>
+            <select id="backendMode">
+              <option value="auto">Auto</option>
+              <option value="appwrite">Appwrite</option>
+              <option value="local">Local API</option>
+            </select>
+          </div>
+          <div>
+            <label for="appwriteEndpoint">Appwrite endpoint</label>
+            <input id="appwriteEndpoint" type="text" placeholder="https://<region>.cloud.appwrite.io/v1" />
+          </div>
+        </div>
+        <div class="row two">
+          <div>
+            <label for="appwriteProjectId">Appwrite project ID</label>
+            <input id="appwriteProjectId" type="text" placeholder="Project ID" />
+          </div>
+          <div>
+            <label for="appwriteFunctionId">Appwrite function ID</label>
+            <input id="appwriteFunctionId" type="text" placeholder="Function ID" />
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label for="appwriteApiKey">Appwrite API key</label>
+            <input id="appwriteApiKey" type="text" placeholder="Optional for public execute permission" />
+          </div>
+        </div>
+        <p class="muted">Developer-only panel. Press <code>Shift</code> five times to toggle.</p>
+      </div>
         </section>
 
         <section class="panel">
       <h2>Options</h2>
+      <p class="panel-subtitle">Start with a preset, then open the language-specific sections only if you want finer control.</p>
       <div class="row two">
         <div>
           <label for="preset">Preset</label>
@@ -562,6 +762,17 @@
 
           <div>
             <label class="chip">VM (Luau)</label>
+            <label for="optVmMode">VM mode</label>
+            <select id="optVmMode">
+              <option value="compact">compact</option>
+              <option value="balanced">balanced</option>
+              <option value="max">max</option>
+            </select>
+            <label for="optVmOpcodeEncoding">Opcode encoding</label>
+            <select id="optVmOpcodeEncoding">
+              <option value="mask">mask</option>
+              <option value="pairs">pairs</option>
+            </select>
             <label class="checkbox"><input id="optVmOpcode" type="checkbox" checked /> Opcode shuffle</label>
             <label class="checkbox"><input id="optVmBytecode" type="checkbox" checked /> Bytecode decrypt</label>
             <label class="checkbox"><input id="optVmConsts" type="checkbox" checked /> Consts decrypt</label>
@@ -579,6 +790,10 @@
             <label class="checkbox"><input id="optVmBlockDispatch" type="checkbox" checked /> Block dispatch</label>
             <label class="checkbox"><input id="optVmDownlevel" type="checkbox" /> Downlevel let/const</label>
             <label class="checkbox"><input id="optVmDecoyRuntime" type="checkbox" /> Decoy runtime</label>
+            <label class="checkbox"><input id="optVmSymbolNoise" type="checkbox" checked /> Symbol-noise bait</label>
+            <label class="checkbox"><input id="optVmInstructionFusion" type="checkbox" checked /> Instruction fusion</label>
+            <label class="checkbox"><input id="optVmSemanticMisdirection" type="checkbox" checked /> Semantic misdirection</label>
+            <label class="checkbox"><input id="optVmDynamicCoupling" type="checkbox" checked /> Dynamic coupling</label>
             <label class="checkbox"><input id="optVmIsaPolymorph" type="checkbox" /> ISA polymorph</label>
             <label class="checkbox"><input id="optVmFakeEdges" type="checkbox" /> Fake dispatch edges</label>
             <label class="checkbox"><input id="optVmDebug" type="checkbox" /> VM debug logs</label>
@@ -595,6 +810,11 @@
               <option value="auto">auto</option>
               <option value="tree">tree</option>
               <option value="sparse">sparse</option>
+            </select>
+            <label for="optVmShellStyle">Shell style</label>
+            <select id="optVmShellStyle">
+              <option value="default">default</option>
+              <option value="packed">packed</option>
             </select>
             <label for="optVmStackProtocol">Stack protocol</label>
             <select id="optVmStackProtocol">
@@ -617,6 +837,7 @@
       <div class="stack">
         <section class="panel">
       <h2>Output</h2>
+      <p class="panel-subtitle">Your protected output appears here. You can still download or copy it from the page, and the central overlay will surface the same actions after each run.</p>
       <div class="row">
         <label for="output">Obfuscated code</label>
         <textarea id="output" placeholder="Output appears here" readonly></textarea>
@@ -628,16 +849,37 @@
         <button id="copyBtn" class="ghost">Copy Output</button>
         <button id="clearBtn" class="ghost">Clear</button>
       </div>
-      <p class="muted" id="status">Idle.</p>
+      <div class="status-shell">
+        <p class="muted" id="status">Idle.</p>
+        <span class="status-pill">Ready to protect</span>
+      </div>
         </section>
 
         <section class="panel">
       <h2>Startup Log</h2>
+      <p class="panel-subtitle">Backend and obfuscation events are still available here when you need them, but they no longer dominate the experience.</p>
       <pre id="log"></pre>
         </section>
       </div>
     </div>
   </main>
+
+  <div id="overlay" class="overlay" aria-hidden="true">
+    <div class="overlay-card" role="dialog" aria-modal="true" aria-labelledby="overlayTitle" aria-describedby="overlayText">
+      <div class="overlay-badge">
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="overlay-check" id="overlayCheck" aria-hidden="true">✓</div>
+      </div>
+      <h2 class="overlay-title" id="overlayTitle">Protecting your script...</h2>
+      <p class="overlay-text" id="overlayText">Please wait while we process your source and prepare the protected output.</p>
+      <div class="overlay-actions">
+        <button id="overlayDownloadBtn" type="button" class="primary" disabled>Download Result</button>
+        <button id="overlayCopyBtn" type="button" class="secondary" disabled>Copy Output</button>
+        <button id="overlayDismissBtn" type="button" class="ghost">Close</button>
+      </div>
+      <div class="overlay-meta" id="overlayMeta">You can keep this open and grab the result as soon as processing finishes.</div>
+    </div>
+  </div>
 
   <script>
     const logEl = document.getElementById("log");
@@ -648,6 +890,20 @@
     const outputNameEl = document.getElementById("outputName");
     const presetEl = document.getElementById("preset");
     const langEl = document.getElementById("lang");
+    const devPanel = document.getElementById("devPanel");
+    const backendModeEl = document.getElementById("backendMode");
+    const appwriteEndpointEl = document.getElementById("appwriteEndpoint");
+    const appwriteProjectIdEl = document.getElementById("appwriteProjectId");
+    const appwriteFunctionIdEl = document.getElementById("appwriteFunctionId");
+    const appwriteApiKeyEl = document.getElementById("appwriteApiKey");
+    const themeToggle = document.getElementById("themeToggle");
+    const overlayEl = document.getElementById("overlay");
+    const overlayTitleEl = document.getElementById("overlayTitle");
+    const overlayTextEl = document.getElementById("overlayText");
+    const overlayMetaEl = document.getElementById("overlayMeta");
+    const overlayDownloadBtn = document.getElementById("overlayDownloadBtn");
+    const overlayCopyBtn = document.getElementById("overlayCopyBtn");
+    const overlayDismissBtn = document.getElementById("overlayDismissBtn");
 
     const runBtn = document.getElementById("runBtn");
     const downloadBtn = document.getElementById("downloadBtn");
@@ -680,6 +936,8 @@
     const optStringsValueFallback = document.getElementById("optStringsValueFallback");
 
     const optVmOpcode = document.getElementById("optVmOpcode");
+    const optVmMode = document.getElementById("optVmMode");
+    const optVmOpcodeEncoding = document.getElementById("optVmOpcodeEncoding");
     const optVmBytecode = document.getElementById("optVmBytecode");
     const optVmConsts = document.getElementById("optVmConsts");
     const optVmConstsSplit = document.getElementById("optVmConstsSplit");
@@ -696,7 +954,12 @@
     const optVmDecoyProbability = document.getElementById("optVmDecoyProbability");
     const optVmDecoyStrings = document.getElementById("optVmDecoyStrings");
     const optVmDispatchGraph = document.getElementById("optVmDispatchGraph");
+    const optVmShellStyle = document.getElementById("optVmShellStyle");
     const optVmStackProtocol = document.getElementById("optVmStackProtocol");
+    const optVmSymbolNoise = document.getElementById("optVmSymbolNoise");
+    const optVmInstructionFusion = document.getElementById("optVmInstructionFusion");
+    const optVmSemanticMisdirection = document.getElementById("optVmSemanticMisdirection");
+    const optVmDynamicCoupling = document.getElementById("optVmDynamicCoupling");
     const optVmIsaPolymorph = document.getElementById("optVmIsaPolymorph");
     const optVmFakeEdges = document.getElementById("optVmFakeEdges");
     const optVmNumericStyle = document.getElementById("optVmNumericStyle");
@@ -731,6 +994,140 @@
     const groupLuauOptions = document.getElementById("groupLuauOptions");
 
     let lastResult = null;
+    let shiftTapCount = 0;
+    let shiftTapTimer = null;
+
+    const DEV_STORAGE_KEY = "js-obf-dev-config";
+    const THEME_STORAGE_KEY = "js-obf-theme";
+
+    function loadDevConfig() {
+      try {
+        const raw = localStorage.getItem(DEV_STORAGE_KEY);
+        if (!raw) {
+          return {
+            panelEnabled: false,
+            backendMode: "auto",
+            endpoint: "",
+            projectId: "",
+            functionId: "",
+            apiKey: ""
+          };
+        }
+        const parsed = JSON.parse(raw);
+        return {
+          panelEnabled: Boolean(parsed.panelEnabled),
+          backendMode: parsed.backendMode || "auto",
+          endpoint: parsed.endpoint || "",
+          projectId: parsed.projectId || "",
+          functionId: parsed.functionId || "",
+          apiKey: parsed.apiKey || ""
+        };
+      } catch {
+        return {
+          panelEnabled: false,
+          backendMode: "auto",
+          endpoint: "",
+          projectId: "",
+          functionId: "",
+          apiKey: ""
+        };
+      }
+    }
+
+    function saveDevConfig() {
+      const config = {
+        panelEnabled: devPanel.classList.contains("enabled"),
+        backendMode: backendModeEl.value,
+        endpoint: appwriteEndpointEl.value.trim(),
+        projectId: appwriteProjectIdEl.value.trim(),
+        functionId: appwriteFunctionIdEl.value.trim(),
+        apiKey: appwriteApiKeyEl.value.trim()
+      };
+      localStorage.setItem(DEV_STORAGE_KEY, JSON.stringify(config));
+    }
+
+    function applyDevConfig() {
+      const config = loadDevConfig();
+      backendModeEl.value = config.backendMode;
+      appwriteEndpointEl.value = config.endpoint;
+      appwriteProjectIdEl.value = config.projectId;
+      appwriteFunctionIdEl.value = config.functionId;
+      appwriteApiKeyEl.value = config.apiKey;
+      devPanel.classList.toggle("enabled", config.panelEnabled);
+    }
+
+    function toggleDevPanel() {
+      const enabled = !devPanel.classList.contains("enabled");
+      devPanel.classList.toggle("enabled", enabled);
+      saveDevConfig();
+      log(enabled ? "Developer backend panel enabled." : "Developer backend panel hidden.");
+    }
+
+    function applyTheme(theme) {
+      const activeTheme = theme === "light" ? "light" : "dark";
+      document.body.dataset.theme = activeTheme;
+      themeToggle.textContent = activeTheme === "dark" ? "Switch to Light" : "Switch to Dark";
+      localStorage.setItem(THEME_STORAGE_KEY, activeTheme);
+    }
+
+    function loadTheme() {
+      const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+      if (savedTheme === "light" || savedTheme === "dark") {
+        return savedTheme;
+      }
+      return "dark";
+    }
+
+    function openOverlay() {
+      overlayEl.classList.add("open");
+      overlayEl.setAttribute("aria-hidden", "false");
+      document.body.classList.add("overlay-active");
+    }
+
+    function closeOverlay() {
+      overlayEl.classList.remove("open", "success", "error");
+      overlayEl.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("overlay-active");
+    }
+
+    function setOverlayState(state, details = {}) {
+      const safeState = state || "idle";
+      overlayEl.classList.remove("success", "error");
+      if (safeState === "success") {
+        overlayEl.classList.add("success");
+      } else if (safeState === "error") {
+        overlayEl.classList.add("error");
+      }
+
+      overlayTitleEl.textContent = details.title || (
+        safeState === "success"
+          ? "Your protected build is ready."
+          : safeState === "error"
+            ? "We couldn't finish this run."
+            : "Protecting your script..."
+      );
+
+      overlayTextEl.textContent = details.text || (
+        safeState === "success"
+          ? "You can download the result immediately or copy it to your clipboard."
+          : safeState === "error"
+            ? "Review the status log, adjust options if needed, and try again."
+            : "Please wait while we process your source and prepare the protected output."
+      );
+
+      overlayMetaEl.textContent = details.meta || (
+        safeState === "success"
+          ? "The same output is also available in the result panel below."
+          : safeState === "error"
+            ? "The workspace stays intact so you can retry without losing your input."
+            : "This dialog will switch to success actions as soon as the run completes."
+      );
+
+      const hasCode = Boolean(lastResult && lastResult.code);
+      overlayDownloadBtn.disabled = !hasCode;
+      overlayCopyBtn.disabled = !hasCode;
+      overlayDismissBtn.textContent = safeState === "processing" ? "Keep Waiting" : "Close";
+    }
 
     const presetDefaults = {
       high: {
@@ -798,6 +1195,84 @@
       statusEl.textContent = message;
     }
 
+    function getAppwriteConfig() {
+      return {
+        endpoint: appwriteEndpointEl.value.trim().replace(/\/+$/, ""),
+        projectId: appwriteProjectIdEl.value.trim(),
+        functionId: appwriteFunctionIdEl.value.trim(),
+        apiKey: appwriteApiKeyEl.value.trim()
+      };
+    }
+
+    function hasAppwriteConfig() {
+      const config = getAppwriteConfig();
+      return Boolean(config.endpoint && config.projectId && config.functionId);
+    }
+
+    async function callLocalApi(payload) {
+      const response = await fetch("/api/obfuscate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.error || `Local API error (${response.status})`);
+      }
+      return body;
+    }
+
+    async function callAppwrite(payload) {
+      const config = getAppwriteConfig();
+      if (!config.endpoint || !config.projectId || !config.functionId) {
+        throw new Error("Missing Appwrite endpoint, project ID, or function ID.");
+      }
+
+      const headers = {
+        "Content-Type": "application/json",
+        "X-Appwrite-Project": config.projectId
+      };
+
+      if (config.apiKey) {
+        headers["X-Appwrite-Key"] = config.apiKey;
+      }
+
+      const response = await fetch(
+        `${config.endpoint}/functions/${encodeURIComponent(config.functionId)}/executions`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            body: JSON.stringify(payload),
+            async: false,
+            path: "/obfuscate",
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+          })
+        }
+      );
+
+      const execution = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(
+          (execution && (execution.message || execution.error || execution.responseBody)) ||
+          `Appwrite error (${response.status})`
+        );
+      }
+
+      const responseBody = execution && typeof execution.responseBody === "string" ? execution.responseBody : "";
+      if (!responseBody) {
+        throw new Error((execution && execution.errors) || "Empty response from Appwrite function.");
+      }
+
+      const parsed = JSON.parse(responseBody);
+      if (parsed && parsed.error) {
+        throw new Error(parsed.error);
+      }
+      return parsed;
+    }
+
     function applyPreset(name) {
       const defaults = presetDefaults[name];
       if (!defaults) {
@@ -809,6 +1284,35 @@
       optCffDownlevel.checked = false;
       optDead.checked = defaults.dead;
       optVm.checked = defaults.vm;
+      optVmMode.value = "compact";
+      optVmOpcodeEncoding.value = "mask";
+      optVmOpcode.checked = true;
+      optVmBytecode.checked = true;
+      optVmConsts.checked = true;
+      optVmConstsSplit.checked = false;
+      optVmConstsSplitSize.value = "24";
+      optVmConstsEncoding.value = "table";
+      optVmRuntimeKey.checked = true;
+      optVmRuntimeSplit.checked = true;
+      optVmTopLevel.checked = false;
+      optVmBlockDispatch.checked = false;
+      optVmDownlevel.checked = false;
+      optVmDecoyRuntime.checked = false;
+      optVmSymbolNoise.checked = false;
+      optVmInstructionFusion.checked = false;
+      optVmSemanticMisdirection.checked = false;
+      optVmDynamicCoupling.checked = false;
+      optVmIsaPolymorph.checked = false;
+      optVmFakeEdges.checked = false;
+      optVmDebug.checked = false;
+      optVmLayers.value = "1";
+      optVmFake.value = "0";
+      optVmDecoyProbability.value = "0.85";
+      optVmDecoyStrings.value = "12";
+      optVmDispatchGraph.value = "auto";
+      optVmShellStyle.value = "default";
+      optVmStackProtocol.value = "auto";
+      optVmNumericStyle.value = "mixed";
       optProxifyLocals.checked = Boolean(defaults.proxifyLocals);
       optNumbers.checked = Boolean(defaults.numbers);
       optConstArray.checked = Boolean(defaults.constArray);
@@ -834,6 +1338,8 @@
 
       const vmEnabled = optVm.checked;
       [
+        optVmMode,
+        optVmOpcodeEncoding,
         optVmOpcode,
         optVmBytecode,
         optVmConsts,
@@ -851,7 +1357,12 @@
         optVmDecoyProbability,
         optVmDecoyStrings,
         optVmDispatchGraph,
+        optVmShellStyle,
         optVmStackProtocol,
+        optVmSymbolNoise,
+        optVmInstructionFusion,
+        optVmSemanticMisdirection,
+        optVmDynamicCoupling,
         optVmIsaPolymorph,
         optVmFakeEdges,
         optVmNumericStyle,
@@ -920,7 +1431,12 @@
       optVmDecoyProbability.disabled = !vmEnabled || !isLuau || !optVmDecoyRuntime.checked;
       optVmDecoyStrings.disabled = !vmEnabled || !isLuau || !optVmDecoyRuntime.checked;
       optVmDispatchGraph.disabled = !vmEnabled || !isLuau;
+      optVmShellStyle.disabled = !vmEnabled || !isLuau;
       optVmStackProtocol.disabled = !vmEnabled || !isLuau;
+      optVmSymbolNoise.disabled = !vmEnabled || !isLuau;
+      optVmInstructionFusion.disabled = !vmEnabled || !isLuau;
+      optVmSemanticMisdirection.disabled = !vmEnabled || !isLuau;
+      optVmDynamicCoupling.disabled = !vmEnabled || !isLuau;
       optVmIsaPolymorph.disabled = !vmEnabled || !isLuau;
       optVmFakeEdges.disabled = !vmEnabled || !isLuau;
       optVmNumericStyle.disabled = !vmEnabled || !isLuau;
@@ -997,7 +1513,7 @@
       const padFooterBlocksValue = optPadFooterBlocks.value.trim();
 
       const options = {
-        preset: presetEl.value === "custom" ? "high" : presetEl.value,
+        preset: presetEl.value === "custom" ? undefined : presetEl.value,
         lang: langEl.value,
         rename: optRename.checked,
         strings: optStrings.checked,
@@ -1052,6 +1568,8 @@
         },
         vm: {
           enabled: optVm.checked,
+          mode: optVmMode.value,
+          opcodeEncoding: optVmOpcodeEncoding.value,
           include: includeText ? includeText.split(",").map((v) => v.trim()).filter(Boolean) : [],
           opcodeShuffle: optVmOpcode.checked,
           bytecodeEncrypt: optVmBytecode.checked,
@@ -1071,6 +1589,11 @@
           decoyRuntime: optVmDecoyRuntime.checked,
           decoyProbability: vmDecoyProbabilityValue === "" ? undefined : Number(vmDecoyProbabilityValue),
           decoyStrings: vmDecoyStringsValue === "" ? undefined : Number(vmDecoyStringsValue),
+          symbolNoise: optVmSymbolNoise.checked,
+          instructionFusion: optVmInstructionFusion.checked,
+          semanticMisdirection: optVmSemanticMisdirection.checked,
+          dynamicCoupling: optVmDynamicCoupling.checked,
+          shellStyle: optVmShellStyle.value,
           downlevel: optVmDownlevel.checked,
           fakeOpcodes: vmFakeValue === "" ? undefined : Number(vmFakeValue),
           layers: vmLayersValue === "" ? undefined : Number(vmLayersValue),
@@ -1106,33 +1629,54 @@
       };
 
       runBtn.disabled = true;
+      lastResult = null;
+      overlayDownloadBtn.disabled = true;
+      overlayCopyBtn.disabled = true;
+      openOverlay();
+      setOverlayState("processing");
       setStatus("Running obfuscation...");
       log("Obfuscation started.");
 
       try {
-        const response = await fetch("/api/obfuscate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
+        const backendMode = backendModeEl.value;
+        let result;
 
-        if (!response.ok) {
-          const err = await response.json().catch(() => ({}));
-          throw new Error(err.error || `Server error (${response.status})`);
+        if (backendMode === "appwrite") {
+          log("Using Appwrite backend.");
+          result = await callAppwrite(payload);
+        } else if (backendMode === "local") {
+          log("Using local API backend.");
+          result = await callLocalApi(payload);
+        } else if (hasAppwriteConfig()) {
+          log("Using Appwrite backend (auto).");
+          try {
+            result = await callAppwrite(payload);
+          } catch (error) {
+            log(`Appwrite failed, falling back to local API: ${error.message}`);
+            result = await callLocalApi(payload);
+          }
+        } else {
+          log("Using local API backend (auto).");
+          result = await callLocalApi(payload);
         }
 
-        const result = await response.json();
         outputEl.value = result.code || "";
         lastResult = result;
 
         downloadBtn.disabled = !result.code;
         downloadMapBtn.disabled = !result.map;
+        overlayDownloadBtn.disabled = !result.code;
+        overlayCopyBtn.disabled = !result.code;
 
         setStatus("Obfuscation complete.");
+        setOverlayState("success");
         log("Obfuscation finished successfully.");
       } catch (error) {
         log(`Error: ${error.message}`);
         setStatus("Obfuscation failed. See log.");
+        setOverlayState("error", {
+          text: error.message || "The request failed before a protected result could be produced."
+        });
       } finally {
         runBtn.disabled = false;
       }
@@ -1188,8 +1732,40 @@
       lastResult = null;
       downloadBtn.disabled = true;
       downloadMapBtn.disabled = true;
+      overlayDownloadBtn.disabled = true;
+      overlayCopyBtn.disabled = true;
+      closeOverlay();
       setStatus("Cleared.");
       log("Cleared input/output.");
+    });
+
+    themeToggle.addEventListener("click", () => {
+      applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+    });
+
+    overlayDismissBtn.addEventListener("click", () => {
+      closeOverlay();
+    });
+
+    overlayDownloadBtn.addEventListener("click", () => {
+      if (!lastResult || !lastResult.code) {
+        return;
+      }
+      const name = outputNameEl.value.trim() || "output.obf.js";
+      downloadFile(lastResult.code, name, "text/javascript");
+      log(`Downloaded from overlay: ${name}`);
+    });
+
+    overlayCopyBtn.addEventListener("click", async () => {
+      if (!outputEl.value) {
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(outputEl.value);
+        log("Output copied to clipboard from overlay.");
+      } catch {
+        log("Overlay clipboard copy failed.");
+      }
     });
 
     presetEl.addEventListener("change", (event) => {
@@ -1210,7 +1786,8 @@
       optVmOpcode, optVmBytecode, optVmConsts, optVmConstsSplit, optVmConstsSplitSize, optVmConstsEncoding,
       optVmRuntimeKey, optVmRuntimeSplit, optVmTopLevel, optVmBlockDispatch,
       optVmDownlevel, optVmFake, optVmLayers, optVmDecoyRuntime, optVmDecoyProbability, optVmDecoyStrings,
-      optVmDispatchGraph, optVmStackProtocol, optVmIsaPolymorph, optVmFakeEdges, optVmNumericStyle, optVmDebug,
+      optVmDispatchGraph, optVmShellStyle, optVmStackProtocol, optVmSymbolNoise, optVmInstructionFusion,
+      optVmSemanticMisdirection, optVmDynamicCoupling, optVmIsaPolymorph, optVmFakeEdges, optVmNumericStyle, optVmDebug,
       optAntiHook, optAntiHookLock, optSourceMap, optBeautify, optMinify, optCompact, optTiming,
       optRenameGlobals, optRenameMembers, optRenameHomoglyphs,
       optWrap, optWrapIterations, optProxifyLocals, optNumbers, optNumbersThreshold, optNumbersInner, optNumbersDepth,
@@ -1256,8 +1833,34 @@
       }
     });
 
+    [backendModeEl, appwriteEndpointEl, appwriteProjectIdEl, appwriteFunctionIdEl, appwriteApiKeyEl].forEach((el) => {
+      el.addEventListener("change", saveDevConfig);
+      el.addEventListener("input", saveDevConfig);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && overlayEl.classList.contains("open")) {
+        closeOverlay();
+      }
+      if (event.key !== "Shift") {
+        return;
+      }
+      shiftTapCount += 1;
+      clearTimeout(shiftTapTimer);
+      shiftTapTimer = setTimeout(() => {
+        shiftTapCount = 0;
+      }, 1200);
+      if (shiftTapCount >= 5) {
+        shiftTapCount = 0;
+        toggleDevPanel();
+      }
+    });
+
+    applyDevConfig();
+    applyTheme(loadTheme());
     applyPreset(presetEl.value);
     updateOptionStates();
+    closeOverlay();
     log("Ready.");
   </script>
 </body>

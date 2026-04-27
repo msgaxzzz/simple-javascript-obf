@@ -1,5 +1,5 @@
 const { walk } = require("./ast");
-const { collectSSAReadNamesFromRoot } = require("./ssa-utils");
+const { getCachedSSAReadNamesFromRoot } = require("./ssa-utils");
 
 function numericLiteral(value) {
   return {
@@ -143,7 +143,7 @@ function numbersToExpressions(ast, ctx) {
   const range = ctx.options.numbersOptions?.range ?? 2 ** 20;
   const readNames =
     ctx && typeof ctx.getSSA === "function"
-      ? collectSSAReadNamesFromRoot(ctx.getSSA())
+      ? getCachedSSAReadNamesFromRoot(ctx.getSSA())
       : null;
 
   const settings = {

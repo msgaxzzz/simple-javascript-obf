@@ -1,23 +1,16 @@
-const fs = require("fs");
 const path = require("path");
-const Module = require("module");
+const {
+  loadPrebuiltModuleIfAvailable,
+  compileTsModule,
+} = require("./runtime-loader");
 
 function loadParserFromTs() {
   const tsPath = path.join(__dirname, "parser.ts");
-  const ts = require("typescript");
-  const source = fs.readFileSync(tsPath, "utf8");
-  const transpiled = ts.transpileModule(source, {
-    compilerOptions: {
-      module: ts.ModuleKind.CommonJS,
-      target: ts.ScriptTarget.ES2020,
-    },
-    fileName: tsPath,
-  });
-  const runtimeModule = new Module(tsPath, module);
-  runtimeModule.filename = tsPath;
-  runtimeModule.paths = Module._nodeModulePaths(__dirname);
-  runtimeModule._compile(transpiled.outputText, tsPath);
-  return runtimeModule.exports;
+  const prebuilt = loadPrebuiltModuleIfAvailable(tsPath, module);
+  if (prebuilt) {
+    return prebuilt;
+  }
+  return compileTsModule(tsPath, module);
 }
 
 module.exports = loadParserFromTs();

@@ -1,5 +1,5 @@
 const { insertAtTop, walk } = require("./ast");
-const { addSSAUsedNamesFromRoot } = require("./ssa-utils");
+const { getCachedSSAUsedNamesFromRoot } = require("./ssa-utils");
 
 const BASE_RESERVED = new Set(["_ENV", "_G"]);
 const NAME_RESERVED = new Set(["_ENV", "_G", "type", "getfenv"]);
@@ -531,7 +531,7 @@ function maskGlobalsLuau(ast, ctx) {
   if (!ast.__obf_env_alias) {
     const used = collectIdentifierNames(ast, ctx);
     if (ctx && typeof ctx.getSSA === "function") {
-      addSSAUsedNamesFromRoot(ctx.getSSA(), used);
+      getCachedSSAUsedNamesFromRoot(ctx.getSSA()).forEach((name) => used.add(name));
     }
     const reserved = new Set(NAME_RESERVED);
     const envAlias = makeName(ctx.rng, used, reserved);
