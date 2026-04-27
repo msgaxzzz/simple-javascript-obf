@@ -555,6 +555,87 @@
         transition-duration: 0.01ms !important;
       }
     }
+
+    /* ── Mobile / small-screen overrides ─────────────────────────── */
+    @media (max-width: 639px) {
+      header {
+        padding: 14px 16px 0;
+      }
+
+      .hero {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        padding-bottom: 12px;
+      }
+
+      .hero-actions {
+        width: 100%;
+        justify-content: flex-end;
+      }
+
+      main {
+        padding: 14px 16px 32px;
+      }
+
+      .panel {
+        padding: 16px;
+      }
+
+      textarea {
+        min-height: 140px;
+      }
+
+      pre {
+        max-height: 180px;
+      }
+
+      .actions {
+        gap: 6px;
+      }
+
+      .actions button {
+        flex: 1 1 calc(50% - 6px);
+        min-width: 0;
+        padding: 9px 8px;
+        font-size: 13px;
+      }
+
+      .row.two,
+      .row.three {
+        grid-template-columns: 1fr;
+      }
+
+      .overlay {
+        padding: 16px;
+      }
+
+      .overlay-card {
+        padding: 22px 16px 18px;
+      }
+
+      .overlay-title {
+        font-size: 17px;
+      }
+
+      .overlay-actions {
+        flex-direction: column;
+      }
+
+      .overlay-actions button {
+        width: 100%;
+      }
+    }
+
+    @media (min-width: 640px) and (max-width: 979px) {
+      header {
+        padding: 16px 20px 0;
+      }
+
+      main {
+        padding: 16px 20px 40px;
+      }
+    }
   </style>
 </head>
 <body data-theme="dark">
