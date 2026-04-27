@@ -320,8 +320,10 @@ function processStatement(stmt, scope, includeTypes) {
     case "CallStatement":
       processExpression(stmt.expression, scope, includeTypes, "read");
       return;
-    case "FunctionDeclaration": {
-      if (stmt.isLocal && stmt.name && stmt.name.base) {
+    case "FunctionDeclaration":
+    case "StatFunction":
+    case "StatLocalFunction": {
+      if ((stmt.isLocal || stmt.type === "StatLocalFunction") && stmt.name && stmt.name.base) {
         addBinding(scope, stmt.name.base.name, "local", stmt.name.base);
       } else if (stmt.name && stmt.name.base) {
         const hasMembers = (stmt.name.members && stmt.name.members.length) || stmt.name.method;

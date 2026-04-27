@@ -10,11 +10,11 @@ Deobf
 .env.*
 !.env.example
 
-# Temporary cache directories
+# Temporary cache directories and deploy artifacts
 .deploy_tmp*/
-dist/
+.deploy-obf*.tar.gz
 
-# Test/build outputs
-*.lua
-*.tar.gz
-Protected_*.lua.txt
+# Accidental local scratch files
+/1.lua
+/2.lua
+/Protected_*.lua.txt
