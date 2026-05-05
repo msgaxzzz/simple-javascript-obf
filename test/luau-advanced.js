@@ -141,6 +141,8 @@ async function runSignatureHiding() {
   assert.ok(!code.includes("Integrity check failed"), "anti-hook output should not expose integrity failure text");
   assert.ok(!code.includes("Runtime integrity violation"), "anti-hook output should not expose runtime failure text");
   assert.ok(!/\bbxor\b/.test(code), "vm runtime should not expose bxor helper names");
+  assert.ok(!code.includes("local dbg = debug"), "anti-hook runtime should not expose fixed debug local names");
+  assert.ok(!code.includes("local lockEnv ="), "anti-hook runtime should not expose fixed lockEnv local names");
 }
 
 async function runAntiHookLockReadonlyEnvCompatibility() {

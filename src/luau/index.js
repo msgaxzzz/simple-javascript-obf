@@ -42,16 +42,19 @@ const { padFooterLuau } = require("./padFooter");
 const { stylizeNumericLiteralsLuau } = require("./literalStyle");
 const { buildSourceMap, shiftMappings } = require("./sourceMap");
 const { createLuauDebugRecorder } = require("./debug");
-const { version: PACKAGE_VERSION } = require("../../package.json");
-
-const WATERMARK_URL = "https://github.com/msgaxzzz/simple-javascript-obf";
-const LUAU_WATERMARK = `-- This file was protected using simple-javascript-obfuscator v${PACKAGE_VERSION} [${WATERMARK_URL}]`;
 const MAX_LUAU_OUTPUT_BYTES = 5 * 1024 * 1024;
 const PACKED_PAYLOAD_RADIX = 85;
 const PACKED_PAYLOAD_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#";
 
 function isWordChar(ch) {
   return !!ch && /[A-Za-z0-9_]/.test(ch);
+}
+
+function concealResidualLuauMembers(code) {
+  if (!code || typeof code !== "string") {
+    return code;
+  }
+  return code.replace(/\.mode\b/g, '["\\109\\111\\100\\101"]');
 }
 
 function mergeOptionGroup(defaults, provided) {
@@ -165,7 +168,11 @@ function readQuotedStringEnd(source, index) {
   return cursor;
 }
 
-function shouldKeepSpace(prevChar, nextChar, output) {
+function isWhitespaceChar(ch) {
+  return ch === " " || ch === "\n" || ch === "\r" || ch === "\t" || ch === "\f" || ch === "\v";
+}
+
+function shouldKeepSpace(prevChar, nextChar, lastTwo) {
   if (!prevChar || !nextChar) {
     return false;
   }
@@ -181,7 +188,6 @@ function shouldKeepSpace(prevChar, nextChar, output) {
   if (prevChar === "." && /\d/.test(nextChar)) {
     return true;
   }
-  const lastTwo = output.slice(-2);
   if (lastTwo === ".." && nextChar === ".") {
     return true;
   }
@@ -189,7 +195,21 @@ function shouldKeepSpace(prevChar, nextChar, output) {
 }
 
 function compactLuauWhitespace(source) {
-  let output = "";
+  const chunks = [];
+  let lastChar = "";
+  let lastTwo = "";
+  const pushChunk = (text) => {
+    if (!text) {
+      return;
+    }
+    chunks.push(text);
+    if (text.length === 1) {
+      lastTwo = `${lastTwo}${text}`.slice(-2);
+    } else {
+      lastTwo = text.slice(-2);
+    }
+    lastChar = text[text.length - 1];
+  };
   let index = 0;
   while (index < source.length) {
     const ch = source[index];
@@ -197,7 +217,7 @@ function compactLuauWhitespace(source) {
 
     const quotedEnd = readQuotedStringEnd(source, index);
     if (quotedEnd !== null) {
-      output += source.slice(index, quotedEnd);
+      pushChunk(source.slice(index, quotedEnd));
       index = quotedEnd;
       continue;
     }
@@ -205,68 +225,67 @@ function compactLuauWhitespace(source) {
     if (ch === "[") {
       const open = readLongBracketOpen(source, index);
       if (open) {
-        output += source.slice(index, index + open.openLength);
+        pushChunk(source.slice(index, index + open.openLength));
         index += open.openLength;
         const closeIdx = source.indexOf(open.close, index);
         if (closeIdx === -1) {
-          output += source.slice(index);
+          pushChunk(source.slice(index));
           break;
         }
-        output += source.slice(index, closeIdx + open.close.length);
+        pushChunk(source.slice(index, closeIdx + open.close.length));
         index = closeIdx + open.close.length;
         continue;
       }
     }
 
     if (ch === "-" && next === "-") {
-      output += "--";
+      pushChunk("--");
       index += 2;
       const longOpen = readLongBracketOpen(source, index);
       if (longOpen) {
-        output += source.slice(index, index + longOpen.openLength);
+        pushChunk(source.slice(index, index + longOpen.openLength));
         index += longOpen.openLength;
         const closeIdx = source.indexOf(longOpen.close, index);
         if (closeIdx === -1) {
-          output += source.slice(index);
+          pushChunk(source.slice(index));
           break;
         }
-        output += source.slice(index, closeIdx + longOpen.close.length);
+        pushChunk(source.slice(index, closeIdx + longOpen.close.length));
         index = closeIdx + longOpen.close.length;
       } else {
         while (index < source.length && source[index] !== "\n") {
-          output += source[index];
+          pushChunk(source[index]);
           index += 1;
         }
         if (index < source.length && source[index] === "\n") {
-          output += "\n";
+          pushChunk("\n");
           index += 1;
         }
       }
       continue;
     }
 
-    if (/\s/.test(ch)) {
+    if (isWhitespaceChar(ch)) {
       let cursor = index + 1;
-      while (cursor < source.length && /\s/.test(source[cursor])) {
+      while (cursor < source.length && isWhitespaceChar(source[cursor])) {
         cursor += 1;
       }
-      const prevChar = output[output.length - 1];
       const nextChar = source[cursor];
-      if (shouldKeepSpace(prevChar, nextChar, output)) {
-        output += " ";
+      if (shouldKeepSpace(lastChar, nextChar, lastTwo)) {
+        pushChunk(" ");
       }
       index = cursor;
       continue;
     }
 
-    output += ch;
+    pushChunk(ch);
     index += 1;
   }
-  return output;
+  return chunks.join("");
 }
 
 function neutralizeDoubleDashInCode(source) {
-  let output = "";
+  const chunks = [];
   let index = 0;
   while (index < source.length) {
     const ch = source[index];
@@ -274,7 +293,7 @@ function neutralizeDoubleDashInCode(source) {
 
     const quotedEnd = readQuotedStringEnd(source, index);
     if (quotedEnd !== null) {
-      output += source.slice(index, quotedEnd);
+      chunks.push(source.slice(index, quotedEnd));
       index = quotedEnd;
       continue;
     }
@@ -282,29 +301,29 @@ function neutralizeDoubleDashInCode(source) {
     if (ch === "[") {
       const open = readLongBracketOpen(source, index);
       if (open) {
-        output += source.slice(index, index + open.openLength);
+        chunks.push(source.slice(index, index + open.openLength));
         index += open.openLength;
         const closeIdx = source.indexOf(open.close, index);
         if (closeIdx === -1) {
-          output += source.slice(index);
+          chunks.push(source.slice(index));
           break;
         }
-        output += source.slice(index, closeIdx + open.close.length);
+        chunks.push(source.slice(index, closeIdx + open.close.length));
         index = closeIdx + open.close.length;
         continue;
       }
     }
 
     if (ch === "-" && next === "-") {
-      output += "- -";
+      chunks.push("- -");
       index += 2;
       continue;
     }
 
-    output += ch;
+    chunks.push(ch);
     index += 1;
   }
-  return output;
+  return chunks.join("");
 }
 
 function makePackedIdentifier(rng) {
@@ -334,6 +353,14 @@ function makeLongBracketLiteral(source) {
   return `[${equals}[${value}]${equals}]`;
 }
 
+function makeByteEscapeLiteral(source) {
+  const bytes = Buffer.from(String(source), "utf8");
+  if (!bytes.length) {
+    return "\"\"";
+  }
+  return `"${Array.from(bytes, (value) => `\\${String(value).padStart(3, "0")}`).join("")}"`;
+}
+
 function buildPackedPayloadEncoding(source) {
   const bytes = Buffer.from(String(source), "utf8");
   let payload = "";
@@ -357,15 +384,12 @@ function buildPackedPayloadEncoding(source) {
   };
 }
 
-function buildPackedPayloadFragments(payload) {
+function buildPackedPayloadFragments(payload, rng) {
   const value = String(payload);
   const blockCount = Math.max(1, Math.floor(value.length / 5));
-  let fragmentCount = 3;
-  if (blockCount >= 24) {
-    fragmentCount = 4;
-  }
-  if (blockCount >= 80) {
-    fragmentCount = 5;
+  let fragmentCount = blockCount >= 120 ? 7 : blockCount >= 72 ? 6 : blockCount >= 36 ? 5 : 4;
+  if (rng && typeof rng.int === "function") {
+    fragmentCount += rng.int(0, 2);
   }
   fragmentCount = Math.min(fragmentCount, blockCount);
 
@@ -374,9 +398,13 @@ function buildPackedPayloadFragments(payload) {
   for (let index = 0; index < fragmentCount; index += 1) {
     const remainingBlocks = blockCount - blockOffset;
     const remainingFragments = fragmentCount - index;
+    const minBlocks = Math.max(1, Math.floor(remainingBlocks / (remainingFragments + 1)));
+    const maxBlocks = Math.max(minBlocks, remainingBlocks - (remainingFragments - 1));
     const blockSize = index === fragmentCount - 1
       ? remainingBlocks
-      : Math.floor(remainingBlocks / remainingFragments);
+      : (rng && typeof rng.int === "function"
+        ? rng.int(minBlocks, maxBlocks)
+        : Math.floor(remainingBlocks / remainingFragments));
     fragments.push(value.slice(blockOffset * 5, (blockOffset + blockSize) * 5));
     blockOffset += blockSize;
   }
@@ -384,11 +412,67 @@ function buildPackedPayloadFragments(payload) {
   return fragments.filter(Boolean);
 }
 
+function buildPackedDecodeLoopLines(templateId, names) {
+  const {
+    packedVar,
+    outVar,
+    decodeVar,
+    indexVar,
+    stateVar,
+    limitVar,
+    cursorVar,
+    blockVar,
+  } = names;
+  if (templateId === 1) {
+    return [
+      `local ${cursorVar}=1;`,
+      `repeat `,
+      `local ${blockVar}=${packedVar}:sub(${cursorVar},${cursorVar}+4);`,
+      `if #${blockVar}<5 then break end;`,
+      `${outVar}[#${outVar}+1]=${decodeVar}(${blockVar});`,
+      `${cursorVar}=${cursorVar}+5;`,
+      `until ${cursorVar}>#${packedVar};`,
+    ];
+  }
+  if (templateId === 2) {
+    return [
+      `local ${limitVar}=#${packedVar};`,
+      `for ${cursorVar}=1,${limitVar},5 do `,
+      `local ${blockVar}=${packedVar}:sub(${cursorVar},${cursorVar}+4);`,
+      `if #${blockVar}==5 then ${outVar}[#${outVar}+1]=${decodeVar}(${blockVar});end;`,
+      `end;`,
+    ];
+  }
+  return [
+    `local ${indexVar}=1;`,
+    `local ${stateVar}=1;`,
+    "while true do ",
+    `if ${stateVar}==1 then `,
+    `if ${indexVar}>#${packedVar} then ${stateVar}=3 else ${stateVar}=2 end;`,
+    `elseif ${stateVar}==2 then `,
+    `${outVar}[#${outVar}+1]=${decodeVar}(${packedVar}:sub(${indexVar},${indexVar}+4));`,
+    `${indexVar}=${indexVar}+5;`,
+    `${stateVar}=1;`,
+    "else break end;",
+    "end;",
+  ];
+}
+
 function buildPackedLuauShell(code, rng) {
   const encoding = buildPackedPayloadEncoding(code);
-  const fragments = buildPackedPayloadFragments(encoding.payload);
+  const fragments = buildPackedPayloadFragments(encoding.payload, rng);
+  const alphabetSplitA = rng && typeof rng.int === "function"
+    ? rng.int(18, 30)
+    : 24;
+  const alphabetSplitB = rng && typeof rng.int === "function"
+    ? rng.int(alphabetSplitA + 12, 58)
+    : 52;
+  const alphabetParts = [
+    PACKED_PAYLOAD_ALPHABET.slice(0, alphabetSplitA),
+    PACKED_PAYLOAD_ALPHABET.slice(alphabetSplitA, alphabetSplitB),
+    PACKED_PAYLOAD_ALPHABET.slice(alphabetSplitB),
+  ].filter(Boolean);
   const partsVar = makePackedIdentifier(rng);
-  const pushVar = makePackedIdentifier(rng);
   const loaderVar = makePackedIdentifier(rng);
   const indexVar = makePackedIdentifier(rng);
   const blockVar = makePackedIdentifier(rng);
@@ -396,10 +480,6 @@ function buildPackedLuauShell(code, rng) {
   const decodedVar = makePackedIdentifier(rng);
   const packedVar = makePackedIdentifier(rng);
   const sizeVar = makePackedIdentifier(rng);
-  const byte0Var = makePackedIdentifier(rng);
-  const byte1Var = makePackedIdentifier(rng);
-  const byte2Var = makePackedIdentifier(rng);
-  const byte3Var = makePackedIdentifier(rng);
   const decodeVar = makePackedIdentifier(rng);
   const envVar = makePackedIdentifier(rng);
   const stateVar = makePackedIdentifier(rng);
@@ -417,90 +497,130 @@ function buildPackedLuauShell(code, rng) {
   const payloadArgVar = makePackedIdentifier(rng);
   const sizeArgVar = makePackedIdentifier(rng);
   const outVar = makePackedIdentifier(rng);
+  const rootVar = makePackedIdentifier(rng);
+  const limitVar = makePackedIdentifier(rng);
+  const cursorVar = makePackedIdentifier(rng);
+  const fragmentIndexVar = makePackedIdentifier(rng);
+  const fragmentEntryVar = makePackedIdentifier(rng);
+  const decodeTemplate = rng && typeof rng.int === "function" ? rng.int(0, 2) : 0;
+  const shardTemplate = rng && typeof rng.int === "function" ? rng.int(0, 2) : 0;
+  const shuffled = fragments.map((value, idx) => ({ value, idx: idx + 1 }));
+  if (rng && typeof rng.shuffle === "function") {
+    rng.shuffle(shuffled);
+  }
+  const shardVars = Array.from({ length: rng && typeof rng.int === "function" ? rng.int(2, 4) : 2 }, () => makePackedIdentifier(rng));
+  const stageVar = makePackedIdentifier(rng);
+  const assembleVar = makePackedIdentifier(rng);
+  const rehydrateVar = makePackedIdentifier(rng);
+  const alphabetPartVars = alphabetParts.map(() => makePackedIdentifier(rng));
 
   const lines = [
     "return(function(...)",
-    `local ${partsVar}={${makeLongBracketLiteral(fragments[0])}};`,
   ];
-
-  for (let index = 1; index < fragments.length; index += 1) {
-    if (index === 1) {
-      lines.push(`local function ${pushVar}(${blockVar})${partsVar}[#${partsVar}+1]=${blockVar};end;`);
+  const scaffoldLines = [
+    `local ${partsVar}={};`,
+    `local ${concatKeyVar}=${makeByteEscapeLiteral("concat")};`,
+    `local ${joinVar}=table[${concatKeyVar}];`,
+  ];
+  alphabetParts.forEach((part, index) => {
+    scaffoldLines.push(`local ${alphabetPartVars[index]}=${makeByteEscapeLiteral(part)};`);
+  });
+  scaffoldLines.push(`local ${alphabetVar}=${alphabetPartVars.join("..")};`);
+  let shardDeclCursor = 0;
+  scaffoldLines.forEach((line, index) => {
+    lines.push(line);
+    while (
+      shardDeclCursor < shardVars.length
+      && ((index + 1) * shardVars.length >= (shardDeclCursor + 1) * scaffoldLines.length)
+    ) {
+      lines.push(`local ${shardVars[shardDeclCursor]}={};`);
+      shardDeclCursor += 1;
     }
-    if (index === 2) {
-      lines.push(`local ${alphabetVar}=${makeLongBracketLiteral(PACKED_PAYLOAD_ALPHABET)};`);
-      lines.push(`local function ${decodeVar}(${blockVar})`);
-      lines.push(`local ${valueVar}=((((string.find(${alphabetVar},string.sub(${blockVar},1,1),1,true)-1)*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},2,2),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},3,3),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},4,4),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},5,5),1,true)-1);`);
-      lines.push(`local ${byte0Var}=math.floor(${valueVar}/16777216)%256;`);
-      lines.push(`local ${byte1Var}=math.floor(${valueVar}/65536)%256;`);
-      lines.push(`local ${byte2Var}=math.floor(${valueVar}/256)%256;`);
-      lines.push(`local ${byte3Var}=${valueVar}%256;`);
-      lines.push(`return string.char(${byte0Var},${byte1Var},${byte2Var},${byte3Var});`);
-      lines.push("end;");
-    }
-    if (index === 3) {
-      lines.push(`local function ${dispatchVar}(${decodedVar},...)`);
-      lines.push(`local ${loadAHeadVar}="loa";`);
-      lines.push(`local ${loadATailVar}="dstr".."ing";`);
-      lines.push(`local ${loadBHeadVar}="lo";`);
-      lines.push(`local ${loadBTailVar}="ad";`);
-      lines.push(`local ${loadAKeyVar}=${loadAHeadVar}..${loadATailVar};`);
-      lines.push(`local ${loadBKeyVar}=${loadBHeadVar}..${loadBTailVar};`);
-      lines.push(`local ${envVar}=(getfenv and getfenv(0)) or _ENV or _G;`);
-      lines.push(`local ${loaderVar}=(${envVar} and (${envVar}[${loadAKeyVar}] or ${envVar}[${loadBKeyVar}])) or _G[${loadAKeyVar}] or _G[${loadBKeyVar}];`);
-      lines.push(`return ${loaderVar}(${decodedVar})(...);`);
-      lines.push("end;");
-    }
-    lines.push(`${pushVar}(${makeLongBracketLiteral(fragments[index])});`);
+  });
+  while (shardDeclCursor < shardVars.length) {
+    lines.push(`local ${shardVars[shardDeclCursor]}={};`);
+    shardDeclCursor += 1;
   }
 
-  if (fragments.length < 3) {
-    lines.push(`local ${alphabetVar}=${makeLongBracketLiteral(PACKED_PAYLOAD_ALPHABET)};`);
-    lines.push(`local function ${decodeVar}(${blockVar})`);
-    lines.push(`local ${valueVar}=((((string.find(${alphabetVar},string.sub(${blockVar},1,1),1,true)-1)*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},2,2),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},3,3),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},4,4),1,true)-1))*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},string.sub(${blockVar},5,5),1,true)-1);`);
-    lines.push(`local ${byte0Var}=math.floor(${valueVar}/16777216)%256;`);
-    lines.push(`local ${byte1Var}=math.floor(${valueVar}/65536)%256;`);
-    lines.push(`local ${byte2Var}=math.floor(${valueVar}/256)%256;`);
-    lines.push(`local ${byte3Var}=${valueVar}%256;`);
-    lines.push(`return string.char(${byte0Var},${byte1Var},${byte2Var},${byte3Var});`);
-    lines.push("end;");
-  }
-
-  if (fragments.length < 4) {
-    lines.push(`local function ${dispatchVar}(${decodedVar},...)`);
-    lines.push(`local ${loadAHeadVar}="loa";`);
-    lines.push(`local ${loadATailVar}="dstr".."ing";`);
-    lines.push(`local ${loadBHeadVar}="lo";`);
-    lines.push(`local ${loadBTailVar}="ad";`);
-    lines.push(`local ${loadAKeyVar}=${loadAHeadVar}..${loadATailVar};`);
-    lines.push(`local ${loadBKeyVar}=${loadBHeadVar}..${loadBTailVar};`);
-    lines.push(`local ${envVar}=(getfenv and getfenv(0)) or _ENV or _G;`);
-    lines.push(`local ${loaderVar}=(${envVar} and (${envVar}[${loadAKeyVar}] or ${envVar}[${loadBKeyVar}])) or _G[${loadAKeyVar}] or _G[${loadBKeyVar}];`);
-    lines.push(`return ${loaderVar}(${decodedVar})(...);`);
-    lines.push("end;");
-  }
-
-  lines.push(`local function ${execVar}(${payloadArgVar},${sizeArgVar},...)`);
-  lines.push(`local ${concatKeyVar}="concat";`);
-  lines.push(`local ${packedVar}=table[${concatKeyVar}](${payloadArgVar});`);
-  lines.push(`local ${outVar}={};`);
-  lines.push(`local ${joinVar}=table[${concatKeyVar}];`);
-  lines.push(`local ${indexVar}=1;`);
-  lines.push(`local ${stateVar}=1;`);
-  lines.push("while true do ");
-  lines.push(`if ${stateVar}==1 then `);
-  lines.push(`if ${indexVar}>#${packedVar} then ${stateVar}=3 else ${stateVar}=2 end;`);
-  lines.push(`elseif ${stateVar}==2 then `);
-  lines.push(`${outVar}[#${outVar}+1]=${decodeVar}(${packedVar}:sub(${indexVar},${indexVar}+4));`);
-  lines.push(`${indexVar}=${indexVar}+5;`);
-  lines.push(`${stateVar}=1;`);
-  lines.push("else break end;");
+  const shardInsertLines = [];
+  shuffled.forEach((entry, index) => {
+    const shardVar = shardVars[index % shardVars.length];
+    if (shardTemplate === 0) {
+      shardInsertLines.push(`${shardVar}[#${shardVar}+1]={${entry.idx},${makeLongBracketLiteral(entry.value)}};`);
+    } else if (shardTemplate === 1) {
+      shardInsertLines.push(`${shardVar}[#${shardVar}+1]={[1]=${makeLongBracketLiteral(entry.value)},[2]=${entry.idx}};`);
+    } else {
+      shardInsertLines.push(`${shardVar}[#${shardVar}+1]={{${entry.idx}},${makeLongBracketLiteral(entry.value)}};`);
+    }
+  });
+  const shardRebuildLines = [];
+  shardVars.forEach((shardVar) => {
+    shardRebuildLines.push(`for ${fragmentIndexVar}=1,#${shardVar} do `);
+    shardRebuildLines.push(`local ${fragmentEntryVar}=${shardVar}[${fragmentIndexVar}];`);
+    if (shardTemplate === 0) {
+      shardRebuildLines.push(`if ${fragmentEntryVar} then ${partsVar}[${fragmentEntryVar}[1]]=${fragmentEntryVar}[2];end;`);
+    } else if (shardTemplate === 1) {
+      shardRebuildLines.push(`if ${fragmentEntryVar} then ${partsVar}[${fragmentEntryVar}[2]]=${fragmentEntryVar}[1];end;`);
+    } else {
+      shardRebuildLines.push(`if ${fragmentEntryVar} then ${partsVar}[${fragmentEntryVar}[1][1]]=${fragmentEntryVar}[2];end;`);
+    }
+    shardRebuildLines.push(`end;`);
+  });
+  const shardBreakA = Math.max(1, Math.floor(shardInsertLines.length / 3));
+  const shardBreakB = Math.max(shardBreakA + 1, Math.floor((shardInsertLines.length * 2) / 3));
+  lines.push(...shardInsertLines.slice(0, shardBreakA));
+  lines.push(`local function ${decodeVar}(${blockVar})`);
+  lines.push(`local ${valueVar}=0;`);
+  lines.push(`for ${indexVar}=1,5 do ${valueVar}=${valueVar}*${PACKED_PAYLOAD_RADIX}+(string.find(${alphabetVar},${blockVar}:sub(${indexVar},${indexVar}),1,true)-1);end;`);
+  lines.push(`return string.char(math.floor(${valueVar}/16777216)%256,math.floor(${valueVar}/65536)%256,math.floor(${valueVar}/256)%256,${valueVar}%256);`);
   lines.push("end;");
-  lines.push(`local ${decodedVar}=${joinVar}(${outVar});`);
-  lines.push(`${decodedVar}=${decodedVar}:sub(1,${sizeArgVar});`);
+  lines.push(...shardInsertLines.slice(shardBreakA, shardBreakB));
+  lines.push(`local ${sizeVar}=${encoding.size};`);
+
+  lines.push(`local function ${dispatchVar}(${decodedVar},...)`);
+  lines.push(`local ${loadAHeadVar}=${makeByteEscapeLiteral("loa")};`);
+  lines.push(`local ${loadATailVar}=${makeByteEscapeLiteral("dstr")}..${makeByteEscapeLiteral("ing")};`);
+  lines.push(`local ${loadBHeadVar}=${makeByteEscapeLiteral("lo")};`);
+  lines.push(`local ${loadBTailVar}=${makeByteEscapeLiteral("ad")};`);
+  lines.push(`local ${loadAKeyVar}=${loadAHeadVar}..${loadATailVar};`);
+  lines.push(`local ${loadBKeyVar}=${loadBHeadVar}..${loadBTailVar};`);
+  lines.push(`local ${rootVar}=(function()return _G end)();`);
+  lines.push(`local ${envVar}=type(${rootVar})=="table" and ${rootVar} or nil;`);
+  lines.push(`local ${loaderVar}=${envVar} and (${envVar}[${loadAKeyVar}] or ${envVar}[${loadBKeyVar}]);`);
+  lines.push(`return ${loaderVar}(${decodedVar})(...);`);
+  lines.push("end;");
+  lines.push(...shardInsertLines.slice(shardBreakB));
+  lines.push(...shardRebuildLines);
+
+  lines.push(`local function ${assembleVar}(${packedVar})`);
+  lines.push(`local ${outVar}={};`);
+  lines.push(...buildPackedDecodeLoopLines(decodeTemplate, {
+    packedVar,
+    outVar,
+    decodeVar,
+    indexVar,
+    stateVar,
+    limitVar,
+    cursorVar,
+    blockVar,
+  }));
+  lines.push(`return ${outVar};`);
+  lines.push("end;");
+  lines.push(`local function ${rehydrateVar}(${stageVar},${sizeArgVar})`);
+  lines.push(`local ${decodedVar}=${joinVar}(${stageVar});`);
+  lines.push(`return ${decodedVar}:sub(1,${sizeArgVar});`);
+  lines.push("end;");
+  lines.push(`local function ${execVar}(${payloadArgVar},${sizeArgVar},...)`);
+  lines.push(`local ${packedVar}={};`);
+  lines.push(`for ${fragmentIndexVar}=1,#${payloadArgVar} do `);
+  lines.push(`local ${fragmentEntryVar}=${payloadArgVar}[${fragmentIndexVar}];`);
+  lines.push(`if ${fragmentEntryVar} then ${packedVar}[#${packedVar}+1]=${fragmentEntryVar};end;`);
+  lines.push(`end;`);
+  lines.push(`${packedVar}=table[${concatKeyVar}](${packedVar});`);
+  lines.push(`local ${stageVar}=${assembleVar}(${packedVar});`);
+  lines.push(`local ${decodedVar}=${rehydrateVar}(${stageVar},${sizeArgVar});`);
   lines.push(`return ${dispatchVar}(${decodedVar},...);`);
   lines.push("end;");
-  lines.push(`local ${sizeVar}=${encoding.size};`);
   lines.push(`return ${execVar}(${partsVar},${sizeVar},...);`);
   lines.push("end)(...)");
 
@@ -839,17 +959,16 @@ async function obfuscateLuau(source, options) {
       code = compactLuauWhitespace(code);
     }
     code = neutralizeDoubleDashInCode(code);
+    code = concealResidualLuauMembers(code);
   }
   if (directives) {
     code = `${directives}\n${code}`;
   }
-  code = `${LUAU_WATERMARK}\n${code}`;
   if (usePackedShell) {
-    const packedBody = buildPackedLuauShell(code, rng);
-    code = `${LUAU_WATERMARK}\n${packedBody}`;
+    code = buildPackedLuauShell(code, rng);
   }
   if (shouldGenerateSourceMap) {
-    const prefixLines = 1 + (directives ? directives.split("\n").length : 0);
+    const prefixLines = directives ? directives.split("\n").length : 0;
     map = buildSourceMap(
       shiftMappings(generated.mappings || [], prefixLines),
       {
@@ -871,7 +990,6 @@ async function obfuscateLuau(source, options) {
     if (directives) {
       fallbackCode = `${directives}\n${fallbackCode}`;
     }
-    fallbackCode = `${LUAU_WATERMARK}\n${fallbackCode}`;
     const fallbackSize = Buffer.byteLength(fallbackCode, "utf8");
     if (fallbackSize <= MAX_LUAU_OUTPUT_BYTES) {
       code = fallbackCode;

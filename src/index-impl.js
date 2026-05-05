@@ -6,15 +6,6 @@ const { minify } = require("terser");
 const { buildPipeline } = require("./pipeline");
 const { normalizeOptions } = require("./options");
 const { obfuscateLuau } = require("./luau");
-const { version: PACKAGE_VERSION } = require("../package.json");
-
-const WATERMARK_URL = "https://github.com/msgaxzzz/simple-javascript-obf";
-const JS_WATERMARK = `// This file was protected using simple-javascript-obfuscator v${PACKAGE_VERSION} [${WATERMARK_URL}]`;
-
-function prependJsWatermark(code) {
-  const body = typeof code === "string" ? code : "";
-  return `${JS_WATERMARK}\n${body}`;
-}
 
 function parseSource(code, filename) {
   return parser.parse(code, {
@@ -77,7 +68,7 @@ async function obfuscate(source, userOptions = {}) {
 
   if (!options.minify) {
     return {
-      code: prependJsWatermark(output.code || ""),
+      code: output.code || "",
       map: options.sourceMap ? output.map || null : null,
     };
   }
@@ -121,7 +112,7 @@ async function obfuscate(source, userOptions = {}) {
   }
 
   return {
-    code: prependJsWatermark(minified.code || ""),
+    code: minified.code || "",
     map,
   };
 }

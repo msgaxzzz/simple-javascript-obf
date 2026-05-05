@@ -1,11 +1,19 @@
-const { walk } = require("./ast");
+const { traverse } = require("./ast");
 
 function stringLiteral(value, ctx) {
-  const raw = JSON.stringify(value);
+  const bytes = Array.from(Buffer.from(String(value), "utf8"));
+  const raw = bytes.length
+    ? `"${bytes.map((num) => `\\${String(num).padStart(3, "0")}`).join("")}"`
+    : "\"\"";
   if (ctx && ctx.factory && typeof ctx.factory.makeStringLiteral === "function") {
     return ctx.factory.makeStringLiteral(raw, value);
   }
   return { type: "StringLiteral", value, raw };
+}
+
+function escapeInterpolatedRaw(value) {
+  const bytes = Array.from(Buffer.from(String(value), "utf8"));
+  return bytes.map((num) => `\\${String(num).padStart(3, "0")}`).join("");
 }
 
 function shouldEncodeMembers(options) {
@@ -60,8 +68,8 @@ function encodeMembers(ast, ctx) {
     return;
   }
 
-  walk(ast, (node, parent, key, index) => {
-    if (!node || !parent || key === null || key === undefined) {
+  traverse(ast, (node, parent, key, index, context) => {
+    if (!node || !parent || key === null || key === undefined || !context) {
       return;
     }
     if (node.type === "MemberExpression") {
@@ -70,23 +78,23 @@ function encodeMembers(ast, ctx) {
       }
       const replacement = encodeMemberExpression(node, ctx);
       if (replacement !== node) {
-        if (index === null || index === undefined) {
-          parent[key] = replacement;
-        } else {
-          parent[key][index] = replacement;
-        }
+        context.replace(replacement);
       }
       return;
     }
     if (node.type === "TableKeyString" || node.kind === "name") {
       const replacement = encodeTableField(node, ctx);
       if (replacement !== node) {
-        if (index === null || index === undefined) {
-          parent[key] = replacement;
-        } else {
-          parent[key][index] = replacement;
-        }
+        context.replace(replacement);
       }
+      return;
+    }
+    if (node.type === "InterpolatedString" && Array.isArray(node.parts)) {
+      node.parts.forEach((part) => {
+        if (part && part.type === "InterpolatedStringText" && typeof part.raw === "string" && part.raw.length) {
+          part.raw = escapeInterpolatedRaw(part.raw);
+        }
+      });
     }
   });
 }

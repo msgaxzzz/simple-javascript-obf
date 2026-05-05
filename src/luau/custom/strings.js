@@ -195,12 +195,21 @@ function luaByteString(bytes) {
   return out;
 }
 
-function buildRuntime(segments, poolEncoding) {
+function buildRuntime(segments, poolEncoding, nameFor) {
   const lines = [];
   for (const segment of segments) {
     if (!segment.pool.length) {
       continue;
     }
+    const indexName = nameFor("i");
+    const cachedName = nameFor("cached");
+    const dataName = nameFor("data");
+    const outName = nameFor("out");
+    const keyLenName = nameFor("key_len");
+    const loopName = nameFor("j");
+    const offsetName = nameFor("offset");
+    const valueName = nameFor("value");
+    const stringName = nameFor("str");
     lines.push(`local ${segment.poolName} = {`);
     for (const entry of segment.pool) {
       if (poolEncoding === "string") {
@@ -215,29 +224,29 @@ function buildRuntime(segments, poolEncoding) {
       lines.push(`local ${segment.byteName} = string.byte`);
     }
     lines.push(`local ${segment.cacheName} = {}`);
-    lines.push(`local function ${segment.decodeName}(i)`);
-    lines.push(`  local cached = ${segment.cacheName}[i]`);
-    lines.push("  if cached ~= nil then");
-    lines.push("    return cached");
+    lines.push(`local function ${segment.decodeName}(${indexName})`);
+    lines.push(`  local ${cachedName} = ${segment.cacheName}[${indexName}]`);
+    lines.push(`  if ${cachedName} ~= nil then`);
+    lines.push(`    return ${cachedName}`);
     lines.push("  end");
-    lines.push(`  local data = ${segment.poolName}[i]`);
-    lines.push("  local out = {}");
-    lines.push(`  local keyLen = #${segment.keyName}`);
-    lines.push("  for j = 1, #data do");
-    lines.push("    local idx = j - 1");
-    lines.push("    idx = idx % keyLen");
-    lines.push("    idx = idx + 1");
+    lines.push(`  local ${dataName} = ${segment.poolName}[${indexName}]`);
+    lines.push(`  local ${outName} = {}`);
+    lines.push(`  local ${keyLenName} = #${segment.keyName}`);
+    lines.push(`  for ${loopName} = 1, #${dataName} do`);
+    lines.push(`    local ${offsetName} = ${loopName} - 1`);
+    lines.push(`    ${offsetName} = ${offsetName} % ${keyLenName}`);
+    lines.push(`    ${offsetName} = ${offsetName} + 1`);
     if (poolEncoding === "string") {
-      lines.push(`    local v = ${segment.byteName}(data, j) - ${segment.keyName}[idx]`);
+      lines.push(`    local ${valueName} = ${segment.byteName}(${dataName}, ${loopName}) - ${segment.keyName}[${offsetName}]`);
     } else {
-      lines.push(`    local v = data[j] - ${segment.keyName}[idx]`);
+      lines.push(`    local ${valueName} = ${dataName}[${loopName}] - ${segment.keyName}[${offsetName}]`);
     }
-    lines.push("    if v < 0 then v = v + 256 end");
-    lines.push("    out[j] = string.char(v)");
+    lines.push(`    if ${valueName} < 0 then ${valueName} = ${valueName} + 256 end`);
+    lines.push(`    ${outName}[${loopName}] = string.char(${valueName})`);
     lines.push("  end");
-    lines.push("  local s = table.concat(out)");
-    lines.push(`  ${segment.cacheName}[i] = s`);
-    lines.push("  return s");
+    lines.push(`  local ${stringName} = table.concat(${outName})`);
+    lines.push(`  ${segment.cacheName}[${indexName}] = ${stringName}`);
+    lines.push(`  return ${stringName}`);
     lines.push("end");
   }
   return lines.join("\n");
@@ -462,7 +471,7 @@ function stringEncode(ast, options, rng, ctx) {
     return;
   }
 
-  const runtime = buildRuntime(segments, poolEncoding);
+  const runtime = buildRuntime(segments, poolEncoding, nameFor);
   const runtimeAst = parse(runtime);
   ast.body.unshift(...runtimeAst.body);
 }

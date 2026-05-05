@@ -3,6 +3,32 @@ const { getCachedSSAUsedNamesFromRoot } = require("./ssa-utils");
 
 const BASE_RESERVED = new Set(["_ENV", "_G"]);
 const NAME_RESERVED = new Set(["_ENV", "_G", "type", "getfenv"]);
+const COMMON_MASKED_MEMBER_NAMES = new Set([
+  "print",
+  "warn",
+  "char",
+  "byte",
+  "concat",
+  "pack",
+  "unpack",
+  "floor",
+  "abs",
+  "min",
+  "max",
+  "insert",
+  "remove",
+  "move",
+  "find",
+  "sub",
+  "gsub",
+  "rep",
+  "format",
+  "match",
+  "gmatch",
+  "clock",
+  "random",
+  "randomseed",
+]);
 
 function tracePass(ctx, event) {
   if (ctx && typeof ctx.debugTrace === "function") {
@@ -31,6 +57,15 @@ function isDefined(scope, name) {
 
 function stringLiteral(value, ctx) {
   const raw = JSON.stringify(value);
+  if (ctx && ctx.factory && typeof ctx.factory.makeStringLiteral === "function") {
+    return ctx.factory.makeStringLiteral(raw, value);
+  }
+  return { type: "StringLiteral", value, raw };
+}
+
+function escapedByteStringLiteral(value, ctx) {
+  const bytes = Array.from(Buffer.from(String(value), "utf8"));
+  const raw = `"${bytes.map((byte) => `\\${String(byte).padStart(3, "0")}`).join("")}"`;
   if (ctx && ctx.factory && typeof ctx.factory.makeStringLiteral === "function") {
     return ctx.factory.makeStringLiteral(raw, value);
   }
@@ -100,8 +135,24 @@ function envIndex(name, envAlias, ctx) {
   return {
     type: "IndexExpression",
     base: { type: "Identifier", name: envAlias },
-    index: stringLiteral(name, ctx),
+    index: escapedByteStringLiteral(name, ctx),
   };
+}
+
+function isMaskedGlobalChain(expr, envAlias) {
+  if (!expr || typeof expr !== "object") {
+    return false;
+  }
+  if (expr.type === "IndexExpression") {
+    if (expr.base && expr.base.type === "Identifier" && expr.base.name === envAlias) {
+      return true;
+    }
+    return isMaskedGlobalChain(expr.base, envAlias);
+  }
+  if (expr.type === "MemberExpression") {
+    return isMaskedGlobalChain(expr.base, envAlias);
+  }
+  return false;
 }
 
 function markSkip(node) {
@@ -227,6 +278,18 @@ function maskExpression(expr, scope, envAlias, reserved, ctx) {
       return expr;
     case "MemberExpression":
       expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
+      if (
+        expr.identifier &&
+        typeof expr.identifier.name === "string" &&
+        COMMON_MASKED_MEMBER_NAMES.has(expr.identifier.name) &&
+        isMaskedGlobalChain(expr.base, envAlias)
+      ) {
+        return {
+          type: "IndexExpression",
+          base: expr.base,
+          index: escapedByteStringLiteral(expr.identifier.name, ctx),
+        };
+      }
       return expr;
     case "CallExpression":
       expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);

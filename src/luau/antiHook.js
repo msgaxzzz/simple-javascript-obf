@@ -52,94 +52,152 @@ function luaString(value) {
   return `"${escaped}"`;
 }
 
-function luaCharString(value) {
+function luaByteString(value) {
   const bytes = Array.from(Buffer.from(String(value), "utf8"));
   if (!bytes.length) {
     return '""';
   }
-  return `string.char(${bytes.join(", ")})`;
+  let out = "\"";
+  for (const value of bytes) {
+    const num = Math.max(0, Math.min(255, Number(value) || 0));
+    out += `\\${String(num).padStart(3, "0")}`;
+  }
+  out += "\"";
+  return out;
+}
+
+function luaCharCall(fnName, value) {
+  const bytes = Array.from(Buffer.from(String(value), "utf8"));
+  if (!bytes.length) {
+    return '""';
+  }
+  return `${fnName}(${bytes.join(", ")})`;
+}
+
+function luaHiddenIndex(baseExpr, key) {
+  return `${baseExpr}[${luaByteString(key)}]`;
 }
 
 function buildRuntime({ lock, rng }) {
-  const errIntegrity = luaCharString("invalid state");
-  const errRuntime = luaCharString("operation unavailable");
   const used = new Set();
   const failName = makeName(rng, used);
-  const envName = makeName(rng, used);
+  const envResolverName = makeName(rng, used);
   const checkName = makeName(rng, used);
+  const rootName = makeName(rng, used);
+  const typeName = makeName(rng, used);
+  const charName = makeName(rng, used);
+  const getfenvName = makeName(rng, used);
+  const getmetatableName = makeName(rng, used);
+  const setmetatableName = makeName(rng, used);
+  const pcallName = makeName(rng, used);
+  const debugName = makeName(rng, used);
+  const functionTag = luaByteString("function");
+  const tableTag = luaByteString("table");
+  const lockedValue = luaByteString("locked");
+  const errIntegrity = luaCharCall(charName, "invalid state");
+  const errRuntime = luaCharCall(charName, "operation unavailable");
+  const hiddenString = luaHiddenIndex(rootName, "string");
+  const hiddenType = luaHiddenIndex(rootName, "type");
+  const hiddenGetfenv = luaHiddenIndex(rootName, "getfenv");
+  const hiddenGetmetatable = luaHiddenIndex(rootName, "getmetatable");
+  const hiddenSetmetatable = luaHiddenIndex(rootName, "setmetatable");
+  const hiddenPcall = luaHiddenIndex(rootName, "pcall");
+  const hiddenDebug = luaHiddenIndex(rootName, "debug");
+  const hiddenChar = luaHiddenIndex(hiddenString, "char");
+  const envLocalName = makeName(rng, used);
+  const getfLocalName = makeName(rng, used);
+  const getmtLocalName = makeName(rng, used);
+  const mtLocalName = makeName(rng, used);
+  const rootLocalName = makeName(rng, used);
+  const dbgLocalName = makeName(rng, used);
+  const gethookLocalName = makeName(rng, used);
+  const okLocalName = makeName(rng, used);
+  const hookLocalName = makeName(rng, used);
+  const lockEnvName = makeName(rng, used);
+  const setmtLocalName = makeName(rng, used);
+  const envLockLocalName = makeName(rng, used);
+  const mtLockLocalName = makeName(rng, used);
+  const okSetmtLocalName = makeName(rng, used);
   return [
     "do",
+    `  local ${rootName} = _G`,
+    `  local ${typeName} = ${hiddenType} or type`,
+    `  local ${charName} = ${hiddenChar} or string.char`,
+    `  local ${getfenvName} = ${hiddenGetfenv} or getfenv`,
+    `  local ${getmetatableName} = ${hiddenGetmetatable} or getmetatable`,
+    `  local ${setmetatableName} = ${hiddenSetmetatable} or setmetatable`,
+    `  local ${pcallName} = ${hiddenPcall} or pcall`,
+    `  local ${debugName} = ${hiddenDebug}`,
     `  local function ${failName}(msg)`,
-    "    error(msg, 0)",
+    `    ((${luaHiddenIndex(rootName, "error")} or error))(msg, 0)`,
     "  end",
-    "  local typeFn = type",
-    "  if typeFn == nil then",
+    `  if ${typeName} == nil then`,
     `    ${failName}(${errIntegrity})`,
     "  end",
-    `  local function ${envName}()`,
-    "    local env",
-    "    local getf = getfenv",
-    "    if typeFn(getf) == \"function\" then",
-    "      env = getf(1)",
+    `  local function ${envResolverName}()`,
+    `    local ${envLocalName}`,
+    `    local ${getfLocalName} = ${getfenvName}`,
+    `    if ${typeName}(${getfLocalName}) == ${functionTag} then`,
+    `      ${envLocalName} = ${getfLocalName}(1)`,
     "    end",
-    "    if typeFn(env) ~= \"table\" then",
-    "      env = _G",
+    `    if ${typeName}(${envLocalName}) ~= ${tableTag} then`,
+    `      ${envLocalName} = ${rootName}`,
     "    end",
-    "    local getmt = getmetatable",
-    "    if typeFn(getmt) == \"function\" then",
-    "      local mt = getmt(env)",
-    "      if mt ~= nil then",
-    "        local g = _G",
-    "        if typeFn(g) == \"table\" then",
-    "          env = g",
+    `    local ${getmtLocalName} = ${getmetatableName}`,
+    `    if ${typeName}(${getmtLocalName}) == ${functionTag} then`,
+    `      local ${mtLocalName} = ${getmtLocalName}(${envLocalName})`,
+    `      if ${mtLocalName} ~= nil then`,
+    `        local ${rootLocalName} = ${rootName}`,
+    `        if ${typeName}(${rootLocalName}) == ${tableTag} then`,
+    `          ${envLocalName} = ${rootLocalName}`,
     "        end",
     "      end",
     "    end",
-    "    return env",
+    `    return ${envLocalName}`,
     "  end",
     `  local function ${checkName}()`,
-    `    local env = ${envName}()`,
-    "    if typeFn(env) ~= \"table\" then",
+    `    local ${envLocalName} = ${envResolverName}()`,
+    `    if ${typeName}(${envLocalName}) ~= ${tableTag} then`,
     `      ${failName}(${errIntegrity})`,
     "    end",
-    "    local dbg = debug",
-    "    if typeFn(dbg) == \"table\" then",
-    "      local gethook = dbg.gethook",
-    "      if typeFn(gethook) == \"function\" then",
-    "        local ok, hook = pcall(gethook)",
-    "        if ok and hook ~= nil then",
+    `    local ${dbgLocalName} = ${debugName}`,
+    `    if ${typeName}(${dbgLocalName}) == ${tableTag} then`,
+    `      local ${gethookLocalName} = ${luaHiddenIndex(dbgLocalName, "gethook")}`,
+    `      if ${typeName}(${gethookLocalName}) == ${functionTag} then`,
+    `        local ${okLocalName}, ${hookLocalName} = ${pcallName}(${gethookLocalName})`,
+    `        if ${okLocalName} and ${hookLocalName} ~= nil then`,
     `          ${failName}(${errIntegrity})`,
     "        end",
     "      end",
     "    end",
-    "    local getmt = getmetatable",
-    "    if typeFn(getmt) == \"function\" then",
-    "      local mt = getmt(env)",
-    "      if mt ~= nil then",
+    `    local ${getmtLocalName} = ${getmetatableName}`,
+    `    if ${typeName}(${getmtLocalName}) == ${functionTag} then`,
+    `      local ${mtLocalName} = ${getmtLocalName}(${envLocalName})`,
+    `      if ${mtLocalName} ~= nil then`,
     `        ${failName}(${errIntegrity})`,
     "      end",
     "    end",
     "  end",
     `  ${checkName}()`,
-    lock ? "  local lockEnv = true" : "  local lockEnv = false",
-    "  if lockEnv then",
-    "    local setmt = setmetatable",
-    "    if typeFn(setmt) == \"function\" then",
-    `      local env = ${envName}()`,
-      "      local mt = getmetatable(env)",
-      "      if mt == nil then",
-      "        mt = {}",
-      "        local ok = pcall(setmt, env, mt)",
-      "        if not ok then",
-      "          mt = nil",
-      "        end",
-      "      end",
-      "      if mt ~= nil and mt.__metatable == nil then",
-      "        mt.__metatable = \"locked\"",
-      "      end",
-      "      if mt ~= nil and mt.__newindex == nil then",
-      `        mt.__newindex = function() error(${errRuntime}, 0) end`,
-      "      end",
+    lock ? `  local ${lockEnvName} = true` : `  local ${lockEnvName} = false`,
+    `  if ${lockEnvName} then`,
+    `    local ${setmtLocalName} = ${setmetatableName}`,
+    `    if ${typeName}(${setmtLocalName}) == ${functionTag} then`,
+    `      local ${envLockLocalName} = ${envResolverName}()`,
+    `      local ${mtLockLocalName} = ${getmetatableName}(${envLockLocalName})`,
+    `      if ${mtLockLocalName} == nil then`,
+    `        ${mtLockLocalName} = {}`,
+    `        local ${okSetmtLocalName} = ${pcallName}(${setmtLocalName}, ${envLockLocalName}, ${mtLockLocalName})`,
+    `        if not ${okSetmtLocalName} then`,
+    `          ${mtLockLocalName} = nil`,
+    `        end`,
+    `      end`,
+    `      if ${mtLockLocalName} ~= nil and ${luaHiddenIndex(mtLockLocalName, "__metatable")} == nil then`,
+    `        ${luaHiddenIndex(mtLockLocalName, "__metatable")} = ${lockedValue}`,
+    `      end`,
+    `      if ${mtLockLocalName} ~= nil and ${luaHiddenIndex(mtLockLocalName, "__newindex")} == nil then`,
+    `        ${luaHiddenIndex(mtLockLocalName, "__newindex")} = function() ((${luaHiddenIndex(rootName, "error")} or error))(${errRuntime}, 0) end`,
+    `      end`,
     "    end",
     "  end",
     "end",

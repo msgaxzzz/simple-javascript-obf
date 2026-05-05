@@ -419,31 +419,38 @@ function constantArrayLuau(ast, ctx) {
     const mapName = hasBase64Strings ? nameFor("b64_map") : null;
 
     if (hasBase64Strings) {
+      const outName = nameFor("b64_out");
+      const bufferName = nameFor("b64_buf");
+      const bitsName = nameFor("b64_bits");
+      const indexName = nameFor("b64_i");
+      const charName = nameFor("b64_ch");
+      const valueName = nameFor("b64_v");
+      const byteName = nameFor("b64_byte");
       runtimeLines.push(`local ${charsName} = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"`);
       runtimeLines.push(`local ${mapName} = {}`);
       runtimeLines.push(`for i = 1, #${charsName} do`);
       runtimeLines.push(`  ${mapName}[${charsName}:sub(i, i)] = i - 1`);
       runtimeLines.push("end");
       runtimeLines.push(`local function ${decodeName}(data)`);
-      runtimeLines.push("  local out = {}");
-      runtimeLines.push("  local buffer = 0");
-      runtimeLines.push("  local bits = 0");
-      runtimeLines.push("  for i = 1, #data do");
-      runtimeLines.push("    local ch = data:sub(i, i)");
-      runtimeLines.push("    if ch ~= \"=\" then");
-      runtimeLines.push(`      local v = ${mapName}[ch]`);
-      runtimeLines.push("      if v ~= nil then");
-      runtimeLines.push("        buffer = buffer * 64 + v");
-      runtimeLines.push("        bits = bits + 6");
-      runtimeLines.push("        if bits >= 8 then");
-      runtimeLines.push("          bits = bits - 8");
-      runtimeLines.push("          local byte = math.floor(buffer / 2 ^ bits) % 256");
-      runtimeLines.push("          out[#out + 1] = string.char(byte)");
+      runtimeLines.push(`  local ${outName} = {}`);
+      runtimeLines.push(`  local ${bufferName} = 0`);
+      runtimeLines.push(`  local ${bitsName} = 0`);
+      runtimeLines.push(`  for ${indexName} = 1, #data do`);
+      runtimeLines.push(`    local ${charName} = data:sub(${indexName}, ${indexName})`);
+      runtimeLines.push(`    if ${charName} ~= "=" then`);
+      runtimeLines.push(`      local ${valueName} = ${mapName}[${charName}]`);
+      runtimeLines.push(`      if ${valueName} ~= nil then`);
+      runtimeLines.push(`        ${bufferName} = ${bufferName} * 64 + ${valueName}`);
+      runtimeLines.push(`        ${bitsName} = ${bitsName} + 6`);
+      runtimeLines.push(`        if ${bitsName} >= 8 then`);
+      runtimeLines.push(`          ${bitsName} = ${bitsName} - 8`);
+      runtimeLines.push(`          local ${byteName} = math.floor(${bufferName} / 2 ^ ${bitsName}) % 256`);
+      runtimeLines.push(`          ${outName}[#${outName} + 1] = string.char(${byteName})`);
       runtimeLines.push("        end");
       runtimeLines.push("      end");
       runtimeLines.push("    end");
       runtimeLines.push("  end");
-      runtimeLines.push("  return table.concat(out)");
+      runtimeLines.push(`  return table.concat(${outName})`);
       runtimeLines.push("end");
     }
 
@@ -464,6 +471,9 @@ function constantArrayLuau(ast, ctx) {
       const offsetName = nameFor("const_off");
       const lengthName = nameFor("const_len");
       const guardName = opaque ? nameFor("const_guard") : null;
+      const indexName = nameFor("const_idx");
+      const cachedName = nameFor("const_cached");
+      const valueName = nameFor("const_value");
 
       ordered.forEach((entry, idx) => {
         let tableIndex = idx + 1;
@@ -483,6 +493,9 @@ function constantArrayLuau(ast, ctx) {
         offsetName,
         lengthName,
         guardName,
+        indexName,
+        cachedName,
+        valueName,
       };
     });
 
@@ -499,41 +512,41 @@ function constantArrayLuau(ast, ctx) {
       }
       runtimeLines.push(`local function ${meta.getterName}(i)`);
       if (wrapper && meta.constLength > 1) {
-        runtimeLines.push(`  local idx = i + ${meta.offsetName} - 1`);
-        runtimeLines.push(`  idx = idx % ${meta.lengthName}`);
-        runtimeLines.push("  idx = idx + 1");
+        runtimeLines.push(`  local ${meta.indexName} = i + ${meta.offsetName} - 1`);
+        runtimeLines.push(`  ${meta.indexName} = ${meta.indexName} % ${meta.lengthName}`);
+        runtimeLines.push(`  ${meta.indexName} = ${meta.indexName} + 1`);
       } else {
-        runtimeLines.push("  local idx = i");
+        runtimeLines.push(`  local ${meta.indexName} = i`);
       }
       if (needCache) {
-        runtimeLines.push(`  local cached = ${meta.cacheName}[idx]`);
-        runtimeLines.push("  if cached ~= nil then");
-        runtimeLines.push("    return cached");
+        runtimeLines.push(`  local ${meta.cachedName} = ${meta.cacheName}[${meta.indexName}]`);
+        runtimeLines.push(`  if ${meta.cachedName} ~= nil then`);
+        runtimeLines.push(`    return ${meta.cachedName}`);
         runtimeLines.push("  end");
       }
-      runtimeLines.push(`  local value = ${meta.tableName}[idx]`);
+      runtimeLines.push(`  local ${meta.valueName} = ${meta.tableName}[${meta.indexName}]`);
       if (opaque && meta.guardName) {
         const guardExpr = opaqueName ? `(${opaqueName} and 1 or 1)` : "1";
         runtimeLines.push(`  local ${meta.guardName} = ${guardExpr}`);
         runtimeLines.push(`  if ${meta.guardName} == 1 then`);
       }
       if (hasBase64Strings) {
-        runtimeLines.push("  if type(value) == \"string\" then");
-        runtimeLines.push(`    value = ${decodeName}(value)`);
+        runtimeLines.push(`  if type(${meta.valueName}) == "string" then`);
+        runtimeLines.push(`    ${meta.valueName} = ${decodeName}(${meta.valueName})`);
         runtimeLines.push("  end");
       }
       if (needCache) {
-        runtimeLines.push(`  if value ~= nil then`);
-        runtimeLines.push(`    ${meta.cacheName}[idx] = value`);
+        runtimeLines.push(`  if ${meta.valueName} ~= nil then`);
+        runtimeLines.push(`    ${meta.cacheName}[${meta.indexName}] = ${meta.valueName}`);
         runtimeLines.push("  end");
       }
       if (wipe) {
-        runtimeLines.push(`  ${meta.tableName}[idx] = nil`);
+        runtimeLines.push(`  ${meta.tableName}[${meta.indexName}] = nil`);
       }
       if (opaque && meta.guardName) {
         runtimeLines.push("  end");
       }
-      runtimeLines.push("  return value");
+      runtimeLines.push(`  return ${meta.valueName}`);
       runtimeLines.push("end");
     });
 

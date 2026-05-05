@@ -23,12 +23,17 @@ function hasVmLoop(code) {
 }
 
 function hasRuntimeToolkitBundle(code) {
-  return /local\s+\w+\s*=\s*\{\s*[^}]*char[^}]*byte[^}]*concat[^}]*pack[^}]*unpack[^}]*select[^}]*type[^}]*floor[^}]*getfenv[^}]*\}/.test(code);
+  return /local\s+\w+\s*=\s*\{\s*[^}]*(?:\.char|\\099\\104\\097\\114)[^}]*(?:\.byte|\\098\\121\\116\\101)[^}]*(?:\.concat|\\099\\111\\110\\099\\097\\116)[^}]*(?:\.pack|\\112\\097\\099\\107)[^}]*(?:\.unpack|\\117\\110\\112\\097\\099\\107)[^}]*(?:\.floor|\\102\\108\\111\\111\\114)[^}]*\}/.test(code);
+}
+
+function countRuntimeToolkitBundles(code) {
+  const matches = code.match(/local\s+\w+\s*=\s*\{\s*[^}]*(?:\.char|\\099\\104\\097\\114)[^}]*(?:\.byte|\\098\\121\\116\\101)[^}]*(?:\.concat|\\099\\111\\110\\099\\097\\116)[^}]*(?:\.pack|\\112\\097\\099\\107)[^}]*(?:\.unpack|\\117\\110\\112\\097\\099\\107)[^}]*(?:\.floor|\\102\\108\\111\\111\\114)[^}]*\}/g);
+  return matches ? matches.length : 0;
 }
 
 function hasPackedShellShape(code) {
   return /return\s*\(function\(\.\.\.\)/.test(code)
-    && /local\s+\w+\s*=\s*\{\[[=]*\[/.test(code)
+    && /\[\[/.test(code)
     && /return\s+\w+\(\w+,\w+,\.\.\.\);end\)\(\.\.\.\)\s*$/.test(code);
 }
 
@@ -67,7 +72,7 @@ function hasPackedFrontLoadedLoaderShape(code) {
 }
 
 function hasOpcodePairsEncodingShape(code) {
-  return code.includes('local op_pairs="') && code.includes("\\95\\");
+  return /local\s+\w+\s*=\s*"[^"]*\\95\\/.test(code);
 }
 
 function hasSyncLocalIfChain(code) {
@@ -83,7 +88,9 @@ function hasFixedBytecodeStride17(code) {
 }
 
 function hasTableMoveExpandArgs(code) {
-  return code.includes(".move(") || code.includes('["table"].move');
+  return code.includes(".move(")
+    || code.includes('["table"].move')
+    || code.includes("\\109\\111\\118\\101");
 }
 
 function createSemanticVmOptions(functionName) {
@@ -123,6 +130,30 @@ async function obfuscateSemanticVm(sourceText, functionName, seed) {
   });
   parseCustom(code);
   return code;
+}
+
+function compileVmFunctionInstructions(sourceText, functionName) {
+  assert(
+    vmInternals && typeof vmInternals.VmCompiler === "function",
+    "vm internals should expose VmCompiler"
+  );
+  const ast = parseCustom(sourceText);
+  let target = null;
+  walkAst(ast, (node) => {
+    if (target || !node || node.type !== "FunctionDeclaration") {
+      return;
+    }
+    const name = node.name && node.name.base && node.name.base.name;
+    if (name === functionName) {
+      target = node;
+    }
+  });
+  assert(target, `expected function ${functionName} in test source`);
+  const compiler = new vmInternals.VmCompiler({
+    style: "custom",
+    options: { vm: {} },
+  });
+  return compiler.compileFunction(target).instructions;
 }
 
 function runLuau(code) {
@@ -462,6 +493,163 @@ async function runMinimalSemanticVmRegression() {
     runLuau(code),
     "14",
     "minimal semantic VM function should preserve local loads, stores, const pushes, and arithmetic"
+  );
+  assert.ok(code.includes("\\112\\114\\105\\110\\116"), "masked global print lookup should use escaped byte key");
+  assert.ok(!code.includes('["print"]') && !code.includes('"print"'), "masked global print lookup should not expose plaintext print key");
+}
+
+async function runSharedRuntimePreludeHoistRegression() {
+  const sourceText = [
+    "local function add1(a, b)",
+    "  local sum = a + b",
+    "  return sum + 1",
+    "end",
+    "local function add2(a, b)",
+    "  local sum = a + b",
+    "  return sum + 2",
+    "end",
+    "print(add1(2, 5), add2(2, 5))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(sourceText, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      ...createSemanticVmOptions("add1"),
+      include: ["add1", "add2"],
+    },
+    cff: false,
+    strings: false,
+    rename: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    seed: "vm-shared-runtime-prelude",
+  });
+
+  assert.strictEqual(runLuau(code), "8\t9", "shared runtime prelude should preserve multi-function VM semantics");
+  assert.strictEqual(
+    countRuntimeToolkitBundles(code),
+    1,
+    "multiple VM functions should share a single runtime toolkit prelude"
+  );
+}
+
+function runRegisterLocalCompilerFastPaths() {
+  const registerizedSource = [
+    "local function sumTo(n)",
+    "  local sum = 0",
+    "  for i = 1, n do",
+    "    sum = sum + i",
+    "    sum += 1",
+    "  end",
+    "  return sum",
+    "end",
+  ].join("\n");
+
+  const instructions = compileVmFunctionInstructions(registerizedSource, "sumTo");
+  const opNames = instructions.map((inst) => inst[0]);
+  assert.ok(
+    opNames.includes("ADD_REG_LOCAL"),
+    "compiler should emit local-register add for hot local-to-local updates"
+  );
+  assert.ok(
+    opNames.includes("ADD_REG_CONST"),
+    "compiler should emit local-register add for hot local-to-const updates"
+  );
+  assert.ok(
+    opNames.includes("JMP_IF_LOCAL_LE") && opNames.includes("JMP_IF_LOCAL_GE"),
+    "compiler should emit local-register compare jumps for numeric for-loop bounds"
+  );
+}
+
+function runRegisterLocalBranchCompilerFastPaths() {
+  const branchSource = [
+    "local function scan(a, b)",
+    "  while a < b do",
+    "    a += 1",
+    "  end",
+    "  if a >= b then",
+    "    a -= 1",
+    "  end",
+    "  if a <= b then",
+    "    a += 2",
+    "  end",
+    "  return a",
+    "end",
+  ].join("\n");
+
+  const instructions = compileVmFunctionInstructions(branchSource, "scan");
+  const opNames = instructions.map((inst) => inst[0]);
+  assert.ok(
+    opNames.includes("JMP_IF_LOCAL_GE"),
+    "compiler should use direct local compare jump for while local < local conditions"
+  );
+  assert.ok(
+    opNames.includes("JMP_IF_LOCAL_LT"),
+    "compiler should use direct local compare jump for if local >= local conditions"
+  );
+  assert.ok(
+    opNames.includes("JMP_IF_LOCAL_GT"),
+    "compiler should use direct local compare jump for if local <= local conditions"
+  );
+}
+
+async function runRegisterLocalVmRegression() {
+  const registerizedSource = [
+    "local function sumTo(n)",
+    "  local sum = 0",
+    "  for i = 1, n do",
+    "    sum = sum + i",
+    "    sum += 1",
+    "  end",
+    "  return sum",
+    "end",
+    "print(sumTo(4))",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(
+    registerizedSource,
+    "sumTo",
+    "vm-register-local-regression"
+  );
+
+  assert.strictEqual(
+    runLuau(code),
+    "14",
+    "register/local fast paths should preserve loop semantics"
+  );
+}
+
+async function runRegisterLocalBranchVmRegression() {
+  const branchSource = [
+    "local function scan(a, b)",
+    "  local total = 0",
+    "  while a < b do",
+    "    total += a",
+    "    a += 1",
+    "  end",
+    "  if a >= b then",
+    "    total += 2",
+    "  end",
+    "  if a <= b then",
+    "    total += 3",
+    "  end",
+    "  return total",
+    "end",
+    "print(scan(1, 4))",
+  ].join("\n");
+
+  const code = await obfuscateSemanticVm(
+    branchSource,
+    "scan",
+    "vm-register-local-branch-regression"
+  );
+
+  assert.strictEqual(
+    runLuau(code),
+    "11",
+    "register/local compare jumps should preserve while/if semantics"
   );
 }
 
@@ -1766,6 +1954,11 @@ async function runFakeOpcodeRetryTableReturnRegression() {
   runLuauOutputSizeLimit();
   await runAlternateOpcodeEncodingMode();
   await runMinimalSemanticVmRegression();
+  await runSharedRuntimePreludeHoistRegression();
+  runRegisterLocalCompilerFastPaths();
+  runRegisterLocalBranchCompilerFastPaths();
+  await runRegisterLocalVmRegression();
+  await runRegisterLocalBranchVmRegression();
   await runSyncLocalLeakHardening();
   await runBytecodeStrideHardening();
   await runPackedShellWholeProgramDefault();
