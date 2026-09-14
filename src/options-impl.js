@@ -89,7 +89,12 @@ function normalizeOptions(userOptions = {}) {
     : null;
   const antiHookUserOptions = userOptions.antiHook;
   const ecma = normalizeEcma(userOptions.ecma);
-  const lang = String(userOptions.lang ?? "js").toLowerCase();
+  const inferredLang = /\.java$/i.test(String(userOptions.filename || "")) ? "java" : "js";
+  const requestedLang = String(userOptions.lang ?? inferredLang).toLowerCase();
+  const lang = requestedLang === "javascript" ? "js" : requestedLang;
+  if (!["js", "luau", "java"].includes(lang)) {
+    throw new Error("Unsupported language: " + lang + ". Choose js, luau or java.");
+  }
   const defaultCffMode = lang === "luau" ? "classic" : null;
   const cffMode = cffModeRaw === "vm" || cffModeRaw === "classic"
     ? cffModeRaw
@@ -140,7 +145,8 @@ function normalizeOptions(userOptions = {}) {
   const defaultStringMinLength = lang === "luau" ? 1 : 3;
   const options = {
     preset: presetName,
-    lang: lang === "luau" ? "luau" : "js",
+    lang,
+    javaOptions: userOptions.javaOptions || {},
     luauParser: "custom",
     rename: userOptions.rename ?? preset.rename,
     strings: userOptions.strings ?? preset.strings,
@@ -152,6 +158,13 @@ function normalizeOptions(userOptions = {}) {
       iterations: wrapIterations,
     },
     proxifyLocals: userOptions.proxifyLocals ?? false,
+    antiSSA: userOptions.antiSSA ?? false,
+    antiSSAOptions: {
+      probability: normalizeProbability((userOptions.antiSSAOptions || {}).probability, 0.75),
+      phiConfusion: (userOptions.antiSSAOptions || {}).phiConfusion !== false,
+      mba: (userOptions.antiSSAOptions || {}).mba !== false,
+      aliasTunneling: (userOptions.antiSSAOptions || {}).aliasTunneling ?? false,
+    },
     numbers: userOptions.numbers ?? isLuauHighPreset,
     numbersOptions: {
       probability: normalizeProbability(numbersUserOptions.probability, 1),
@@ -166,7 +179,7 @@ function normalizeOptions(userOptions = {}) {
       shuffle: constArrayUserOptions.shuffle !== false,
       rotate: constArrayUserOptions.rotate !== false,
       minLength: constArrayMinLength,
-      encoding: constArrayEncoding === "base64" ? "base64" : "none",
+      encoding: constArrayEncoding === "base85" ? "base85" : (constArrayEncoding === "base64" ? "base64" : "none"),
       wrapper: constArrayUserOptions.wrapper !== false,
       shards: constArrayShards,
       shardMinLength: constArrayShardMin,
@@ -203,6 +216,8 @@ function normalizeOptions(userOptions = {}) {
       encodeTemplateChunks: stringsUserOptions.encodeTemplateChunks !== false,
     },
     renameOptions: {
+      ...renameUserOptions,
+      style: renameUserOptions.style || "random",
       reserved: userOptions.reserved ?? DEFAULT_RESERVED,
       renameGlobals: renameUserOptions.renameGlobals ?? userOptions.renameGlobals ?? false,
       renameMembers: renameUserOptions.renameMembers ?? userOptions.renameMembers ?? false,
@@ -245,6 +260,7 @@ function normalizeOptions(userOptions = {}) {
     options.vm = { enabled: options.vm };
   }
   const vmOptions = options.vm || {};
+  const vmKind = typeof vmOptions.kind === "string" ? vmOptions.kind.toLowerCase() : (process.env.LUAU_VM_KIND || "rc");
   const cffEnabled = options.cff !== false;
   const vmCffEnabled = lang === "luau" && cffEnabled && options.cffOptions.mode === "vm";
   const luauVmFeatureDefaults = lang === "luau" && (Boolean(vmOptions.enabled) || vmCffEnabled);
@@ -321,6 +337,7 @@ function normalizeOptions(userOptions = {}) {
   const vmDecoyStrings = normalizeCount(vmOptions.decoyStrings, 12, { min: 4, max: 96 });
   const vmSymbolNoise = vmOptions.symbolNoise;
   const vmInstructionFusion = vmOptions.instructionFusion;
+  const vmRegisterRandomization = vmOptions.registerRandomization;
   const vmSemanticMisdirection = vmOptions.semanticMisdirection;
   const vmDynamicCoupling = vmOptions.dynamicCoupling;
   const vmShellStyle = typeof vmOptions.shellStyle === "string"
@@ -344,24 +361,39 @@ function normalizeOptions(userOptions = {}) {
   }
   fakeOpcodes = Math.max(0, Math.min(1, fakeOpcodes));
   let vmAll = vmOptions.all === undefined
-    ? (lang === "js" && Boolean(vmOptions.enabled) && (!Array.isArray(vmOptions.include) || vmOptions.include.length === 0))
+    ? (Boolean(vmOptions.enabled) && (!Array.isArray(vmOptions.include) || vmOptions.include.length === 0))
     : Boolean(vmOptions.all);
-  let vmTopLevel = Boolean(vmOptions.topLevel);
+  let vmTopLevel = vmOptions.topLevel === undefined
+    ? (Boolean(vmOptions.enabled) && (!Array.isArray(vmOptions.include) || vmOptions.include.length === 0) && (normalizedVmMode === "max" || isLuauHighPreset))
+    : Boolean(vmOptions.topLevel);
 
   if (
     lang === "luau" &&
     Boolean(vmOptions.enabled) &&
-    vmShellStyle === "packed" &&
     !vmExplicitScope.include &&
-    !vmExplicitScope.all &&
-    !vmExplicitScope.topLevel
+    !vmExplicitScope.all
   ) {
     vmAll = true;
-    vmTopLevel = true;
+  }
+
+  if (lang === "luau" && Boolean(vmOptions.enabled) && vmShellStyle === "payload") {
+    if (!vmExplicitScope.all) {
+      vmAll = true;
+    }
+    if (!vmExplicitScope.topLevel) {
+      vmTopLevel = true;
+    }
+    options.wrap = false;
   }
 
   options.vm = {
+    ...vmOptions,
     enabled: Boolean(vmOptions.enabled),
+    kind: vmKind,
+    packed: vmOptions.packed !== false,
+    bytecodeEncoding: vmOptions.bytecodeEncoding || (vmKind === "rc" ? "base85" : undefined),
+    runtimeRename: vmOptions.runtimeRename !== false,
+    runtimeObfuscation: vmOptions.runtimeObfuscation !== false,
     include: vmOptions.include || [],
     all: vmAll,
     layers: vmLayers,
@@ -390,8 +422,11 @@ function normalizeOptions(userOptions = {}) {
     decoyStrings: vmDecoyStrings,
     symbolNoise: vmSymbolNoise === undefined ? vmModeDefaults.symbolNoise : Boolean(vmSymbolNoise),
     instructionFusion: vmInstructionFusion === undefined
-      ? vmModeDefaults.instructionFusion
+      ? (vmShellStyle === "payload" ? true : vmModeDefaults.instructionFusion)
       : Boolean(vmInstructionFusion),
+    registerRandomization: vmRegisterRandomization === undefined
+      ? true
+      : Boolean(vmRegisterRandomization),
     semanticMisdirection: vmSemanticMisdirection === undefined
       ? vmModeDefaults.semanticMisdirection
       : Boolean(vmSemanticMisdirection),

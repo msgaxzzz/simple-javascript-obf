@@ -93,6 +93,19 @@ function hasMemberName(ast, name) {
   return found;
 }
 
+function hasMethodCallName(ast, name) {
+  let found = false;
+  walk(ast, (node) => {
+    if (found || !node || node.type !== "MethodCallExpression") {
+      return;
+    }
+    if (node.method && node.method.type === "Identifier" && node.method.name === name) {
+      found = true;
+    }
+  });
+  return found;
+}
+
 function countMemberName(ast, name) {
   let count = 0;
   walk(ast, (node) => {
@@ -165,6 +178,86 @@ function runExternalServiceMemberGuard() {
   assert.ok(hasMemberName(ast, "LocalPlayer"), "custom: external service member should be preserved");
 }
 
+async function runRobloxInstanceContainerMemberGuard() {
+  const source = [
+    "local function Make(class, props)",
+    "  local obj = Instance.new(class)",
+    "  for k, v in pairs(props) do",
+    "    obj[k] = v",
+    "  end",
+    "  return obj",
+    "end",
+    "local UI = {}",
+    "local GroupScroll = Make('ScrollingFrame', {})",
+    "UI.GroupScroll = GroupScroll",
+    "for _, v in pairs(UI.GroupScroll:GetChildren()) do",
+    "  if v:IsA('TextButton') then",
+    "    v.TextLabel.TextColor3 = Color3.new(1, 1, 1)",
+    "  end",
+    "end",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    wrap: false,
+    renameOptions: {
+      renameMembers: true,
+      maskGlobals: false,
+      renameGlobals: false,
+      homoglyphs: true,
+    },
+    seed: "rename-roblox-instance-container-member",
+  });
+
+  const ast = parseCustom(code);
+  assert.ok(hasMemberName(ast, "GroupScroll"), "Roblox instance fields stored in local containers should stay stable");
+  assert.ok(hasMethodCallName(ast, "GetChildren"), "Roblox instance methods stored in local containers should stay stable");
+  assert.ok(code.includes(".TextLabel.TextColor3"), "Roblox child name and property lookups should stay stable");
+
+  const { code: encodedCode } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: true,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    wrap: false,
+    renameOptions: {
+      renameMembers: true,
+      maskGlobals: false,
+      renameGlobals: false,
+      homoglyphs: true,
+    },
+    seed: "rename-roblox-instance-container-member",
+  });
+
+  parseCustom(encodedCode);
+  assert.ok(
+    !encodedCode.includes(".TextLabel.TextColor3") &&
+      !encodedCode.includes("TextLabel") &&
+      !encodedCode.includes("TextColor3") &&
+      !encodedCode.includes("TextButton") &&
+      !encodedCode.includes("GetChildren") &&
+      !encodedCode.includes("IsA"),
+    "strings pass should encode preserved Roblox child/property/method lookups"
+  );
+}
+
 function runLocalTableMemberRename() {
   const ast = parseCustom(
     [
@@ -184,6 +277,61 @@ function runLocalTableMemberRename() {
   });
   assert.strictEqual(countMemberName(ast, "foo"), 0, "custom: local table member 'foo' should be renamed");
   assert.strictEqual(countMemberName(ast, "bar"), 0, "custom: nested local table member 'bar' should be renamed");
+}
+
+async function runCrossFunctionExternalShapeAssignmentRoundtrip() {
+  const sourceWithCrossFunctionUiState = [
+    "local UI = {}",
+    "local State = { Open = false }",
+    "local function Make() return { Visible = false } end",
+    "local function BuildUI()",
+    "  if UI.ScreenGui then return end",
+    "  UI.ScreenGui = Make()",
+    "  local Main = Make()",
+    "  UI.Main = Main",
+    "end",
+    "function ToggleUI(bool)",
+    "  if State.Open == bool then return end",
+    "  State.Open = bool",
+    "  if bool then",
+    "    if not UI.ScreenGui then BuildUI() end",
+    "    UI.Main.Visible = true",
+    "  else",
+    "    if UI.Main then UI.Main.Visible = false end",
+    "  end",
+    "end",
+    "ToggleUI(true)",
+    "print(UI.Main and UI.Main.Visible)",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(sourceWithCrossFunctionUiState, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    wrap: false,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: false,
+      homoglyphs: false,
+    },
+    seed: "rename-cross-function-external-shape-assignment",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "true",
+    "external-shape assignments in one function should stay aligned with reads in sibling functions"
+  );
 }
 
 function runCanonicalOfficialShapeRename() {
@@ -927,11 +1075,58 @@ async function runMetatableDirectFieldRoundtrip() {
   );
 }
 
+async function runRemoteFunctionReturnShapeGuard() {
+  const source = [
+    "local remote = {}",
+    "remote.OnServerInvoke = function(player)",
+    "  local authorizedGroups = {}",
+    "  table.insert(authorizedGroups, {",
+    "    id = 11526190,",
+    "    name = 'Main group',",
+    "  })",
+    "  return authorizedGroups",
+    "end",
+    "local groups = remote.OnServerInvoke({ Name = 'tester' })",
+    "print(tostring(groups[1]['id']) .. '|' .. tostring(groups[1]['name']))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    wrap: false,
+    renameOptions: {
+      renameGlobals: false,
+      renameMembers: true,
+      maskGlobals: false,
+      homoglyphs: false,
+    },
+    seed: "rename-remote-function-return-shape",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuau(code),
+    "11526190|Main group",
+    "RemoteFunction invoke callbacks should preserve returned table field names for clients"
+  );
+}
+
 (async () => {
   runCanonicalOfficialShapeRename();
   runEnvAliasMemberGuard();
   runExternalServiceMemberGuard();
+  await runRobloxInstanceContainerMemberGuard();
   runLocalTableMemberRename();
+  await runCrossFunctionExternalShapeAssignmentRoundtrip();
   await runCustom();
   await runRenameMembersWithStrings();
   await runExternalPayloadKeyGuard();
@@ -942,6 +1137,7 @@ async function runMetatableDirectFieldRoundtrip() {
   await runExternalIpairsValueShapeGuard();
   await runLocalSortComparatorShapeGuard();
   await runMetatableDirectFieldRoundtrip();
+  await runRemoteFunctionReturnShapeGuard();
   await runHardProjectLikeRoundtrip();
   await runNonVmClonedPayloadSchemaGuard();
   await runClonedPayloadSchemaGuard();

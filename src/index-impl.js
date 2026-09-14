@@ -5,7 +5,10 @@ const t = require("@babel/types");
 const { minify } = require("terser");
 const { buildPipeline } = require("./pipeline");
 const { normalizeOptions } = require("./options");
-const { obfuscateLuau } = require("./luau");
+const { validateInputSource } = require("./utils/inputDiagnostics");
+const luauEntry = "./luau/index.js";
+const { obfuscateLuau } = require(luauEntry);
+const { obfuscateJava } = require("./java");
 
 function parseSource(code, filename) {
   return parser.parse(code, {
@@ -39,8 +42,12 @@ function parseSource(code, filename) {
 
 async function obfuscate(source, userOptions = {}) {
   const options = normalizeOptions(userOptions);
+  validateInputSource(source, options);
   if (options.lang === "luau") {
     return obfuscateLuau(source, options);
+  }
+  if (options.lang === "java") {
+    return obfuscateJava(source, userOptions);
   }
   const ast = parseSource(source, options.filename);
 
@@ -119,5 +126,6 @@ async function obfuscate(source, userOptions = {}) {
 
 module.exports = {
   obfuscate,
+  obfuscateJava,
   parseSource,
 };

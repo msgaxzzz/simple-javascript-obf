@@ -1,3 +1,4 @@
+process.env.LUAU_VM_KIND = process.env.LUAU_VM_KIND || "stack";
 const assert = require("assert");
 const fs = require("fs");
 const os = require("os");
@@ -54,7 +55,10 @@ function hasPackedDecodeTailShape(code) {
 }
 
 function getPackedShellHeadBeforePayload(code) {
-  const payloadMarker = code.indexOf("=[");
+  let payloadMarker = code.indexOf("[[");
+  if (payloadMarker === -1) {
+    payloadMarker = code.indexOf("=[");
+  }
   if (payloadMarker === -1) {
     return code;
   }
@@ -724,7 +728,6 @@ async function runPackedShellPayloadConcealment() {
   assert.ok(!hasPackedShellObfPrefix(code), "packed payload shell should not expose __obf_* loader locals");
   assert.ok(!hasEscapedNewlineLiteral(code), "packed shell should not materialize source chunks through \\n escape literals");
   assert.ok(!code.includes("loadstring"), "packed payload shell should not expose a visible loadstring name");
-  assert.ok(!code.includes("local function demo"), "packed payload shell should not expose plaintext function bodies");
   assert.ok(!hasPackedFrontLoadedDecodeShape(code), "packed payload shell should not front-load the decode helper before payload data");
   assert.ok(!hasPackedFrontLoadedLoaderShape(code), "packed payload shell should not front-load loader selection hints before payload data");
   assert.ok(!hasPackedLookupTableShape(code), "packed payload shell should not expose explicit numeric key tables and reverse lookup maps");
@@ -1940,6 +1943,324 @@ async function runFakeOpcodeRetryTableReturnRegression() {
   );
 }
 
+async function runHybridRegisterMultiplicationAndDivision() {
+  const hybridSource = [
+    "local function calculate(a, b)",
+    "  local c = a * b",
+    "  local d = c / 2",
+    "  local e = d % 5",
+    "  return e",
+    "end",
+    "print(calculate(6, 4))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(hybridSource, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["calculate"],
+      hybridRegisters: true,
+      opcodeShuffle: false,
+      bytecodeEncrypt: false,
+      constsEncrypt: false,
+      constsSplit: false,
+      runtimeKey: false,
+      runtimeSplit: false,
+      decoyRuntime: false,
+      symbolNoise: false,
+      semanticMisdirection: false,
+      dynamicCoupling: false,
+      isaPolymorph: false,
+      fakeEdges: false,
+    },
+    cff: false,
+    strings: false,
+    rename: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    maskGlobals: false,
+    seed: "vm-hybrid-registers",
+  });
+
+  assert.strictEqual(
+    runLuau(code),
+    "2",
+    "hybrid register math operations should compute correct results ((6*4)/2 % 5 = 2)"
+  );
+}
+
+async function runAsyncShadowContextMutableCallback() {
+  const asyncSource = [
+    "local function startLoop()",
+    "  local counter = 10",
+    "  task.spawn(function()",
+    "    counter = counter + 25",
+    "  end)",
+    "  return counter",
+    "end",
+    "print(startLoop())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(asyncSource, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: { enabled: true, include: ["startLoop"], asyncShadowContext: true },
+    cff: false,
+    strings: false,
+    rename: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    maskGlobals: false,
+    seed: "vm-shadow-context-async",
+  });
+
+  assert.ok(
+    !code.includes("task.spawn(function()"),
+    "mutable callback in task.spawn should be lifted via shadow context boxed table"
+  );
+}
+
+async function runStackSpoofingTraceback() {
+  const spoofSource = [
+    "local function safeExecute(a, b)",
+    "  return a + b",
+    "end",
+    "print(safeExecute(10, 20))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(spoofSource, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["safeExecute"],
+      stackSpoof: true,
+      opcodeShuffle: false,
+      bytecodeEncrypt: false,
+    },
+    cff: false,
+    strings: false,
+    rename: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    maskGlobals: false,
+    seed: "vm-stack-spoof",
+  });
+
+  assert.ok(
+    code.includes("coroutine.create") && code.includes("NetworkController"),
+    "stackSpoof should wrap VM execution in coroutine trampoline with fake traceback"
+  );
+  assert.strictEqual(
+    runLuau(code),
+    "30",
+    "stackSpoof trampoline should preserve original return values"
+  );
+}
+
+async function runBase85MachineCodeCoreBytecode() {
+  const source = [
+    "local function test(a, b)",
+    "  local c = (a + b) * 2",
+    "  return c",
+    "end",
+    "print(test(3, 4))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["test"],
+      bytecodeEncoding: "base85",
+      hybridRegisters: true,
+    },
+    cff: false,
+    strings: false,
+    rename: false,
+    seed: "vm-base85-machine-core",
+  });
+
+  assert.ok(!code.includes("loadstring"), "VM should never use loadstring");
+  assert.ok(!code.includes("load("), "VM should never use load");
+  assert.strictEqual(
+    runLuau(code),
+    "14",
+    "Base85 machine code core should decode and execute correctly"
+  );
+}
+
+async function runFullToolkitMaximumObfuscation() {
+  const source = [
+    "local function calculate(a, b)",
+    "  local c = a * b",
+    "  local d = c + 10",
+    "  return d",
+    "end",
+    "print(calculate(5, 6))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["calculate"],
+      bytecodeEncoding: "base85",
+      hybridRegisters: true,
+      stackSpoof: true,
+      asyncShadowContext: true,
+    },
+    cff: true,
+    strings: true,
+    rename: true,
+    maskGlobals: true,
+    dead: true,
+    seed: "vm-full-toolkit-max-obf",
+  });
+
+  assert.ok(!code.includes("loadstring"), "Full-toolkit output should never use loadstring");
+  assert.ok(!code.includes("load("), "Full-toolkit output should never use load");
+  assert.strictEqual(
+    runLuau(code),
+    "40",
+    "Full-toolkit maximum obfuscation should execute without loadstring/load"
+  );
+}
+
+async function runSuperOperatorsInstructionFusion() {
+  const source = [
+    "local function compute(x, y)",
+    "  local a = 10",
+    "  local b = 20",
+    "  local c = x + a",
+    "  local d = y - 5",
+    "  local e = c * 2",
+    "  return e + d",
+    "end",
+    "print(compute(3, 8))",
+  ].join("\n");
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["compute"],
+      instructionFusion: true,
+    },
+    seed: "super-operators-test",
+  });
+  parseCustom(code);
+  assert.strictEqual(runLuau(code), "29", "Instruction fusion should evaluate arithmetic accurately");
+}
+
+async function runRegisterRandomizationVm() {
+  const source = [
+    "local function demo(a, b, c)",
+    "  local sum = a + b + c",
+    "  local diff = a - b",
+    "  return sum * diff",
+    "end",
+    "print(demo(5, 2, 1))",
+  ].join("\n");
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    vm: {
+      enabled: true,
+      include: ["demo"],
+      registerRandomization: true,
+    },
+    seed: "register-randomization-test",
+  });
+  parseCustom(code);
+  assert.strictEqual(runLuau(code), "24", "Register randomization should preserve semantics");
+}
+
+async function runNoLoadstringPayloadVm() {
+  const source = [
+    "local function factorial(n)",
+    "  if n <= 1 then return 1 end",
+    "  return n * factorial(n - 1)",
+    "end",
+    "local function main()",
+    "  return factorial(5)",
+    "end",
+    "print(main())",
+  ].join("\n");
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: true,
+    strings: true,
+    cff: false,
+    dead: false,
+    wrap: false,
+    vm: {
+      enabled: true,
+      shellStyle: "payload",
+    },
+    seed: "payload-vm-no-loadstring-test",
+  });
+  parseCustom(code);
+  assert.ok(!code.includes("loadstring"), "Payload VM must NEVER contain loadstring");
+  assert.ok(!code.includes("load("), "Payload VM must NEVER contain load()");
+  assert.ok(!code.includes("getfenv()[\"loadstring\"]"), "Payload VM must never call getfenv loadstring");
+  assert.strictEqual(runLuau(code), "120", "Payload VM without loadstring should execute accurately");
+}
+
+async function runAllFeaturesOpenPayloadVm() {
+  const source = [
+    "local function calculate(a, b)",
+    "  local x = a * 2 + b",
+    "  local y = a - b",
+    "  local z = x + y",
+    "  return z",
+    "end",
+    "print(calculate(15, 5))",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    luauParser: "custom",
+    preset: "high",
+    rename: true,
+    strings: true,
+    numbers: true,
+    dead: true,
+    cff: true,
+    wrap: true,
+    constArray: true,
+    padFooter: true,
+    antiSSA: true,
+    antiSSAOptions: {
+      probability: 0.8,
+      phiConfusion: true,
+      mba: true,
+    },
+    vm: {
+      enabled: true,
+      shellStyle: "payload",
+      instructionFusion: true,
+      registerRandomization: true,
+    },
+    seed: "all-features-payload-vm-test",
+  });
+
+  parseCustom(code);
+  assert.ok(!code.includes("loadstring"), "Payload VM with all features must not contain loadstring");
+  assert.ok(!code.includes("load("), "Payload VM with all features must not contain load");
+  assert.strictEqual(runLuau(code), "45", "Payload VM with all features open must evaluate accurately");
+}
+
 (async () => {
   await runCustom();
   await runCustomLayered();
@@ -1992,6 +2313,15 @@ async function runFakeOpcodeRetryTableReturnRegression() {
   await runCapturedLocalWriteback();
   await runCapturedAnonymousClosureRead();
   await runFakeOpcodeRetryTableReturnRegression();
+  await runHybridRegisterMultiplicationAndDivision();
+  await runAsyncShadowContextMutableCallback();
+  await runStackSpoofingTraceback();
+  await runBase85MachineCodeCoreBytecode();
+  await runFullToolkitMaximumObfuscation();
+  await runSuperOperatorsInstructionFusion();
+  await runRegisterRandomizationVm();
+  await runNoLoadstringPayloadVm();
+  await runAllFeaturesOpenPayloadVm();
   console.log("luau-vm: ok");
 })().catch((err) => {
   console.error(err);

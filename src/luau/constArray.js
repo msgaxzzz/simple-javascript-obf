@@ -1,7 +1,8 @@
 const { walk, traverse } = require("./ast");
 const { decodeRawString } = require("./strings");
 const { collectIdentifierNames, makeNameFactory } = require("./names");
-const { addSSAReadNames, findSSAForNode, getCachedSSAReadNamesFromRoot, getCachedSSAUsedNamesFromRoot } = require("./ssa-utils");
+const { addSSAReadNames, findSSAForNode, getCachedSSAReadNamesFromRoot, getCachedSSAUsedNamesFromRoot } = require("./ssa-utils").default;
+const { encodeBase85, buildBase85DecoderSource } = require("./vm/runtime");
 
 function luaString(value) {
   const text = String(value);
@@ -12,6 +13,40 @@ function luaString(value) {
     .replace(/\t/g, "\\t")
     .replace(/"/g, "\\\"");
   return `"${escaped}"`;
+}
+
+function luaByteString(bytes) {
+  if (!bytes || !bytes.length) {
+    return '""';
+  }
+  let out = '"';
+  for (const value of bytes) {
+    const num = Math.max(0, Math.min(255, Number(value) || 0));
+    out += `\\${String(num).padStart(3, "0")}`;
+  }
+  out += '"';
+  return out;
+}
+
+function gcd(a, b) {
+  while (b !== 0) {
+    const t = b;
+    b = a % b;
+    a = t;
+  }
+  return a;
+}
+
+function pickCoprime(n, rng) {
+  if (n <= 1) return 1;
+  const candidates = [];
+  for (let i = 1; i < Math.min(n * 2, 100); i += 1) {
+    if (gcd(i, n) === 1) {
+      candidates.push(i);
+    }
+  }
+  if (!candidates.length) return 1;
+  return rng && typeof rng.pick === "function" ? rng.pick(candidates) : candidates[0];
 }
 
 function encodeBase64(value) {
@@ -257,10 +292,13 @@ function literalToLua(entry, encoding, rng) {
   }
   switch (entry.kind) {
     case "string":
+      if (encoding === "base85") {
+        return luaString(encodeBase85(Buffer.from(String(entry.value), "utf8")));
+      }
       if (encoding === "base64") {
         return luaString(encodeBase64(entry.value));
       }
-      return luaString(entry.value);
+      return luaByteString(Array.from(Buffer.from(String(entry.value), "utf8")));
     case "number":
       return encodeNumberLiteral(entry.value, rng);
     case "boolean":
@@ -412,13 +450,26 @@ function constantArrayLuau(ast, ctx) {
 
     const lookup = new Map();
     const runtimeLines = [];
-    const hasBase64Strings = encoding === "base64"
+    const hasEncodedStrings = (encoding === "base64" || encoding === "base85")
       && entries.some((entry) => entry.kind === "string");
-    const decodeName = hasBase64Strings ? nameFor("const_dec") : null;
-    const charsName = hasBase64Strings ? nameFor("b64_chars") : null;
-    const mapName = hasBase64Strings ? nameFor("b64_map") : null;
+    const decodeName = hasEncodedStrings ? nameFor("const_dec") : null;
+    const charsName = hasEncodedStrings ? nameFor("b_chars") : null;
+    const mapName = hasEncodedStrings ? nameFor("b_map") : null;
 
-    if (hasBase64Strings) {
+    if (hasEncodedStrings && encoding === "base85") {
+      const b85Lines = buildBase85DecoderSource({
+        fnName: decodeName,
+        charsName,
+        mapName,
+        runtimeTools: {
+          floor: "math.floor",
+          char: "string.char",
+          byte: "string.byte",
+          concat: "table.concat",
+        },
+      });
+      runtimeLines.push(...b85Lines);
+    } else if (hasEncodedStrings && encoding === "base64") {
       const outName = nameFor("b64_out");
       const bufferName = nameFor("b64_buf");
       const bitsName = nameFor("b64_bits");
@@ -464,11 +515,14 @@ function constantArrayLuau(ast, ctx) {
         ordered = rotateArray(ordered, offset);
       }
       const constLength = ordered.length;
-      const indexOffset = wrapper && constLength > 1 ? ctx.rng.int(1, constLength - 1) : 0;
+      const scale = wrapper && constLength > 1 ? pickCoprime(constLength, ctx.rng) : 1;
+      const bias = wrapper && constLength > 1 ? ctx.rng.int(1, Math.min(200, constLength * 5)) : 0;
+      const physicalTable = new Array(constLength);
       const tableName = nameFor("consts");
       const getterName = nameFor("const_get");
       const cacheName = nameFor("const_cache");
-      const offsetName = nameFor("const_off");
+      const scaleName = nameFor("const_scale");
+      const biasName = nameFor("const_bias");
       const lengthName = nameFor("const_len");
       const guardName = opaque ? nameFor("const_guard") : null;
       const indexName = nameFor("const_idx");
@@ -476,21 +530,24 @@ function constantArrayLuau(ast, ctx) {
       const valueName = nameFor("const_value");
 
       ordered.forEach((entry, idx) => {
-        let tableIndex = idx + 1;
-        if (wrapper && constLength > 1) {
-          tableIndex = ((tableIndex - 1 - indexOffset) % constLength + constLength) % constLength + 1;
-        }
-        lookup.set(literalKey(entry), { getterName, index: tableIndex });
+        const logicalIndex = idx + 1;
+        const physicalIndex = wrapper && constLength > 1
+          ? (((logicalIndex - 1) * scale + bias) % constLength) + 1
+          : logicalIndex;
+        physicalTable[physicalIndex - 1] = entry;
+        lookup.set(literalKey(entry), { getterName, index: logicalIndex });
       });
 
       return {
-        ordered,
+        physicalTable,
         constLength,
-        indexOffset,
+        scale,
+        bias,
         tableName,
         getterName,
         cacheName,
-        offsetName,
+        scaleName,
+        biasName,
         lengthName,
         guardName,
         indexName,
@@ -500,19 +557,20 @@ function constantArrayLuau(ast, ctx) {
     });
 
     poolMeta.forEach((meta) => {
-      const values = meta.ordered.map((entry) => literalToLua(entry, encoding, ctx.rng)).join(", ");
-      const needCache = Boolean(hasBase64Strings || wipe);
+      const values = meta.physicalTable.map((entry) => literalToLua(entry, encoding, ctx.rng)).join(", ");
+      const needCache = Boolean(hasEncodedStrings || wipe);
       runtimeLines.push(`local ${meta.tableName} = { ${values} }`);
       if (needCache) {
         runtimeLines.push(`local ${meta.cacheName} = {}`);
       }
       if (wrapper && meta.constLength > 1) {
-        runtimeLines.push(`local ${meta.offsetName} = ${meta.indexOffset}`);
+        runtimeLines.push(`local ${meta.scaleName} = ${meta.scale}`);
+        runtimeLines.push(`local ${meta.biasName} = ${meta.bias}`);
         runtimeLines.push(`local ${meta.lengthName} = ${meta.constLength}`);
       }
       runtimeLines.push(`local function ${meta.getterName}(i)`);
       if (wrapper && meta.constLength > 1) {
-        runtimeLines.push(`  local ${meta.indexName} = i + ${meta.offsetName} - 1`);
+        runtimeLines.push(`  local ${meta.indexName} = (i - 1) * ${meta.scaleName} + ${meta.biasName}`);
         runtimeLines.push(`  ${meta.indexName} = ${meta.indexName} % ${meta.lengthName}`);
         runtimeLines.push(`  ${meta.indexName} = ${meta.indexName} + 1`);
       } else {
@@ -530,7 +588,7 @@ function constantArrayLuau(ast, ctx) {
         runtimeLines.push(`  local ${meta.guardName} = ${guardExpr}`);
         runtimeLines.push(`  if ${meta.guardName} == 1 then`);
       }
-      if (hasBase64Strings) {
+      if (hasEncodedStrings) {
         runtimeLines.push(`  if type(${meta.valueName}) == "string" then`);
         runtimeLines.push(`    ${meta.valueName} = ${decodeName}(${meta.valueName})`);
         runtimeLines.push("  end");

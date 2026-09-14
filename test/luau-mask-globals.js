@@ -59,6 +59,27 @@ function hasCallBase(ast, name) {
   return found;
 }
 
+function hasPlainMemberName(ast, name) {
+  let found = false;
+  walk(ast, (node) => {
+    if (found || !node) {
+      return;
+    }
+    if (node.type === "MemberExpression" && node.identifier && node.identifier.name === name) {
+      found = true;
+      return;
+    }
+    if (node.type === "MethodCallExpression" && node.method && node.method.name === name) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+function countText(code, text) {
+  return String(code).split(text).length - 1;
+}
+
 function runAstCompatContract() {
   const ast = parseFromAst([
     "type Pair<T> = { value: T }",
@@ -153,12 +174,110 @@ async function runRepeatUntilScopeRegression() {
   assert.ok(!hasEnvIndex(ast, "x"), "repeat-until locals should remain visible in the condition");
 }
 
+async function runGlobalApiChainMasking() {
+  const apiSource = [
+    "local mockGame = { PlaceVersion = 42 }",
+    "function mockGame:GetService(name)",
+    "  return { Name = name }",
+    "end",
+    "game = mockGame",
+    "local service = game:GetService(\"Workspace\")",
+    "local version = game.PlaceVersion",
+    "local function getLocal()",
+    "  return { VisibleMember = 7 }",
+    "end",
+    "local visible = getLocal().VisibleMember",
+    "print(service.Name, version, visible)",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(apiSource, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: false,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    numbers: false,
+    constArray: false,
+    renameOptions: { maskGlobals: true },
+    seed: "mask-globals-api-chain",
+  });
+
+  const ast = parseCustom(code);
+  assert.ok(hasEnvIndex(ast, "GetService"), "global API method names should use escaped index access");
+  assert.ok(hasEnvIndex(ast, "PlaceVersion"), "global API property names should use escaped index access");
+  assert.ok(!hasPlainMemberName(ast, "GetService"), "global API method names should not remain plaintext members");
+  assert.ok(!hasPlainMemberName(ast, "PlaceVersion"), "global API property names should not remain plaintext members");
+  assert.ok(hasPlainMemberName(ast, "VisibleMember"), "members rooted at call results must preserve single-evaluation semantics");
+  assert.strictEqual(countText(code, "GetService"), 1, "only the API declaration may retain GetService plaintext");
+  assert.strictEqual(countText(code, "PlaceVersion"), 1, "only the table declaration may retain PlaceVersion plaintext");
+}
+
+async function runShadowedApiRootRegression() {
+  const shadowSource = [
+    "local game = { Value = 9 }",
+    "local function read()",
+    "  return game.Value",
+    "end",
+    "print(read())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(shadowSource, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: false,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    numbers: false,
+    constArray: false,
+    renameOptions: { maskGlobals: true },
+    seed: "mask-globals-shadowed-root",
+  });
+
+  const ast = parseCustom(code);
+  assert.ok(hasPlainMemberName(ast, "Value"), "a locally shadowed API root should keep ordinary member syntax");
+}
+
+async function runGlobalApiAssignmentMasking() {
+  const assignmentSource = [
+    "local mockGame = { PlaceVersion = 1 }",
+    "function mockGame:GetService(name) return mockGame end",
+    "game = mockGame",
+    "game.PlaceVersion = game.PlaceVersion + 1",
+    "game:GetService(\"Workspace\").PlaceVersion = game.PlaceVersion",
+    "print(game.PlaceVersion)",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(assignmentSource, {
+    lang: "luau",
+    luauParser: "custom",
+    rename: false,
+    strings: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    numbers: false,
+    constArray: false,
+    renameOptions: { maskGlobals: true },
+    seed: "mask-globals-api-assignment",
+  });
+
+  const ast = parseCustom(code);
+  assert.ok(!hasPlainMemberName(ast, "PlaceVersion"), "API assignment targets should use escaped index access");
+}
+
 (async () => {
   runAstCompatContract();
   runAstCompatOptions();
   runCanonicalMaskGlobalsContract();
   await run();
   await runRepeatUntilScopeRegression();
+  await runGlobalApiChainMasking();
+  await runShadowedApiRootRegression();
+  await runGlobalApiAssignmentMasking();
   console.log("luau-mask-globals: ok");
 })().catch((err) => {
   console.error(err);

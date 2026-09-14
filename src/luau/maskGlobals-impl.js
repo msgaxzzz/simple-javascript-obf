@@ -1,23 +1,37 @@
 const { insertAtTop, walk } = require("./ast");
-const { getCachedSSAUsedNamesFromRoot } = require("./ssa-utils");
+const { getCachedSSAUsedNamesFromRoot } = require("./ssa-utils").default;
 
 const BASE_RESERVED = new Set(["_ENV", "_G"]);
-const NAME_RESERVED = new Set(["_ENV", "_G", "type", "getfenv"]);
+const NAME_RESERVED = new Set(["_ENV", "_G", "type", "getfenv", "shared"]);
+const KNOWN_GLOBAL_API_ROOTS = new Set([
+  "game",
+  "workspace",
+  "script",
+  "task",
+  "string",
+  "table",
+  "math",
+  "bit32",
+  "utf8",
+  "os",
+  "coroutine",
+  "debug",
+  "require",
+]);
 const COMMON_MASKED_MEMBER_NAMES = new Set([
+  // Core Output & Debug
   "print",
   "warn",
+  "error",
+  "assert",
+  "info",
+  "traceback",
+  "profilebegin",
+  "profileend",
+
+  // String Methods
   "char",
   "byte",
-  "concat",
-  "pack",
-  "unpack",
-  "floor",
-  "abs",
-  "min",
-  "max",
-  "insert",
-  "remove",
-  "move",
   "find",
   "sub",
   "gsub",
@@ -25,9 +39,149 @@ const COMMON_MASKED_MEMBER_NAMES = new Set([
   "format",
   "match",
   "gmatch",
-  "clock",
+  "lower",
+  "upper",
+  "len",
+  "split",
+  "reverse",
+
+  // Table Methods
+  "concat",
+  "pack",
+  "unpack",
+  "insert",
+  "remove",
+  "move",
+  "sort",
+  "clear",
+  "create",
+  "freeze",
+  "isfrozen",
+  "clone",
+
+  // Math Methods
+  "floor",
+  "ceil",
+  "round",
+  "clamp",
+  "abs",
+  "min",
+  "max",
+  "sqrt",
+  "sin",
+  "cos",
+  "tan",
+  "atan2",
+  "rad",
+  "deg",
+  "exp",
+  "log",
   "random",
   "randomseed",
+  "huge",
+  "pi",
+
+  // Bit32 Methods
+  "band",
+  "bor",
+  "bxor",
+  "bnot",
+  "lshift",
+  "rshift",
+  "arshift",
+  "rol",
+  "ror",
+  "btest",
+  "extract",
+  "replace",
+
+  // Task & Async (Roblox)
+  "spawn",
+  "defer",
+  "delay",
+  "wait",
+  "cancel",
+
+  // OS & UTF8
+  "clock",
+  "time",
+  "difftime",
+  "date",
+  "codepoint",
+  "codes",
+  "offset",
+  "nfdnormalize",
+  "nfcnormalize",
+
+  // Roblox Engine Common Service Methods
+  "GetService",
+  "FindFirstChild",
+  "FindFirstChildOfClass",
+  "FindFirstChildWhichIsA",
+  "GetChildren",
+  "GetDescendants",
+  "GetAttribute",
+  "SetAttribute",
+  "GetPropertyChangedSignal",
+  "IsA",
+  "FindFirstAncestor",
+  "FindFirstAncestorOfClass",
+  "FindFirstAncestorWhichIsA",
+  "WaitForChild",
+  "FireServer",
+  "FireClient",
+  "FireAllClients",
+  "InvokeServer",
+  "InvokeClient",
+  "Connect",
+  "Once",
+  "Wait",
+  "Destroy",
+  "Disconnect",
+
+  // Common Roblox properties/events
+  "PlayerAdded",
+  "PlayerRemoving",
+  "CharacterAdded",
+  "CharacterRemoving",
+  "ChildAdded",
+  "ChildRemoved",
+  "DescendantAdded",
+  "DescendantRemoving",
+  "InputBegan",
+  "InputChanged",
+  "InputEnded",
+  "Heartbeat",
+  "Stepped",
+  "RenderStepped",
+  "Changed",
+  "OnServerEvent",
+  "OnClientEvent",
+  "OnServerInvoke",
+  "OnClientInvoke",
+  "Parent",
+  "Name",
+  "ClassName",
+  "Value",
+  "Enabled",
+  "Visible",
+  "Text",
+  "Position",
+  "Size",
+  "CFrame",
+  "Color",
+  "Transparency",
+  "CanCollide",
+  "Anchored",
+  "Humanoid",
+  "Character",
+  "UserInputType",
+  "KeyCode",
+  "Magnitude",
+  "Unit",
+  "X",
+  "Y",
+  "Z",
 ]);
 
 function tracePass(ctx, event) {
@@ -37,11 +191,45 @@ function tracePass(ctx, event) {
 }
 
 function createScope(parent = null) {
-  return { parent, bindings: new Set() };
+  return { parent, bindings: new Set(), apiBindings: new Set() };
 }
 
 function defineName(scope, name) {
   scope.bindings.add(name);
+}
+
+function findBindingScope(scope, name) {
+  let current = scope;
+  while (current) {
+    if (current.bindings.has(name)) {
+      return current;
+    }
+    current = current.parent;
+  }
+  return null;
+}
+
+function setApiBinding(scope, name, enabled) {
+  const owner = findBindingScope(scope, name);
+  if (!owner) {
+    return;
+  }
+  if (enabled) {
+    owner.apiBindings.add(name);
+  } else {
+    owner.apiBindings.delete(name);
+  }
+}
+
+function isApiBinding(scope, name) {
+  let current = scope;
+  while (current) {
+    if (current.bindings.has(name)) {
+      return current.apiBindings.has(name);
+    }
+    current = current.parent;
+  }
+  return false;
 }
 
 function isDefined(scope, name) {
@@ -53,14 +241,6 @@ function isDefined(scope, name) {
     current = current.parent;
   }
   return false;
-}
-
-function stringLiteral(value, ctx) {
-  const raw = JSON.stringify(value);
-  if (ctx && ctx.factory && typeof ctx.factory.makeStringLiteral === "function") {
-    return ctx.factory.makeStringLiteral(raw, value);
-  }
-  return { type: "StringLiteral", value, raw };
 }
 
 function escapedByteStringLiteral(value, ctx) {
@@ -155,6 +335,75 @@ function isMaskedGlobalChain(expr, envAlias) {
   return false;
 }
 
+function isApiExpression(expr, scope, envAlias) {
+  if (!expr || typeof expr !== "object") {
+    return false;
+  }
+  if (isMaskedGlobalChain(expr, envAlias)) {
+    return true;
+  }
+  switch (expr.type) {
+    case "Identifier":
+      return isApiBinding(scope, expr.name) ||
+        (KNOWN_GLOBAL_API_ROOTS.has(expr.name) && !isDefined(scope, expr.name));
+    case "MemberExpression":
+    case "IndexExpression":
+      return isApiExpression(expr.base, scope, envAlias);
+    case "CallExpression":
+    case "MethodCallExpression":
+    case "TableCallExpression":
+    case "StringCallExpression":
+      return isApiExpression(expr.base, scope, envAlias);
+    case "GroupExpression":
+      return isApiExpression(expr.expression, scope, envAlias);
+    case "TypeAssertion":
+      return isApiExpression(expr.expression, scope, envAlias);
+    default:
+      return false;
+  }
+}
+
+// Method-call lowering evaluates the receiver twice. Restrict that lowering
+// to simple chains so arbitrary call expressions keep their original order.
+function isStableApiBase(expr) {
+  if (!expr || typeof expr !== "object") {
+    return false;
+  }
+  if (expr.type === "Identifier") {
+    return true;
+  }
+  if (expr.type === "MemberExpression") {
+    return isStableApiBase(expr.base);
+  }
+  if (expr.type === "IndexExpression") {
+    return isStableApiBase(expr.base) && Boolean(
+      expr.index &&
+      (expr.index.type === "Identifier" ||
+        expr.index.type === "StringLiteral" ||
+        expr.index.type === "NumericLiteral" ||
+        expr.index.type === "BooleanLiteral")
+    );
+  }
+  return false;
+}
+
+function cloneNode(node) {
+  if (node === null || node === undefined) {
+    return node;
+  }
+  if (Array.isArray(node)) {
+    return node.map(cloneNode);
+  }
+  if (typeof node !== "object") {
+    return node;
+  }
+  const out = {};
+  Object.keys(node).forEach((key) => {
+    out[key] = cloneNode(node[key]);
+  });
+  return out;
+}
+
 function markSkip(node) {
   if (node && typeof node === "object") {
     node.__obf_skip_mask = true;
@@ -182,7 +431,7 @@ function buildEnvAliasNodes(style, envAlias, getfAlias, ctx) {
       base: { type: "Identifier", name: "type" },
       arguments: [getfIdentifier],
     },
-    right: stringLiteral("function", ctx),
+    right: escapedByteStringLiteral("function", ctx),
   };
   const getfAssign = {
     type: "AssignmentStatement",
@@ -215,7 +464,7 @@ function buildEnvAliasNodes(style, envAlias, getfAlias, ctx) {
       base: { type: "Identifier", name: "type" },
       arguments: [envIdentifier],
     },
-    right: stringLiteral("table", ctx),
+    right: escapedByteStringLiteral("table", ctx),
   };
   const assignEnv = {
     type: "AssignmentStatement",
@@ -278,12 +527,10 @@ function maskExpression(expr, scope, envAlias, reserved, ctx) {
       return expr;
     case "MemberExpression":
       expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
-      if (
-        expr.identifier &&
-        typeof expr.identifier.name === "string" &&
-        COMMON_MASKED_MEMBER_NAMES.has(expr.identifier.name) &&
-        isMaskedGlobalChain(expr.base, envAlias)
-      ) {
+      if (expr.identifier && typeof expr.identifier.name === "string" &&
+          isApiExpression(expr.base, scope, envAlias) &&
+          (COMMON_MASKED_MEMBER_NAMES.has(expr.identifier.name) ||
+            isStableApiBase(expr.base))) {
         return {
           type: "IndexExpression",
           base: expr.base,
@@ -298,6 +545,22 @@ function maskExpression(expr, scope, envAlias, reserved, ctx) {
     case "MethodCallExpression":
       expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
       expr.arguments = (expr.arguments || []).map((arg) => maskExpression(arg, scope, envAlias, reserved, ctx));
+      // A global API chain such as game:GetService(...) or task.spawn(...)
+      // should not retain a plaintext member name. Convert only stable
+      // receivers; dynamic receivers must preserve their single evaluation.
+      if (expr.method && typeof expr.method.name === "string" &&
+          isApiExpression(expr.base, scope, envAlias) && isStableApiBase(expr.base)) {
+        const receiver = cloneNode(expr.base);
+        return {
+          type: "CallExpression",
+          base: {
+            type: "IndexExpression",
+            base: expr.base,
+            index: escapedByteStringLiteral(expr.method.name, ctx),
+          },
+          arguments: [receiver, ...(expr.arguments || [])],
+        };
+      }
       return expr;
     case "TableCallExpression":
       expr.base = maskExpression(expr.base, scope, envAlias, reserved, ctx);
@@ -370,8 +633,26 @@ function maskAssignmentTarget(target, scope, envAlias, reserved, ctx) {
   if (!target || typeof target !== "object") {
     return target;
   }
+  if (target.type === "Identifier") {
+    if (shouldMask(target.name, scope, reserved)) {
+      tracePass(ctx, {
+        kind: "mask-global-target",
+        name: target.name,
+      });
+      return envIndex(target.name, envAlias, ctx);
+    }
+    return target;
+  }
   if (target.type === "MemberExpression") {
     target.base = maskExpression(target.base, scope, envAlias, reserved, ctx);
+    if (target.identifier && typeof target.identifier.name === "string" &&
+        isApiExpression(target.base, scope, envAlias)) {
+      return {
+        type: "IndexExpression",
+        base: target.base,
+        index: escapedByteStringLiteral(target.identifier.name, ctx),
+      };
+    }
     return target;
   }
   if (target.type === "IndexExpression") {
@@ -400,19 +681,34 @@ function maskStatement(stmt, scope, envAlias, reserved, ctx) {
       if (stmt.init && stmt.init.length) {
         stmt.init = stmt.init.map((expr) => maskExpression(expr, scope, envAlias, reserved, ctx));
       }
-      stmt.variables.forEach((variable) => {
+      const localVariables = Array.isArray(stmt.variables) ? stmt.variables : [];
+      localVariables.forEach((variable, index) => {
         if (variable && variable.type === "Identifier") {
           defineName(scope, variable.name);
+          const initExpr = stmt.init && stmt.init[index];
+          setApiBinding(scope, variable.name, isApiExpression(initExpr, scope, envAlias));
         }
       });
       return;
     case "AssignmentStatement":
       stmt.init = stmt.init.map((expr) => maskExpression(expr, scope, envAlias, reserved, ctx));
-      stmt.variables = stmt.variables.map((variable) => maskAssignmentTarget(variable, scope, envAlias, reserved, ctx));
+      const assignmentVariables = Array.isArray(stmt.variables) ? stmt.variables : [];
+      const assignmentTargets = assignmentVariables.map((variable) =>
+        maskAssignmentTarget(variable, scope, envAlias, reserved, ctx)
+      );
+      assignmentVariables.forEach((variable, index) => {
+        if (variable && variable.type === "Identifier" && isDefined(scope, variable.name)) {
+          setApiBinding(scope, variable.name, isApiExpression(stmt.init[index], scope, envAlias));
+        }
+      });
+      stmt.variables = assignmentTargets;
       return;
     case "CompoundAssignmentStatement":
       stmt.value = maskExpression(stmt.value, scope, envAlias, reserved, ctx);
       stmt.variable = maskAssignmentTarget(stmt.variable, scope, envAlias, reserved, ctx);
+      if (stmt.variable && stmt.variable.type === "Identifier" && isDefined(scope, stmt.variable.name)) {
+        setApiBinding(scope, stmt.variable.name, false);
+      }
       return;
     case "CallStatement":
       stmt.expression = maskExpression(stmt.expression, scope, envAlias, reserved, ctx);

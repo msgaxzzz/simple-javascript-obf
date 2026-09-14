@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { spawnSync } = require("child_process");
 const { obfuscateLuau } = require("../src/luau");
+const { generateLuau } = require("../src/luau/ast");
 const { parse: parseCustom } = require("../src/luau/custom/parser");
 
 const source = [
@@ -118,10 +119,89 @@ async function runEnhancedShapeRegression() {
   assert.ok(clauses.length >= 1, "enhanced CFF should keep a guarded dispatcher fallback");
 }
 
+function runFunctionDeclarationValueRegression() {
+  const ast = {
+    type: "Chunk",
+    body: [
+      {
+        type: "LocalStatement",
+        variables: [{ type: "Identifier", name: "handlerA" }],
+        init: [
+          {
+            type: "FunctionDeclaration",
+            identifier: null,
+            parameters: [],
+            isLocal: false,
+            body: [
+              {
+                type: "ReturnStatement",
+                arguments: [{ type: "NumericLiteral", value: 1, raw: "1" }],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        type: "LocalStatement",
+        variables: [{ type: "Identifier", name: "handlerB" }],
+        init: [
+          {
+            type: "FunctionDeclaration",
+            name: {
+              type: "FunctionName",
+              base: { type: "Identifier", name: "legacyName" },
+              members: [],
+              method: null,
+            },
+            parameters: [],
+            isLocal: false,
+            body: {
+              type: "Block",
+              body: [
+                {
+                  type: "ReturnStatement",
+                  arguments: [{ type: "NumericLiteral", value: 2, raw: "2" }],
+                },
+              ],
+            },
+          },
+        ],
+      },
+      {
+        type: "LocalStatement",
+        variables: [{ type: "Identifier", name: "handlerC" }],
+        init: [
+          {
+            type: "FunctionDeclaration",
+            identifier: { type: "Identifier", name: "legacyIdentifier" },
+            parameters: [],
+            isLocal: false,
+            body: [
+              {
+                type: "ReturnStatement",
+                arguments: [{ type: "NumericLiteral", value: 3, raw: "3" }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const code = generateLuau(ast, { compact: false });
+  parseCustom(code);
+  assert.ok(
+    code.includes("local handlerA = function()") &&
+      code.includes("local handlerB = function()") &&
+      code.includes("local handlerC = function()"),
+    "printer should emit legacy function declarations as function values"
+  );
+}
+
 (async () => {
   await runCustom();
   await runLocalReturnScopeRegression();
   await runEnhancedShapeRegression();
+  runFunctionDeclarationValueRegression();
   console.log("luau-cff: ok");
 })().catch((err) => {
   console.error(err);

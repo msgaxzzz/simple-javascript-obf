@@ -3,12 +3,15 @@ import type { Position } from "./locations";
 const KEYWORDS = new Set([
   "and",
   "break",
+  "class",
+  "const",
   "do",
   "declare",
   "else",
   "elseif",
   "end",
   "export",
+  "extends",
   "false",
   "for",
   "function",
@@ -32,6 +35,7 @@ const KEYWORDS = new Set([
 const MULTI_SYMBOLS = [
   "...",
   "->",
+  "@[",
   "==",
   "~=",
   "<=",
@@ -88,6 +92,8 @@ export class Tokenizer implements TokenizerInstance {
   column: number;
   peeked: Token | null;
 
+  hasStarted: boolean;
+
   constructor(source: string) {
     this.source = source;
     this.length = source.length;
@@ -95,6 +101,7 @@ export class Tokenizer implements TokenizerInstance {
     this.line = 1;
     this.column = 1;
     this.peeked = null;
+    this.hasStarted = false;
   }
 
   makeToken(type: string, value: string, startIndex: number, startLine: number, startColumn: number): Token {
@@ -125,6 +132,15 @@ export class Tokenizer implements TokenizerInstance {
       return tok;
     }
     this.skipWhitespace();
+    if (!this.hasStarted) {
+      this.hasStarted = true;
+      if (this.source.slice(this.index, this.index + 2) === "#!") {
+        while (this.index < this.length && this.source[this.index] !== "\n" && this.source[this.index] !== "\r") {
+          this.advance(1);
+        }
+        this.skipWhitespace();
+      }
+    }
     if (this.index >= this.length) {
       return this.makeToken("eof", "", this.index, this.line, this.column);
     }
@@ -284,6 +300,9 @@ export class Tokenizer implements TokenizerInstance {
         }
         break;
       }
+      if (this.source[this.index] === "i" || this.source[this.index] === "I") {
+        this.advance(1);
+      }
       const value = this.source.slice(start, this.index);
       return this.makeToken("number", value, start, line, column);
     }
@@ -297,6 +316,9 @@ export class Tokenizer implements TokenizerInstance {
           continue;
         }
         break;
+      }
+      if (this.source[this.index] === "i" || this.source[this.index] === "I") {
+        this.advance(1);
       }
       const value = this.source.slice(start, this.index);
       return this.makeToken("number", value, start, line, column);
@@ -337,6 +359,9 @@ export class Tokenizer implements TokenizerInstance {
           break;
         }
       }
+    }
+    if (this.source[this.index] === "i" || this.source[this.index] === "I") {
+      this.advance(1);
     }
     const value = this.source.slice(start, this.index);
     return this.makeToken("number", value, start, line, column);

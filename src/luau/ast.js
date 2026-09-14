@@ -1,16 +1,25 @@
-const { parseLuau: parseCustomLuau, generateLuau: generateCustomLuau } = require("./custom");
-const { normalizeLegacyNodeShape } = require("./custom/compat");
-const { traverse } = require("./custom/traverse");
-const { buildScope } = require("./custom/scope");
-const factory = require("./custom/factory");
-const { validate } = require("./custom/validate");
-const { buildCFG } = require("./custom/cfg");
-const { buildSSA } = require("./custom/ssa");
-const { buildIR, buildIRSSA } = require("./custom/ir");
-const { printIR } = require("./custom/ir-printer");
-const diagnostics = require("./custom/diagnostics");
+const customEntry = "./custom/index.js";
+const { parseLuau: parseCustomLuau, generateLuau: generateCustomLuau } = require(customEntry);
+const { normalizeLegacyNodeShape } = require("./custom/compat.js");
+const { traverse } = require("./custom/traverse.js");
+const { buildScope } = require("./custom/scope.js");
+const factory = require("./custom/factory.js");
+const { validate } = require("./custom/validate.js");
+const { buildCFG } = require("./custom/cfg.js");
+const { buildSSA } = require("./custom/ssa.js");
+const { buildIR, buildIRSSA } = require("./custom/ir.js");
+const { printIR } = require("./custom/ir-printer.js");
+const diagnostics = require("./custom/diagnostics.js");
+
+function stripUtf8Bom(source) {
+  if (typeof source === "string" && source.charCodeAt(0) === 0xfeff) {
+    return source.slice(1);
+  }
+  return source;
+}
 
 function extractDirectives(source) {
+  source = stripUtf8Bom(source);
   const lines = source.split(/\r?\n/);
   const directives = [];
   let index = 0;
@@ -34,6 +43,7 @@ function extractDirectives(source) {
 }
 
 function parseLuau(source, options = {}) {
+  source = stripUtf8Bom(source);
   if (
     options.luaVersion !== undefined &&
     options.luaVersion !== null &&
@@ -48,6 +58,10 @@ function parseLuau(source, options = {}) {
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
     const wrapped = new Error(`[js-obf] luau parse failed: ${message}`);
+    wrapped.name = "LuauSyntaxError";
+    if (err && err.diagnostic) {
+      wrapped.diagnostic = err.diagnostic;
+    }
     wrapped.cause = err;
     throw wrapped;
   }

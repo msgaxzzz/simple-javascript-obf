@@ -1,5 +1,5 @@
 const { walk } = require("./ast");
-const { getCachedSSAReadNamesFromRoot } = require("./ssa-utils");
+const { getCachedSSAReadNamesFromRoot } = require("./ssa-utils").default;
 
 function numericLiteral(value) {
   return {

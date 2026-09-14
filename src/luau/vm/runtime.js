@@ -1,4 +1,5 @@
 const { walk } = require("../ast");
+const { getProgressiveIdentifier } = require("../names");
 
 function luaString(value) {
   const text = String(value);
@@ -66,6 +67,11 @@ const VM_NAME_RESERVED = new Set([
   "bit32",
   "debug",
   "utf8",
+  "ad",
+  "loa",
+  "dstr",
+  "loadstring",
+  "load",
 ]);
 
 function makeVmHelperName(rng, usedNames) {
@@ -79,10 +85,10 @@ function makeVmHelperName(rng, usedNames) {
     usedNames.has(out) ||
     out.toLowerCase().includes("obf")
   ) {
-    const length = rng.int(4, 8);
-    let randomName = firstAlphabet[rng.int(0, firstAlphabet.length - 1)];
+    const length = rng ? rng.int(4, 8) : 6;
+    let randomName = firstAlphabet[rng ? rng.int(0, firstAlphabet.length - 1) : Math.floor(Math.random() * firstAlphabet.length)];
     for (let i = 1; i < length; i += 1) {
-      randomName += restAlphabet[rng.int(0, restAlphabet.length - 1)];
+      randomName += restAlphabet[rng ? rng.int(0, restAlphabet.length - 1) : Math.floor(Math.random() * restAlphabet.length)];
     }
     out = randomName;
   }
@@ -325,6 +331,121 @@ function addIdentifierNames(root, target) {
   return target;
 }
 
+const BASE85_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~";
+
+function encodeBase85(bytes, alphabet = BASE85_ALPHABET) {
+  if (!bytes || !bytes.length) {
+    return { encoded: "", length: 0 };
+  }
+  const originalLength = bytes.length;
+  const paddedLength = Math.ceil(originalLength / 4) * 4;
+  const padded = new Uint8Array(paddedLength);
+  for (let i = 0; i < originalLength; i += 1) {
+    padded[i] = bytes[i];
+  }
+  let encoded = "";
+  for (let i = 0; i < paddedLength; i += 4) {
+    let value = (((padded[i] * 256 + padded[i + 1]) * 256 + padded[i + 2]) * 256 + padded[i + 3]) >>> 0;
+    const digits = new Array(5);
+    for (let d = 4; d >= 0; d -= 1) {
+      digits[d] = alphabet.charAt(value % 85);
+      value = Math.floor(value / 85);
+    }
+    encoded += digits.join("");
+  }
+  return {
+    encoded,
+    length: originalLength,
+  };
+}
+
+function buildBase85DecoderSource(decoderFnName, mapTableName, runtimeTools, alphabet = BASE85_ALPHABET) {
+  return [
+    `local ${mapTableName} = {}`,
+    `do`,
+    `  local _s_alpha = ${luaString(alphabet)}`,
+    `  local _s_alen = #_s_alpha`,
+    `  for _s_idx = 1, _s_alen do`,
+    `    local _s_ch = ${runtimeTools.byte}(_s_alpha, _s_idx)`,
+    `    local _s_mapped = _s_idx - 1`,
+    `    ${mapTableName}[_s_ch] = _s_mapped`,
+    `  end`,
+    `end`,
+    `local function ${decoderFnName}(str, targetLen)`,
+    `  local out = {}`,
+    `  local count = 0`,
+    `  local slen = #str`,
+    `  local _s_radix = 256`,
+    `  for i = 1, slen, 5 do`,
+    `    local v = 0`,
+    `    for j = 0, 4 do`,
+    `      local _s_pos = i + j`,
+    `      local _s_raw_b = ${runtimeTools.byte}(str, _s_pos)`,
+    `      local _s_b_val = 0`,
+    `      if _s_raw_b ~= nil then _s_b_val = _s_raw_b end`,
+    `      local _s_d_val = ${mapTableName}[_s_b_val]`,
+    `      local _s_d_safe = 0`,
+    `      if _s_d_val ~= nil then _s_d_safe = _s_d_val end`,
+    `      local _s_v0 = v`,
+    `      local _s_k1 = _s_v0 * 64`,
+    `      local _s_k2 = _s_v0 * 16`,
+    `      local _s_k3 = _s_v0 * 4`,
+    `      local _s_k4 = _s_v0 * 1`,
+    `      local _s_sum1 = _s_k1 + _s_k2`,
+    `      local _s_sum2 = _s_k3 + _s_k4`,
+    `      local _s_v85 = _s_sum1 + _s_sum2`,
+    `      local _s_next_v = _s_v85 + _s_d_safe`,
+    `      v = _s_next_v`,
+    `    end`,
+    `    local _s_rem4 = v % _s_radix`,
+    `    local _s_trunc4 = v - _s_rem4`,
+    `    local _s_quo4 = _s_trunc4 / _s_radix`,
+    `    local _s_fl4 = ${runtimeTools.floor}(_s_quo4)`,
+    `    local _s_b4 = _s_rem4`,
+    `    v = _s_fl4`,
+    `    local _s_rem3 = v % _s_radix`,
+    `    local _s_trunc3 = v - _s_rem3`,
+    `    local _s_quo3 = _s_trunc3 / _s_radix`,
+    `    local _s_fl3 = ${runtimeTools.floor}(_s_quo3)`,
+    `    local _s_b3 = _s_rem3`,
+    `    v = _s_fl3`,
+    `    local _s_rem2 = v % _s_radix`,
+    `    local _s_trunc2 = v - _s_rem2`,
+    `    local _s_quo2 = _s_trunc2 / _s_radix`,
+    `    local _s_fl2 = ${runtimeTools.floor}(_s_quo2)`,
+    `    local _s_b2 = _s_rem2`,
+    `    v = _s_fl2`,
+    `    local _s_rem1 = v % _s_radix`,
+    `    local _s_b1 = _s_rem1`,
+    `    local _s_c1 = ${runtimeTools.char}(_s_b1)`,
+    `    local _s_cnt1 = count + 1`,
+    `    count = _s_cnt1`,
+    `    out[count] = _s_c1`,
+    `    if count < targetLen then`,
+    `      local _s_c2 = ${runtimeTools.char}(_s_b2)`,
+    `      local _s_cnt2 = count + 1`,
+    `      count = _s_cnt2`,
+    `      out[count] = _s_c2`,
+    `    end`,
+    `    if count < targetLen then`,
+    `      local _s_c3 = ${runtimeTools.char}(_s_b3)`,
+    `      local _s_cnt3 = count + 1`,
+    `      count = _s_cnt3`,
+    `      out[count] = _s_c3`,
+    `    end`,
+    `    if count < targetLen then`,
+    `      local _s_c4 = ${runtimeTools.char}(_s_b4)`,
+    `      local _s_cnt4 = count + 1`,
+    `      count = _s_cnt4`,
+    `      out[count] = _s_c4`,
+    `    end`,
+    `  end`,
+    `  local _s_final_str = ${runtimeTools.concat}(out)`,
+    `  return _s_final_str`,
+    `end`,
+  ];
+}
+
 module.exports = {
   luaString,
   luaByteString,
@@ -335,4 +456,7 @@ module.exports = {
   createSharedVmRuntime,
   buildSharedVmRuntimePreludeSource,
   addIdentifierNames,
+  BASE85_ALPHABET,
+  encodeBase85,
+  buildBase85DecoderSource,
 };

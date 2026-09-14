@@ -18,6 +18,7 @@ function runCommand(command, args, label, extra = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
+    shell: process.platform === "win32" && typeof command === "string" && command.endsWith(".cmd"),
     ...extra,
   });
 

@@ -57,6 +57,41 @@ const DEFAULT_RESERVED = new Set([
 const FIRST_ALPHABET = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
 const REST_ALPHABET = `${FIRST_ALPHABET}0123456789`;
 
+function shuffleChars(chars, rng) {
+  const list = chars.split("");
+  if (rng && typeof rng.shuffle === "function") {
+    rng.shuffle(list);
+  }
+  return list.join("");
+}
+
+function getProgressiveIdentifier(index, firstAlphabet = FIRST_ALPHABET, restAlphabet = REST_ALPHABET) {
+  const fLen = firstAlphabet.length;
+  const rLen = restAlphabet.length;
+
+  if (index < fLen) {
+    return firstAlphabet[index];
+  }
+
+  let n = index - fLen;
+  let len = 2;
+  let countForLen = fLen * rLen;
+
+  while (n >= countForLen) {
+    n -= countForLen;
+    len += 1;
+    countForLen *= rLen;
+  }
+
+  let chars = "";
+  for (let i = 0; i < len - 1; i += 1) {
+    chars = restAlphabet[n % rLen] + chars;
+    n = Math.floor(n / rLen);
+  }
+  const firstChar = firstAlphabet[n % fLen];
+  return firstChar + chars;
+}
+
 function collectScopeNames(scope, out) {
   if (!scope) {
     return;
@@ -111,24 +146,23 @@ function makeNameFactory(rng, used = new Set(), extraReserved = null, options = 
       reserved.add(name);
     }
   }
-  const minLength = options.minLength ?? 3;
-  const maxLength = options.maxLength ?? 8;
+  const firstAlphabet = shuffleChars(FIRST_ALPHABET, rng);
+  const restAlphabet = shuffleChars(REST_ALPHABET, rng);
+  let index = 0;
+
   return (_prefix) => {
-    let name = "";
-    while (!name || reserved.has(name) || used.has(name) || name.toLowerCase().includes("obf")) {
-      const length = rng.int(minLength, maxLength);
-      let out = FIRST_ALPHABET[rng.int(0, FIRST_ALPHABET.length - 1)];
-      for (let i = 1; i < length; i += 1) {
-        out += REST_ALPHABET[rng.int(0, REST_ALPHABET.length - 1)];
+    while (true) {
+      const name = getProgressiveIdentifier(index++, firstAlphabet, restAlphabet);
+      if (!reserved.has(name) && !used.has(name) && !name.toLowerCase().includes("obf")) {
+        used.add(name);
+        return name;
       }
-      name = out;
     }
-    used.add(name);
-    return name;
   };
 }
 
 module.exports = {
   collectIdentifierNames,
   makeNameFactory,
+  getProgressiveIdentifier,
 };

@@ -31,6 +31,40 @@ function collectExportedNames(programPath) {
   return exported;
 }
 
+function renameIdentifierInNode(node, oldName, newName) {
+  if (!node) return;
+  if (node.type === "Identifier" && node.name === oldName) {
+    node.name = newName;
+    return;
+  }
+  if (node.type === "AssignmentPattern") {
+    renameIdentifierInNode(node.left, oldName, newName);
+    return;
+  }
+  if (node.type === "ArrayPattern") {
+    for (const elem of node.elements) {
+      renameIdentifierInNode(elem, oldName, newName);
+    }
+    return;
+  }
+  if (node.type === "ObjectPattern") {
+    for (const prop of node.properties) {
+      if (prop.type === "ObjectProperty") {
+        if (prop.shorthand && prop.key.type === "Identifier" && prop.key.name === oldName) {
+          prop.shorthand = false;
+        }
+        renameIdentifierInNode(prop.value, oldName, newName);
+      } else if (prop.type === "RestElement") {
+        renameIdentifierInNode(prop.argument, oldName, newName);
+      }
+    }
+    return;
+  }
+  if (node.type === "RestElement") {
+    renameIdentifierInNode(node.argument, oldName, newName);
+  }
+}
+
 function renameScope(scope, ctx, reserved, usedNames) {
   const names = Object.keys(scope.bindings);
   for (const name of names) {
@@ -48,15 +82,38 @@ function renameScope(scope, ctx, reserved, usedNames) {
     }
     let newName = ctx.nameGen.next();
     while (
-      scope.hasBinding(newName) ||
-      scope.hasGlobal(newName) ||
       reserved.has(newName) ||
       usedNames.has(newName)
     ) {
       newName = ctx.nameGen.next();
     }
-    scope.rename(name, newName);
     usedNames.add(newName);
+
+    if (binding.identifier) {
+      binding.identifier.name = newName;
+    }
+    for (const ref of binding.referencePaths) {
+      if (ref.node && (ref.node.type === "Identifier" || ref.node.type === "JSXIdentifier")) {
+        if (ref.parentPath && ref.parentPath.isObjectProperty() && ref.parentPath.node.shorthand) {
+          if (ref.parentPath.node.value === ref.node) {
+            ref.parentPath.node.shorthand = false;
+          }
+        }
+        ref.node.name = newName;
+      }
+    }
+    for (const v of binding.constantViolations) {
+      if (v.isAssignmentExpression()) {
+        renameIdentifierInNode(v.node.left, name, newName);
+      } else if (v.isUpdateExpression()) {
+        renameIdentifierInNode(v.node.argument, name, newName);
+      } else if (v.isForXStatement && v.isForXStatement()) {
+        renameIdentifierInNode(v.node.left, name, newName);
+      }
+    }
+
+    delete scope.bindings[name];
+    scope.bindings[newName] = binding;
   }
 }
 
@@ -75,15 +132,20 @@ function renameIdentifiers(ast, ctx) {
         for (const name of Object.keys(path.scope.bindings)) {
           usedNames.add(name);
         }
+        if (path.scope.globals) {
+          for (const name of Object.keys(path.scope.globals)) {
+            usedNames.add(name);
+          }
+        }
       }
+
+      const scopes = [];
       path.traverse({
         Scopable(scopePath) {
-          if (!scopePath.scope) {
+          if (!scopePath.scope || scopePath.isProgram()) {
             return;
           }
-          if (scopePath.isProgram()) {
-            return;
-          }
+          scopes.push(scopePath.scope);
           for (const name of Object.keys(scopePath.scope.bindings)) {
             usedNames.add(name);
           }
@@ -94,17 +156,9 @@ function renameIdentifiers(ast, ctx) {
         renameScope(path.scope, ctx, reserved, usedNames);
       }
 
-      path.traverse({
-        Scopable(scopePath) {
-          if (scopePath.isProgram()) {
-            return;
-          }
-          if (!scopePath.scope) {
-            return;
-          }
-          renameScope(scopePath.scope, ctx, reserved, usedNames);
-        },
-      });
+      for (const scope of scopes) {
+        renameScope(scope, ctx, reserved, usedNames);
+      }
     },
   });
 }

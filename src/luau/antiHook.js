@@ -91,6 +91,9 @@ function buildRuntime({ lock, rng }) {
   const setmetatableName = makeName(rng, used);
   const pcallName = makeName(rng, used);
   const debugName = makeName(rng, used);
+  const stringName = makeName(rng, used);
+  const errorName = makeName(rng, used);
+  const lookupRootName = makeName(rng, used);
   const functionTag = luaByteString("function");
   const tableTag = luaByteString("table");
   const lockedValue = luaByteString("locked");
@@ -103,7 +106,18 @@ function buildRuntime({ lock, rng }) {
   const hiddenSetmetatable = luaHiddenIndex(rootName, "setmetatable");
   const hiddenPcall = luaHiddenIndex(rootName, "pcall");
   const hiddenDebug = luaHiddenIndex(rootName, "debug");
-  const hiddenChar = luaHiddenIndex(hiddenString, "char");
+  const hiddenChar = luaHiddenIndex(stringName, "char");
+  const hiddenError = luaHiddenIndex(rootName, "error");
+  const hiddenLookupString = luaHiddenIndex(lookupRootName, "string");
+  const hiddenLookupType = luaHiddenIndex(lookupRootName, "type");
+  const hiddenLookupGetfenv = luaHiddenIndex(lookupRootName, "getfenv");
+  const hiddenLookupGetmetatable = luaHiddenIndex(lookupRootName, "getmetatable");
+  const hiddenLookupSetmetatable = luaHiddenIndex(lookupRootName, "setmetatable");
+  const hiddenLookupPcall = luaHiddenIndex(lookupRootName, "pcall");
+  const hiddenLookupDebug = luaHiddenIndex(lookupRootName, "debug");
+  const hiddenLookupError = luaHiddenIndex(lookupRootName, "error");
+  const rootCandidateName = makeName(rng, used);
+  const rootOkName = makeName(rng, used);
   const envLocalName = makeName(rng, used);
   const getfLocalName = makeName(rng, used);
   const getmtLocalName = makeName(rng, used);
@@ -121,15 +135,28 @@ function buildRuntime({ lock, rng }) {
   return [
     "do",
     `  local ${rootName} = _G`,
-    `  local ${typeName} = ${hiddenType} or type`,
-    `  local ${charName} = ${hiddenChar} or string.char`,
-    `  local ${getfenvName} = ${hiddenGetfenv} or getfenv`,
-    `  local ${getmetatableName} = ${hiddenGetmetatable} or getmetatable`,
-    `  local ${setmetatableName} = ${hiddenSetmetatable} or setmetatable`,
-    `  local ${pcallName} = ${hiddenPcall} or pcall`,
-    `  local ${debugName} = ${hiddenDebug}`,
+    `  local ${getfenvName} = getfenv`,
+    `  local ${lookupRootName} = ${rootName}`,
+    `  if type(${getfenvName}) == ${functionTag} then`,
+    `    local ${rootOkName}, ${rootCandidateName} = pcall(${getfenvName}, 1)`,
+    `    if ${rootOkName} and type(${rootCandidateName}) == ${tableTag} then`,
+    `      ${lookupRootName} = ${rootCandidateName}`,
+    "    end",
+    "  end",
+    `  if type(${rootName}) ~= ${tableTag} then`,
+    `    ${rootName} = ${lookupRootName}`,
+    "  end",
+    `  local ${typeName} = ${hiddenLookupType} or ${hiddenType} or type`,
+    `  local ${stringName} = ${hiddenLookupString} or ${hiddenString} or string`,
+    `  local ${charName} = (${stringName} and ${hiddenChar}) or string.char`,
+    `  ${getfenvName} = ${hiddenLookupGetfenv} or ${hiddenGetfenv} or ${getfenvName}`,
+    `  local ${getmetatableName} = ${hiddenLookupGetmetatable} or ${hiddenGetmetatable} or getmetatable`,
+    `  local ${setmetatableName} = ${hiddenLookupSetmetatable} or ${hiddenSetmetatable} or setmetatable`,
+    `  local ${pcallName} = ${hiddenLookupPcall} or ${hiddenPcall} or pcall`,
+    `  local ${errorName} = ${hiddenLookupError} or ${hiddenError} or error`,
+    `  local ${debugName} = ${hiddenLookupDebug} or ${hiddenDebug}`,
     `  local function ${failName}(msg)`,
-    `    ((${luaHiddenIndex(rootName, "error")} or error))(msg, 0)`,
+    `    ${errorName}(msg, 0)`,
     "  end",
     `  if ${typeName} == nil then`,
     `    ${failName}(${errIntegrity})`,
@@ -173,7 +200,7 @@ function buildRuntime({ lock, rng }) {
     `    local ${getmtLocalName} = ${getmetatableName}`,
     `    if ${typeName}(${getmtLocalName}) == ${functionTag} then`,
     `      local ${mtLocalName} = ${getmtLocalName}(${envLocalName})`,
-    `      if ${mtLocalName} ~= nil then`,
+    `      if ${mtLocalName} ~= nil and ${mtLocalName} ~= ${lockedValue} then`,
     `        ${failName}(${errIntegrity})`,
     "      end",
     "    end",
@@ -185,6 +212,9 @@ function buildRuntime({ lock, rng }) {
     `    if ${typeName}(${setmtLocalName}) == ${functionTag} then`,
     `      local ${envLockLocalName} = ${envResolverName}()`,
     `      local ${mtLockLocalName} = ${getmetatableName}(${envLockLocalName})`,
+    `      if ${mtLockLocalName} ~= nil and ${typeName}(${mtLockLocalName}) ~= ${tableTag} then`,
+    `        ${mtLockLocalName} = nil`,
+    `      end`,
     `      if ${mtLockLocalName} == nil then`,
     `        ${mtLockLocalName} = {}`,
     `        local ${okSetmtLocalName} = ${pcallName}(${setmtLocalName}, ${envLockLocalName}, ${mtLockLocalName})`,
@@ -196,7 +226,7 @@ function buildRuntime({ lock, rng }) {
     `        ${luaHiddenIndex(mtLockLocalName, "__metatable")} = ${lockedValue}`,
     `      end`,
     `      if ${mtLockLocalName} ~= nil and ${luaHiddenIndex(mtLockLocalName, "__newindex")} == nil then`,
-    `        ${luaHiddenIndex(mtLockLocalName, "__newindex")} = function() ((${luaHiddenIndex(rootName, "error")} or error))(${errRuntime}, 0) end`,
+    `        ${luaHiddenIndex(mtLockLocalName, "__newindex")} = function() ${errorName}(${errRuntime}, 0) end`,
     `      end`,
     "    end",
     "  end",

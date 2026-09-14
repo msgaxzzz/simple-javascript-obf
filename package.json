@@ -1,15 +1,22 @@
 {
-  "name": "simple-javascript-obf",
+  "name": "obveil",
   "version": "1.2.3-A",
   "description": "Modular JavaScript obfuscator with optional VM and CFF",
   "main": "src/index.js",
+  "module": "src/index.ts",
+  "bun": "src/index.ts",
   "types": "build/src/index.d.ts",
   "bin": {
+    "obveil": "bin/obveil",
     "js-obf": "bin/js-obf",
-    "luau-obf": "bin/luau-obf"
+    "luau-obf": "bin/luau-obf",
+    "java-obf": "bin/java-obf"
   },
   "scripts": {
     "obf": "node bin/js-obf",
+    "test": "node test/obf-smoke.js",
+    "test:bun": "bun test",
+    "test:java": "node --test test/java-obf.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build:ts": "tsc -p tsconfig.build.json"
   },
@@ -25,6 +32,7 @@
     "@babel/parser": "^7.26.0",
     "@babel/traverse": "^7.26.0",
     "@babel/types": "^7.26.0",
+    "@luau-rs/luau": "^0.733.0",
     "appwrite": "^22.4.1",
     "dotenv": "^17.3.1",
     "luacodegen": "^1.0.2",

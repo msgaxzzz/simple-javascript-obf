@@ -58,6 +58,8 @@ Options:
   --wrap-iterations <n>        Wrap iterations (Luau only, default 1)
   --proxify-locals             Proxy local variables via table indirection (Luau only)
   --no-proxify-locals          Disable proxy locals (Luau only)
+  --anti-ssa                   Enable anti-SSA dataflow confusion (Luau only)
+  --no-anti-ssa                Disable anti-SSA
   --pad-footer                 Append fake Luau blocks after real code (Luau only)
   --no-pad-footer              Disable footer padding
   --pad-footer-blocks <n>       Number of fake blocks (Luau only, default 2)
@@ -114,7 +116,22 @@ Options:
   --vm-debug                 Log Luau VM compile failures
   --anti-hook                Enable anti-hook runtime guard
   --anti-hook-lock           Freeze built-in prototypes after guard
-  --lang <js|luau>            Select language (default: js, inferred from .lua/.luau)
+  --lang <js|luau|java>      Select language (default: js, inferred from .lua/.luau/.java)
+  --java-numbers             Enable MBA arithmetic number obfuscation (Java)
+  --no-java-numbers          Disable number obfuscation (Java)
+  --java-anti-debug          Enable anti-debug checks (Java)
+  --no-java-anti-debug       Disable anti-debug checks (Java)
+  --java-cff                 Enable control-flow opaque predicates (Java)
+  --no-java-cff              Disable control-flow opaque predicates (Java)
+  --java-dead                Inject dead code / opaque arithmetic blocks (Java)
+  --no-java-dead             Disable dead code injection (Java)
+  --java-wrap                Wrap public class with proxy and split classes (Java)
+  --no-java-wrap             Disable class wrapping & splitting (Java)
+  --java-id-style <hex|confusable|short> Identifier style (Java, default: hex)
+  --java-rename-members      Rename private fields/methods (Java)
+  --no-java-rename-members   Do not rename private members (Java)
+  --java-classpath <path>    Classpath for Java compilation/analysis
+  --java-release <n>         Java target release (e.g. 17)
   --luau-style <default>      Luau output style (default only)
   --seed <value>              RNG seed
   --ecma <version>           Terser output ECMAScript version (default: 2020)
@@ -160,6 +177,85 @@ function parseArgs(argv) {
     if (arg === "--lang") {
       options.lang = args[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg.startsWith("--lang=")) {
+      options.lang = arg.slice(7);
+      continue;
+    }
+    if (arg === "--java-numbers") {
+      options.javaNumbers = true;
+      continue;
+    }
+    if (arg === "--no-java-numbers") {
+      options.javaNumbers = false;
+      continue;
+    }
+    if (arg === "--java-anti-debug") {
+      options.javaAntiDebug = true;
+      continue;
+    }
+    if (arg === "--no-java-anti-debug") {
+      options.javaAntiDebug = false;
+      continue;
+    }
+    if (arg === "--java-cff") {
+      options.javaCff = true;
+      continue;
+    }
+    if (arg === "--no-java-cff") {
+      options.javaCff = false;
+      continue;
+    }
+    if (arg === "--java-dead") {
+      options.javaDead = true;
+      continue;
+    }
+    if (arg === "--no-java-dead") {
+      options.javaDead = false;
+      continue;
+    }
+    if (arg === "--java-wrap") {
+      options.javaWrap = true;
+      continue;
+    }
+    if (arg === "--no-java-wrap") {
+      options.javaWrap = false;
+      continue;
+    }
+    if (arg === "--java-id-style") {
+      options.javaIdStyle = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--java-id-style=")) {
+      options.javaIdStyle = arg.slice(16);
+      continue;
+    }
+    if (arg === "--java-rename-members") {
+      options.javaRenameMembers = true;
+      continue;
+    }
+    if (arg === "--no-java-rename-members") {
+      options.javaRenameMembers = false;
+      continue;
+    }
+    if (arg === "--java-classpath") {
+      options.javaClasspath = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--java-classpath=")) {
+      options.javaClasspath = arg.slice(17);
+      continue;
+    }
+    if (arg === "--java-release") {
+      options.javaRelease = args[i + 1];
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--java-release=")) {
+      options.javaRelease = arg.slice(15);
       continue;
     }
     if (arg === "--luau-style") {
@@ -584,6 +680,14 @@ function parseArgs(argv) {
       options.proxifyLocals = false;
       continue;
     }
+    if (arg === "--anti-ssa") {
+      options.antiSSA = true;
+      continue;
+    }
+    if (arg === "--no-anti-ssa") {
+      options.antiSSA = false;
+      continue;
+    }
     if (arg === "--pad-footer") {
       options.padFooter = true;
       continue;
@@ -637,16 +741,28 @@ function parseArgs(argv) {
   return { options, positional };
 }
 
-function readInput(file) {
+async function readInput(file) {
   if (!file || file === "-") {
-    return fs.readFileSync(0, "utf8");
+    return typeof Bun !== "undefined"
+      ? await Bun.stdin.text()
+      : fs.readFileSync(0, "utf8");
   }
-  return fs.readFileSync(file, "utf8");
+  return typeof Bun !== "undefined"
+    ? await Bun.file(file).text()
+    : fs.readFileSync(file, "utf8");
 }
 
-function writeOutput(file, code) {
+async function writeOutput(file, code) {
   if (!file) {
     process.stdout.write(code);
+    return;
+  }
+  const dir = path.dirname(file);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  if (typeof Bun !== "undefined") {
+    await Bun.write(file, code);
     return;
   }
   fs.writeFileSync(file, code, "utf8");
@@ -661,24 +777,31 @@ async function main() {
 
   const inputPath = positional[0];
   const inputExt = inputPath === "-" ? "" : path.extname(inputPath).toLowerCase();
+  if (inputExt === ".jar" || inputExt === ".class") {
+    throw new Error("Obveil supports Java source files (.java), not .jar/.class bytecode.");
+  }
   const inferredLang =
     inputPath === "-"
       ? "js"
       : inputExt === ".lua" || inputExt === ".luau"
         ? "luau"
-        : "js";
+        : inputExt === ".java"
+          ? "java"
+          : "js";
   const lang = options.lang || inferredLang;
-  const source = readInput(inputPath);
+  const source = await readInput(inputPath);
   const outputPath = options.output
     ? options.output
     : inputPath === "-"
       ? null
-      : path.join(
-          path.dirname(inputPath),
-          lang === "luau"
-            ? `${path.basename(inputPath, path.extname(inputPath))}.obf${inputExt || ".lua"}`
-            : `${path.basename(inputPath, path.extname(inputPath))}.obf.js`
-        );
+      : lang === "java"
+        ? path.join(path.dirname(inputPath), "obfuscated", path.basename(inputPath))
+        : path.join(
+            path.dirname(inputPath),
+            lang === "luau"
+              ? `${path.basename(inputPath, path.extname(inputPath))}.obf${inputExt || ".lua"}`
+              : `${path.basename(inputPath, path.extname(inputPath))}.obf.js`
+          );
 
   const result = await obfuscate(source, {
     preset: options.preset,
@@ -714,6 +837,7 @@ async function main() {
       iterations: options.wrapIterations,
     },
     proxifyLocals: options.proxifyLocals,
+    antiSSA: options.antiSSA,
     padFooter: options.padFooter,
     padFooterOptions: {
       blocks: options.padFooterBlocks,
@@ -774,9 +898,27 @@ async function main() {
     lang,
     luauStyle: options.luauStyle,
     luauParser: options.luauParser,
+    javaNumbers: options.javaNumbers,
+    javaAntiDebug: options.javaAntiDebug,
+    javaCff: options.javaCff,
+    javaDead: options.javaDead,
+    javaWrap: options.javaWrap,
+    javaIdStyle: options.javaIdStyle,
+    javaRenameMembers: options.javaRenameMembers,
+    javaOptions: {
+      numbers: options.javaNumbers,
+      antiDebug: options.javaAntiDebug,
+      cff: options.javaCff,
+      dead: options.javaDead,
+      wrap: options.javaWrap,
+      idStyle: options.javaIdStyle,
+      renameMembers: options.javaRenameMembers,
+      classpath: options.javaClasspath,
+      release: options.javaRelease,
+    },
     renameOptions: {
       renameGlobals: options.renameGlobals,
-      renameMembers: options.renameMembers,
+      renameMembers: options.renameMembers || options.javaRenameMembers,
       homoglyphs: options.renameHomoglyphs,
       maskGlobals: options.maskGlobals,
     },
@@ -785,11 +927,16 @@ async function main() {
   let outputCode = result.code;
   if (result.map && outputPath) {
     const mapPath = `${outputPath}.map`;
-    fs.writeFileSync(mapPath, JSON.stringify(result.map), "utf8");
+    const mapContent = JSON.stringify(result.map);
+    if (typeof Bun !== "undefined") {
+      await Bun.write(mapPath, mapContent);
+    } else {
+      fs.writeFileSync(mapPath, mapContent, "utf8");
+    }
     outputCode += `\n//# sourceMappingURL=${path.basename(mapPath)}\n`;
   }
 
-  writeOutput(outputPath, outputCode);
+  await writeOutput(outputPath, outputCode);
 }
 
 main().catch((err) => {

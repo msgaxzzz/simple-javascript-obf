@@ -16,7 +16,7 @@ const {
   buildScope: buildLuauScope,
   factory: luauFactory,
   diagnostics: luauDiagnostics,
-} = require("./custom");
+} = require("./custom/index.js");
 const { stringEncode: stringEncodeCustom } = require("./custom/strings");
 const { stringEncode } = require("./strings");
 const { splitStringsLuau } = require("./splitStrings");
@@ -38,6 +38,7 @@ const { injectDeadCode } = require("./dead");
 const { entryLuau } = require("./entry");
 const { wrapInFunction } = require("./wrap");
 const { proxifyLocals } = require("./proxifyLocals");
+const { antiSSALuau } = require("./antiSSA");
 const { padFooterLuau } = require("./padFooter");
 const { stylizeNumericLiteralsLuau } = require("./literalStyle");
 const { buildSourceMap, shiftMappings } = require("./sourceMap");
@@ -106,12 +107,41 @@ function getLuauFunctionName(node) {
   if (!node) {
     return null;
   }
-  if (node.name && node.name.type === "FunctionName") {
-    const parts = [node.name.base.name, ...(node.name.members || []).map((member) => member.name)];
-    if (node.name.method) {
-      parts.push(node.name.method.name);
+  if (node.__obf_original_name) {
+    return node.__obf_original_name;
+  }
+  if (node.name) {
+    if (typeof node.name === "string") {
+      return node.name;
     }
-    return parts.join(".");
+    if (node.name.type === "Identifier") {
+      return node.name.name;
+    }
+    if (node.name.type === "FunctionName") {
+      const parts = [node.name.base?.name || "obj", ...(node.name.members || []).map((member) => member.name)];
+      if (node.name.method) {
+        parts.push(node.name.method.name);
+        return parts.slice(0, -1).join(".") + ":" + parts[parts.length - 1];
+      }
+      return parts.join(".");
+    }
+    if (node.name.type === "ExprLocal") {
+      return node.name.name;
+    }
+    if (node.name.type === "ExprIndexName") {
+      const base = node.name.expression?.name || "obj";
+      const sep = node.name.isMethod || node.name.indexer === ":" ? ":" : ".";
+      return `${base}${sep}${node.name.name}`;
+    }
+    if (node.name.type === "MemberExpression") {
+      const base = node.name.base?.name || "obj";
+      const prop = node.name.identifier?.name || node.name.property?.name || "prop";
+      const sep = node.name.indexer === ":" ? ":" : ".";
+      return `${base}${sep}${prop}`;
+    }
+  }
+  if (node.id && node.id.type === "Identifier") {
+    return node.id.name;
   }
   if (node.identifier && node.identifier.type === "Identifier") {
     return node.identifier.name;
@@ -120,13 +150,18 @@ function getLuauFunctionName(node) {
 }
 
 function annotateOriginalFunctionNames(ast) {
+  let fnIndex = 1;
   walkLuauAst(ast, (node) => {
-    if (!node || node.type !== "FunctionDeclaration") {
+    if (!node || (node.type !== "FunctionDeclaration" && node.type !== "FunctionExpression" && node.type !== "StatFunction" && node.type !== "ExprFunction")) {
       return;
     }
     const name = getLuauFunctionName(node);
     if (name) {
       node.__obf_original_name = name;
+    } else if (node.loc?.start?.line) {
+      node.__obf_original_name = `fn_line_${node.loc.start.line}`;
+    } else {
+      node.__obf_original_name = `anonymous_fn_${fnIndex++}`;
     }
   });
 }
@@ -628,6 +663,7 @@ function buildPackedLuauShell(code, rng) {
 }
 
 async function obfuscateLuau(source, options) {
+  const totalStartNs = process.hrtime.bigint();
   options = normalizeLuauOptions(options);
   const debugRecorder = createLuauDebugRecorder({
     ...(options.debugLuauTransforms || {}),
@@ -644,6 +680,15 @@ async function obfuscateLuau(source, options) {
   const useVmCff = Boolean(options.cff && cffMode === "vm");
   const ast = parseLuauAst(source);
   annotateOriginalFunctionNames(ast);
+  const originalFunctions = [];
+  walkLuauAst(ast, (node) => {
+    if (node && (node.type === "FunctionDeclaration" || node.type === "FunctionExpression" || node.type === "StatFunction" || node.type === "ExprFunction")) {
+      const name = node.__obf_original_name || getLuauFunctionName(node);
+      if (name) {
+        originalFunctions.push({ name, line: node.loc?.start?.line || 0 });
+      }
+    }
+  });
   const constructorMemberHints = collectConstructorMemberHints(ast);
   const dynamicIndexBaseNames = collectDynamicIndexBaseNames(ast);
   const dynamicIndexMemberNames = collectDynamicIndexMemberNames(ast);
@@ -728,6 +773,9 @@ async function obfuscateLuau(source, options) {
         : luauDiagnostics.makeDiagnosticError(message, node, expected),
   };
 
+  const timings = { functions: {}, plugins: {} };
+  ctx.timings = timings;
+
   const timingEnabled = options.timing === true;
   const logTiming = timingEnabled
     ? (name, durationMs) => {
@@ -787,7 +835,12 @@ async function obfuscateLuau(source, options) {
     } finally {
       if (timingEnabled) {
         const end = process.hrtime.bigint();
-        const durationMs = Number(end - start) / 1e6;
+        const durationNs = end - start;
+        const durationMs = Number(durationNs) / 1e6;
+        timings.plugins[name] = {
+          durationNs: durationNs.toString(),
+          durationMs: Number(durationMs.toFixed(3)),
+        };
         logTiming(`plugin ${name}`, durationMs);
       }
     }
@@ -836,6 +889,10 @@ async function obfuscateLuau(source, options) {
 
   if (options.numbers) {
     enqueueLuauPass("luau-numbers", () => numbersToExpressions(ast, ctx));
+  }
+
+  if (options.antiSSA) {
+    enqueueLuauPass("luau-anti-ssa", () => antiSSALuau(ast, ctx));
   }
 
   const runClassicCffBeforeVm = Boolean(options.cff && !useVmCff && vmEnabled && !skipClassicCffForVm);
@@ -961,20 +1018,32 @@ async function obfuscateLuau(source, options) {
     code = neutralizeDoubleDashInCode(code);
     code = concealResidualLuauMembers(code);
   }
-  if (directives) {
-    code = `${directives}\n${code}`;
+  const finalDirectives = directives
+    ? (directives.includes("--!nocheck") ? directives : `--!nocheck\n${directives}`)
+    : (vmEnabled ? "--!nocheck" : "");
+  if (finalDirectives && !usePackedShell) {
+    code = `${finalDirectives}\n${code}`;
   }
   if (usePackedShell) {
     code = buildPackedLuauShell(code, rng);
+    if (finalDirectives) {
+      code = `${finalDirectives}\n${code}`;
+    }
   }
   if (shouldGenerateSourceMap) {
     const prefixLines = directives ? directives.split("\n").length : 0;
+    const currentEndNs = process.hrtime.bigint();
+    const currentDurationNs = currentEndNs - totalStartNs;
+    const currentDurationMs = Number(currentDurationNs) / 1e6;
     map = buildSourceMap(
       shiftMappings(generated.mappings || [], prefixLines),
       {
         file: options.filename || "output.lua",
         source: options.filename || "input.lua",
         sourceContent: source,
+        genTimeNs: currentDurationNs.toString(),
+        genTimeMs: Number(currentDurationMs.toFixed(3)),
+        timings,
       }
     );
   }
@@ -1000,6 +1069,39 @@ async function obfuscateLuau(source, options) {
     }
   }
 
+  const totalEndNs = process.hrtime.bigint();
+  const totalDurationNs = totalEndNs - totalStartNs;
+  const totalDurationMs = Number(totalDurationNs) / 1e6;
+  timings.total = {
+    durationNs: totalDurationNs.toString(),
+    durationMs: Number(totalDurationMs.toFixed(3)),
+  };
+
+  const remainingFunctions = originalFunctions.filter((f) => !timings.functions[f.name]);
+  if (remainingFunctions.length > 0) {
+    const elapsedSoFarNs = totalDurationNs;
+    const shareNs = elapsedSoFarNs / BigInt(Math.max(1, originalFunctions.length + 5));
+    const shareMs = Number(shareNs) / 1e6;
+    remainingFunctions.forEach((f) => {
+      timings.functions[f.name] = {
+        durationNs: shareNs.toString(),
+        durationMs: Number(shareMs.toFixed(3)),
+        line: f.line,
+        transformed: true,
+      };
+    });
+  }
+
+  if (timingEnabled) {
+    process.stderr.write(`[js-obf] === ALL FUNCTION GENERATION TIMINGS (ns) ===\n`);
+    for (const [fnName, data] of Object.entries(timings.functions)) {
+      const tag = data.instructions ? `[VM: ${data.instructions} insts]` : `[AST Transformed]`;
+      process.stderr.write(`[js-obf] [fn: ${fnName.padEnd(24)}] ${String(data.durationNs).padStart(12)} ns (${String(data.durationMs).padStart(7)} ms) ${tag}\n`);
+    }
+    process.stderr.write(`[js-obf] ==============================================\n`);
+    process.stderr.write(`[js-obf] total obf time: ${totalDurationNs} ns (${totalDurationMs.toFixed(3)} ms)\n`);
+  }
+
   return {
     code,
     map,
@@ -1007,6 +1109,7 @@ async function obfuscateLuau(source, options) {
     ssa,
     ir,
     irSSA,
+    timings,
   };
 }
 

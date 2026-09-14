@@ -1,5 +1,6 @@
 // @ts-nocheck
-const { traverse } = require("./traverse.ts");
+const { traverse } = require("./traverse");
+
 
 function walk(node, visitor) {
   traverse(node, (value, parent, key, index) => {
@@ -7,6 +8,9 @@ function walk(node, visitor) {
   });
 }
 
-module.exports = {
-  walk,
-};
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    walk,
+  };
+}
+export { walk };

@@ -1,3 +1,7 @@
+const diagnostics = require("./diagnostics");
+const nodes = require("./nodes");
+const locations = require("./locations");
+
 export interface NodeContracts {
   rootType: string;
   nodeTypes: readonly string[];
@@ -25,3 +29,5 @@ export interface CustomAstTypeMetadata {
 }
 
 export const contractKeys = ["nodes", "locations", "diagnosticTypes"] as const;
+export const diagnosticTypes = diagnostics.diagnosticTypes;
+export { nodes, locations };

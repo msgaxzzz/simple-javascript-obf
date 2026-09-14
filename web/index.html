@@ -3,350 +3,587 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>JS Obfuscator</title>
+  <title>Obveil</title>
   <style>
-    @import url("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap");
+    @import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap");
 
-    :root {
+    :root,
+    body[data-theme="dark"] {
       color-scheme: dark;
-      --bg: #111111;
-      --bg-2: #1a1a1a;
-      --panel: #1e1e1e;
-      --panel-2: #242424;
-      --panel-solid: #1e1e1e;
-      --ink: #eeeeee;
-      --muted: #888888;
-      --line: rgba(255,255,255,0.08);
-      --line-strong: rgba(255,255,255,0.15);
-      --accent: #f97316;
-      --accent-2: #fb923c;
-      --accent-3: #fbbf24;
-      --shadow: 0 4px 24px rgba(0,0,0,0.4);
-      --radius: 10px;
-      --radius-sm: 7px;
-      --ring: 0 0 0 2px rgba(249,115,22,0.4);
-      --button-shadow: none;
-      --hero-glow: #111111;
+      --bg: #000000;
+      --bg-subtle: #0a0a0a;
+      --panel: #0a0a0a;
+      --panel-hover: #121212;
+      --border: #222222;
+      --border-subtle: #1a1a1a;
+      --border-hover: #333333;
+      --border-active: #555555;
+      
+      --text-primary: #ededed;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      
+      --btn-primary-bg: #ffffff;
+      --btn-primary-text: #000000;
+      --btn-primary-hover: #e2e2e2;
+      
+      --btn-secondary-bg: #111111;
+      --btn-secondary-text: #ededed;
+      --btn-secondary-border: #27272a;
+      --btn-secondary-hover: #18181b;
+
+      --accent-pill-bg: #141414;
+      --accent-pill-border: #2a2a2a;
+      --accent-pill-text: #ededed;
+
+      --grid-line: rgba(255, 255, 255, 0.05);
+      --radius-sm: 6px;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --radius-full: 9999px;
     }
 
     body[data-theme="light"] {
       color-scheme: light;
-      --bg: #f5f5f5;
-      --bg-2: #ffffff;
+      --bg: #ffffff;
+      --bg-subtle: #fafafa;
       --panel: #ffffff;
-      --panel-2: #f9f9f9;
-      --panel-solid: #ffffff;
-      --ink: #111111;
-      --muted: #666666;
-      --line: rgba(0,0,0,0.08);
-      --line-strong: rgba(0,0,0,0.15);
-      --accent: #ea6c00;
-      --accent-2: #c85c00;
-      --accent-3: #d97706;
-      --shadow: 0 2px 12px rgba(0,0,0,0.08);
-      --ring: 0 0 0 2px rgba(234,108,0,0.35);
-      --button-shadow: none;
-      --hero-glow: #f5f5f5;
+      --panel-hover: #f4f4f5;
+      --border: #e4e4e7;
+      --border-subtle: #f4f4f5;
+      --border-hover: #d4d4d8;
+      --border-active: #a1a1aa;
+      
+      --text-primary: #09090b;
+      --text-secondary: #52525b;
+      --text-muted: #71717a;
+      
+      --btn-primary-bg: #09090b;
+      --btn-primary-text: #ffffff;
+      --btn-primary-hover: #27272a;
+      
+      --btn-secondary-bg: #ffffff;
+      --btn-secondary-text: #09090b;
+      --btn-secondary-border: #e4e4e7;
+      --btn-secondary-hover: #f4f4f5;
+
+      --accent-pill-bg: #f4f4f5;
+      --accent-pill-border: #e4e4e7;
+      --accent-pill-text: #09090b;
+
+      --grid-line: rgba(0, 0, 0, 0.04);
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-      background: var(--bg);
-      color: var(--ink);
+      font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text-primary);
       min-height: 100vh;
-      transition: background 0.2s, color 0.2s;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 0.15s ease, color 0.15s ease;
     }
 
-    header {
-      position: relative;
-      padding: 20px 28px 0;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel);
+    /* Next.js subtle grid background */
+    .next-grid-bg {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-image: 
+        linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+        linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 65%, transparent 100%);
+      -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 65%, transparent 100%);
+      pointer-events: none;
+      z-index: 0;
     }
 
-    .hero {
-      max-width: 1200px;
+    /* ── Navigation (No Logo, Pure Text Breadcrumb) ──────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+    }
+
+    body[data-theme="light"] nav {
+      background: rgba(255, 255, 255, 0.85);
+    }
+
+    .nav-inner {
+      max-width: 1280px;
       margin: 0 auto;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      padding-bottom: 16px;
+    }
+
+    .nav-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13.5px;
+      font-weight: 500;
+    }
+
+    .nav-breadcrumb-root {
+      color: var(--text-muted);
+    }
+
+    .nav-slash {
+      color: var(--text-muted);
+      font-weight: 300;
+      user-select: none;
+    }
+
+    .nav-title {
+      font-weight: 600;
+      color: var(--text-primary);
+      letter-spacing: -0.01em;
+    }
+
+    .nav-badge {
+      font-family: "Geist Mono", monospace;
+      font-size: 11px;
+      padding: 1px 7px;
+      border-radius: var(--radius-full);
+      background: var(--accent-pill-bg);
+      border: 1px solid var(--accent-pill-border);
+      color: var(--text-secondary);
+      margin-left: 4px;
+    }
+
+    /* ── Main Container ──────────────────────────────────────── */
+    main {
+      position: relative;
+      z-index: 1;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 32px 24px 80px;
+    }
+
+    /* Hero Header */
+    .hero {
+      margin-bottom: 32px;
     }
 
     .hero h1 {
-      margin: 0 0 4px;
-      font-family: "Inter", sans-serif;
-      font-size: 18px;
+      margin: 0 0 8px;
+      font-size: 28px;
       font-weight: 700;
-      letter-spacing: -0.02em;
+      letter-spacing: -0.035em;
       line-height: 1.2;
+      color: var(--text-primary);
     }
 
     .hero p {
       margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-      max-width: 540px;
+      font-size: 14px;
+      color: var(--text-muted);
+      max-width: 640px;
+      line-height: 1.55;
     }
 
-    .eyebrow {
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--accent);
-      font-weight: 600;
-      margin-bottom: 4px;
-      display: inline-block;
-    }
-
-    .hero-topbar {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .hero-copy { max-width: 600px; }
-
-    .hero-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-shrink: 0;
-    }
-
-    .theme-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      border: 1px solid var(--line);
-      background: var(--panel-2);
-      color: var(--ink);
-      border-radius: var(--radius);
-      padding: 6px 10px;
-    }
-
-    .theme-toggle span {
-      font-size: 11px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      font-weight: 600;
-    }
-
-    .theme-toggle button {
-      padding: 5px 10px;
-      min-width: auto;
-      font-size: 12px;
-    }
-
-    .hero-card {
-      background: var(--panel-2);
-      border-radius: var(--radius);
-      border: 1px solid var(--line);
-      padding: 14px 18px;
-    }
-
-    .hero-card h3 {
-      margin: 0 0 6px;
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-      color: var(--muted);
-      font-weight: 600;
-    }
-
-    .hero-card ul {
-      list-style: none;
-      padding: 0;
-      margin: 0;
+    /* Grid Layout */
+    .layout-grid {
       display: grid;
-      gap: 4px;
-      color: var(--muted);
-      font-size: 12px;
+      gap: 20px;
     }
 
-    main {
-      position: relative;
-      padding: 20px 28px 48px;
-      display: grid;
-      gap: 16px;
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
-    .layout {
-      display: grid;
-      gap: 16px;
-    }
-
-    @media (min-width: 980px) {
-      .layout {
-        grid-template-columns: 1.1fr 0.9fr;
+    @media (min-width: 1024px) {
+      .layout-grid {
+        grid-template-columns: 1.05fr 0.95fr;
         align-items: start;
       }
     }
 
-    .stack { display: grid; gap: 16px; }
+    .column-stack {
+      display: grid;
+      gap: 20px;
+    }
 
-    .panel {
+    /* ── Next.js Cards ───────────────────────────────────────── */
+    .card {
       background: var(--panel);
-      border-radius: var(--radius);
-      padding: 20px;
-      border: 1px solid var(--line);
-      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      transition: border-color 0.15s ease;
+      overflow: hidden;
     }
 
-    .panel h2 {
-      margin: 0 0 4px;
-      font-size: 12px;
+    .card:hover {
+      border-color: var(--border-hover);
+    }
+
+    .card-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .card-title {
+      margin: 0;
+      font-size: 13.5px;
       font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
+      letter-spacing: -0.01em;
+      color: var(--text-primary);
     }
 
+    .card-desc {
+      margin: 2px 0 0;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .card-body {
+      padding: 20px;
+    }
+
+    /* ── Code Area & Editors ─────────────────────────────────── */
+    .editor-box {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-subtle);
+      overflow: hidden;
+      transition: border-color 0.15s ease;
+    }
+
+    .editor-box:focus-within {
+      border-color: var(--border-active);
+    }
+
+    .editor-header {
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.015);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .editor-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .mono-pill {
+      font-family: "Geist Mono", monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+      padding: 2px 6px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 220px;
+      padding: 14px;
+      background: transparent;
+      color: var(--text-primary);
+      border: none;
+      outline: none;
+      resize: vertical;
+      font-family: "Geist Mono", monospace;
+      font-size: 12px;
+      line-height: 1.65;
+      tab-size: 2;
+    }
+
+    textarea::placeholder {
+      color: var(--text-muted);
+    }
+
+    /* ── Next.js Segmented Controller ────────────────────────── */
+    .segment-container {
+      display: flex;
+      padding: 3px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      gap: 2px;
+    }
+
+    .segment-item {
+      flex: 1;
+      padding: 6px 12px;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--text-muted);
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      user-select: none;
+    }
+
+    .segment-item:hover:not(.active) {
+      color: var(--text-primary);
+    }
+
+    .segment-item.active {
+      background: var(--panel);
+      color: var(--text-primary);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--border);
+    }
+
+    body[data-theme="light"] .segment-item.active {
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 0 0 1px var(--border);
+    }
+
+    /* ── Forms, Inputs & Labels ──────────────────────────────── */
     label {
       display: block;
       font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 5px;
       font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
     }
 
     input[type="text"],
     input[type="number"],
-    select,
-    textarea {
+    select {
       width: 100%;
-      padding: 8px 10px;
-      border-radius: var(--radius-sm);
-      border: 1px solid var(--line);
+      padding: 8px 12px;
       font-size: 13px;
       font-family: inherit;
-      background: var(--panel-2);
-      color: var(--ink);
-      transition: border-color 0.15s, box-shadow 0.15s;
-    }
-
-    textarea {
-      min-height: 200px;
-      resize: vertical;
-      font-family: "Fira Code", monospace;
-      font-size: 12px;
-      line-height: 1.6;
-    }
-
-    input:focus-visible,
-    textarea:focus-visible,
-    select:focus-visible,
-    button:focus-visible {
-      outline: none;
-      box-shadow: var(--ring);
-      border-color: var(--accent);
-    }
-
-    .row { display: grid; gap: 10px; }
-    .row.two { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
-    .row.three { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
-    .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-
-    .chip {
-      display: inline-block;
-      padding: 2px 8px;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-      color: var(--accent);
-      background: transparent;
-      border-bottom: 1px solid var(--line);
-      margin: 10px 0 6px;
-    }
-
-    .drop {
-      border: 1px dashed var(--line-strong);
+      color: var(--text-primary);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      padding: 20px;
-      text-align: center;
-      color: var(--muted);
-      background: var(--panel-2);
-      transition: border-color 0.15s, background 0.15s;
-      font-size: 13px;
-      cursor: pointer;
+      outline: none;
+      transition: border-color 0.15s ease;
     }
 
-    .drop.active {
-      border-color: var(--accent);
-      background: rgba(249,115,22,0.06);
-      color: var(--ink);
+    input[type="text"]:focus,
+    input[type="number"]:focus,
+    select:focus {
+      border-color: var(--border-active);
     }
 
-    .checkbox {
+    .row { display: grid; gap: 12px; }
+    .row.two { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+    .row.three { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+
+    /* ── Minimalist Switches ─────────────────────────────────── */
+    .switch-grid {
+      display: grid;
+      gap: 6px;
+    }
+
+    .switch-card {
       display: flex;
       align-items: center;
-      gap: 7px;
-      font-size: 13px;
-      color: var(--ink);
-      margin-bottom: 5px;
-      text-transform: none;
-      letter-spacing: normal;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 12px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
       cursor: pointer;
+      user-select: none;
+      transition: all 0.15s ease;
     }
 
-    .checkbox input {
+    .switch-card:hover {
+      border-color: var(--border-hover);
+      background: var(--panel-hover);
+    }
+
+    .switch-title {
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .switch-track {
+      position: relative;
+      width: 32px;
+      height: 18px;
+      background: #27272a;
+      border-radius: var(--radius-full);
+      transition: background-color 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    body[data-theme="light"] .switch-track {
+      background: #e4e4e7;
+    }
+
+    .switch-track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
       width: 14px;
       height: 14px;
-      accent-color: var(--accent);
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+      transition: transform 0.15s ease;
+    }
+
+    input[type="checkbox"]:checked + .switch-card .switch-track,
+    .switch-card:has(input[type="checkbox"]:checked) .switch-track {
+      background: var(--text-primary);
+    }
+
+    .switch-card:has(input[type="checkbox"]:checked) .switch-track::after {
+      transform: translateX(14px);
+      background: var(--bg);
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border-width: 0;
+    }
+
+    /* ── Drop Zone ───────────────────────────────────────────── */
+    .drop-box {
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 20px 16px;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.01);
       cursor: pointer;
+      transition: all 0.15s ease;
+      margin-top: 14px;
     }
 
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
+    .drop-box:hover {
+      border-color: var(--border-active);
+      background: rgba(255, 255, 255, 0.02);
     }
 
-    button {
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-sm);
-      padding: 7px 14px;
+    .drop-box.active {
+      border-color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .drop-main {
       font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .drop-sub {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* ── Details / Accordion ─────────────────────────────────── */
+    .accordion-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-subtle);
+      margin-top: 14px;
+      overflow: hidden;
+    }
+
+    .accordion-card > summary {
+      padding: 12px 16px;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-primary);
       cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      user-select: none;
+    }
+
+    .accordion-card > summary::-webkit-details-marker { display: none; }
+    .accordion-card > summary:hover {
+      background: var(--panel-hover);
+    }
+
+    .accordion-card[open] > summary {
+      border-bottom: 1px solid var(--border);
+    }
+
+    .accordion-body {
+      padding: 16px;
+    }
+
+    .arrow-icon {
+      width: 14px;
+      height: 14px;
+      transition: transform 0.15s ease;
+      color: var(--text-muted);
+    }
+
+    .accordion-card[open] .arrow-icon {
+      transform: rotate(180deg);
+    }
+
+    .subheading {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin: 14px 0 6px;
+      display: block;
+    }
+
+    /* ── Buttons ─────────────────────────────────────────────── */
+    button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 7px 12px;
+      font-size: 12.5px;
       font-weight: 500;
       font-family: inherit;
-      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
-      background: var(--panel-2);
-      color: var(--ink);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.15s ease;
+      border: 1px solid var(--btn-secondary-border);
+      background: var(--btn-secondary-bg);
+      color: var(--btn-secondary-text);
     }
 
-    button:hover { border-color: var(--accent); }
-
-    button.primary {
-      background: var(--accent);
-      color: #fff;
-      border-color: var(--accent);
-      font-weight: 600;
+    button:hover:not(:disabled) {
+      background: var(--btn-secondary-hover);
+      border-color: var(--border-hover);
     }
 
-    button.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
-
-    button.secondary {
-      background: var(--panel-2);
-      color: var(--ink);
+    button:active:not(:disabled) {
+      transform: translateY(1px);
     }
-
-    button.ghost {
-      background: transparent;
-      border-color: var(--line);
-      color: var(--muted);
-    }
-
-    button.ghost:hover { color: var(--ink); border-color: var(--line-strong); }
 
     button:disabled {
       opacity: 0.4;
@@ -354,114 +591,142 @@
       pointer-events: none;
     }
 
-    pre {
-      margin: 0;
-      padding: 12px;
-      border-radius: var(--radius-sm);
-      background: var(--bg);
-      border: 1px solid var(--line);
-      color: var(--muted);
-      font-size: 12px;
-      min-height: 100px;
-      max-height: 240px;
-      overflow: auto;
-      line-height: 1.5;
-      font-family: "Fira Code", monospace;
-    }
-
-    .muted { color: var(--muted); font-size: 12px; }
-
-    .dev-panel {
-      display: none;
-      margin-top: 10px;
-      padding: 12px;
-      border: 1px dashed var(--line);
-      border-radius: var(--radius-sm);
-      background: var(--panel-2);
-    }
-
-    .dev-panel.enabled { display: grid; gap: 10px; }
-
-    .lang-group {
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: var(--panel-2);
-      padding: 10px 12px;
-      margin-top: 10px;
-    }
-
-    .lang-group[open] { background: var(--panel-2); }
-
-    .lang-group > summary {
-      cursor: pointer;
-      list-style: none;
-      font-size: 11px;
+    button.primary {
+      background: var(--btn-primary-bg);
+      color: var(--btn-primary-text);
+      border: 1px solid var(--btn-primary-bg);
       font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--muted);
-      user-select: none;
     }
 
-    .lang-group > summary:hover { color: var(--ink); }
-    .lang-group > summary::-webkit-details-marker { display: none; }
-
-    .lang-group > summary::before {
-      content: "\25B8";
-      display: inline-block;
-      margin-right: 6px;
-      transition: transform 0.15s;
+    button.primary:hover:not(:disabled) {
+      background: var(--btn-primary-hover);
+      border-color: var(--btn-primary-hover);
     }
 
-    .lang-group[open] > summary::before { transform: rotate(90deg); }
-
-    .lang-group-body { margin-top: 10px; }
-
-    .divider { height: 1px; background: var(--line); margin: 12px 0; }
-
-    .panel-subtitle {
-      margin: 0 0 14px;
-      font-size: 12px;
-      color: var(--muted);
+    button.sm {
+      padding: 4px 8px;
+      font-size: 11.5px;
     }
 
-    .status-shell {
+    #runBtn {
+      padding: 10px 18px;
+      font-size: 13px;
+    }
+
+    .actions-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin-top: 16px;
+    }
+
+    /* ── Status & Output Info ────────────────────────────────── */
+    .status-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }
-
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
+      padding: 10px 12px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
       border-radius: var(--radius-sm);
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      font-size: 11px;
-      color: var(--muted);
-      font-weight: 500;
+      margin-top: 14px;
+      font-size: 12px;
+      color: var(--text-muted);
     }
 
+    .indicator-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-primary);
+      display: inline-block;
+    }
+
+    /* ── Log Console ─────────────────────────────────────────── */
+    .console-pane {
+      background: var(--bg-subtle);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .console-header {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      font-family: "Geist Mono", monospace;
+    }
+
+    .log-view {
+      padding: 12px 14px;
+      font-family: "Geist Mono", monospace;
+      font-size: 11.5px;
+      line-height: 1.6;
+      max-height: 220px;
+      min-height: 100px;
+      overflow-y: auto;
+      color: var(--text-secondary);
+    }
+
+    .log-entry {
+      margin-bottom: 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .log-entry:last-child {
+      border-bottom: none;
+      margin-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .log-time {
+      color: var(--text-muted);
+      font-size: 10.5px;
+    }
+
+    .log-md p { margin: 0; }
+    .log-md strong { color: var(--text-primary); font-weight: 600; }
+    .log-md code {
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.06);
+      font-size: 11px;
+    }
+
+    .log-code-frame {
+      margin: 6px 0;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      overflow-x: auto;
+      font-size: 11px;
+    }
+
+    /* ── Modal Overlay ────────────────────────────────────────── */
     .overlay {
       position: fixed;
       inset: 0;
+      background: rgba(0, 0, 0, 0.8);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
       display: grid;
       place-items: center;
-      padding: 24px;
-      background: rgba(0,0,0,0.6);
+      padding: 20px;
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
-      transition: opacity 0.15s, visibility 0.15s;
-      z-index: 40;
+      transition: all 0.15s ease;
+      z-index: 50;
     }
-
-    body[data-theme="light"] .overlay { background: rgba(0,0,0,0.3); }
 
     .overlay.open {
       opacity: 1;
@@ -470,64 +735,54 @@
     }
 
     .overlay-card {
-      width: min(100%, 420px);
-      padding: 28px 24px 22px;
-      border-radius: var(--radius);
-      background: var(--panel-solid);
-      border: 1px solid var(--line-strong);
-      box-shadow: 0 8px 40px rgba(0,0,0,0.4);
+      width: min(100%, 400px);
+      padding: 24px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
       text-align: center;
-      transform: translateY(8px);
-      transition: transform 0.15s;
+      transform: scale(0.97);
+      transition: transform 0.15s ease;
     }
 
-    .overlay.open .overlay-card { transform: translateY(0); }
-
-    .overlay-badge {
-      width: 64px;
-      height: 64px;
-      margin: 0 auto 18px;
-      border-radius: var(--radius);
-      display: grid;
-      place-items: center;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
+    .overlay.open .overlay-card {
+      transform: scale(1);
     }
 
     .spinner {
-      width: 32px;
-      height: 32px;
+      width: 24px;
+      height: 24px;
+      margin: 0 auto 16px;
       border-radius: 50%;
-      border: 2px solid var(--line-strong);
-      border-top-color: var(--accent);
-      animation: spin 0.7s linear infinite;
+      border: 2px solid var(--border);
+      border-top-color: var(--text-primary);
+      animation: spin 0.65s linear infinite;
     }
 
     .overlay-check {
       display: none;
-      font-size: 28px;
-      font-weight: 700;
-      color: var(--accent);
-      line-height: 1;
+      width: 24px;
+      height: 24px;
+      margin: 0 auto 16px;
+      color: var(--text-primary);
     }
 
-    .overlay.error .overlay-check { color: #ef4444; }
     .overlay.success .spinner, .overlay.error .spinner { display: none; }
     .overlay.success .overlay-check, .overlay.error .overlay-check { display: block; }
 
     .overlay-title {
-      margin: 0 0 8px;
-      font-size: 20px;
-      line-height: 1.2;
-      font-weight: 700;
+      font-size: 16px;
+      font-weight: 600;
+      margin: 0 0 6px;
+      color: var(--text-primary);
     }
 
     .overlay-text {
+      font-size: 13px;
+      color: var(--text-muted);
       margin: 0 auto 16px;
       max-width: 300px;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.55;
     }
 
     .overlay-actions {
@@ -535,432 +790,871 @@
       justify-content: center;
       gap: 8px;
       flex-wrap: wrap;
-      margin-top: 8px;
     }
 
     .overlay.success .overlay-actions,
     .overlay.error .overlay-actions { display: flex; }
 
-    .overlay-meta { margin-top: 14px; font-size: 11px; color: var(--muted); }
-
-    .workspace-dim { transition: filter 0.2s, opacity 0.2s; }
-    body.overlay-active .workspace-dim { filter: blur(2px); opacity: 0.6; pointer-events: none; user-select: none; }
+    .overlay-meta {
+      margin-top: 14px;
+      font-size: 11.5px;
+      color: var(--text-muted);
+    }
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    @media (prefers-reduced-motion: reduce) {
-      *, *::before, *::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
-      }
+    /* ── Toast Notifications ─────────────────────────────────── */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 60;
+      pointer-events: none;
     }
 
-    /* ── Mobile / small-screen overrides ─────────────────────────── */
-    @media (max-width: 639px) {
-      header {
-        padding: 14px 16px 0;
-      }
-
-      .hero {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 12px;
-        padding-bottom: 12px;
-      }
-
-      .hero-actions {
-        width: 100%;
-        justify-content: flex-end;
-      }
-
-      main {
-        padding: 14px 16px 32px;
-      }
-
-      .panel {
-        padding: 16px;
-      }
-
-      textarea {
-        min-height: 140px;
-      }
-
-      pre {
-        max-height: 180px;
-      }
-
-      .actions {
-        gap: 6px;
-      }
-
-      .actions button {
-        flex: 1 1 calc(50% - 6px);
-        min-width: 0;
-        padding: 9px 8px;
-        font-size: 13px;
-      }
-
-      .row.two,
-      .row.three {
-        grid-template-columns: 1fr;
-      }
-
-      .overlay {
-        padding: 16px;
-      }
-
-      .overlay-card {
-        padding: 22px 16px 18px;
-      }
-
-      .overlay-title {
-        font-size: 17px;
-      }
-
-      .overlay-actions {
-        flex-direction: column;
-      }
-
-      .overlay-actions button {
-        width: 100%;
-      }
+    .toast {
+      padding: 8px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      background: var(--panel);
+      border: 1px solid var(--border-hover);
+      color: var(--text-primary);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      pointer-events: auto;
+      transition: opacity 0.15s ease, transform 0.15s ease;
     }
 
-    @media (min-width: 640px) and (max-width: 979px) {
-      header {
-        padding: 16px 20px 0;
-      }
+    .toast.fade-out {
+      opacity: 0;
+      transform: translateY(6px);
+    }
 
-      main {
-        padding: 16px 20px 40px;
+    .dev-panel {
+      display: none;
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px dashed var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--bg-subtle);
+    }
+
+    .dev-panel.enabled {
+      display: grid;
+      gap: 12px;
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 16px 0;
+    }
+
+    @media (max-width: 640px) {
+      nav { padding: 10px 16px; }
+      main { padding: 20px 16px 48px; }
+      .actions-row button {
+        flex: 1 1 calc(50% - 4px);
+      }
+      #runBtn {
+        flex: 1 1 100%;
       }
     }
   </style>
 </head>
 <body data-theme="dark">
-  <header>
-    <div class="hero">
-      <div class="hero-copy">
-        <div class="hero-topbar">
-          <span class="eyebrow">JS / Luau Obfuscator</span>
-          <h1>Script Protection Toolkit</h1>
-        </div>
-        <p>Upload or paste JS / Luau, pick a preset, run protection, download or copy the result.</p>
+  <div class="next-grid-bg" aria-hidden="true"></div>
+
+  <!-- Top Navigation: Pure text breadcrumb, NO logo -->
+  <nav>
+    <div class="nav-inner">
+      <div class="nav-left">
+        <span class="nav-breadcrumb-root">Security</span>
+        <span class="nav-slash">/</span>
+        <span class="nav-title">Virtual Machine & Bytecode Obfuscator</span>
+        <span class="nav-badge">v2.5</span>
       </div>
-      <div class="hero-actions">
-        <button id="themeToggle" type="button" class="ghost">Switch to Light</button>
+      <div>
+        <button id="themeToggle" type="button" class="sm">
+          <span id="themeToggleText">Theme</span>
+        </button>
       </div>
     </div>
-  </header>
+  </nav>
 
-  <main class="workspace-dim">
-    <div class="layout">
-      <div class="stack">
-        <section class="panel">
-      <h2>Input</h2>
-      <p class="panel-subtitle">Bring in your source file, edit it inline, and keep the output name ready before you run protection.</p>
-      <div class="row">
-        <label>Source file</label>
-        <input id="fileInput" type="file" accept=".js,.mjs,.cjs,.ts,.tsx,.jsx,.lua,.luau" />
-      </div>
-      <div class="divider"></div>
-      <div id="dropZone" class="drop">Drop a JavaScript or Luau file here</div>
-      <div class="divider"></div>
-      <div class="row">
-        <label for="source">Paste source</label>
-        <textarea id="source" placeholder="Paste JavaScript or Luau here"></textarea>
-      </div>
-      <div class="row two">
-        <div>
-          <label for="inputName">Input filename</label>
-          <input id="inputName" type="text" value="input.js" />
-        </div>
-        <div>
-          <label for="outputName">Output filename</label>
-          <input id="outputName" type="text" value="output.obf.js" />
-        </div>
-      </div>
-      <div class="dev-panel" id="devPanel">
-        <div class="row two">
-          <div>
-            <label for="backendMode">Backend mode</label>
-            <select id="backendMode">
-              <option value="auto">Auto</option>
-              <option value="appwrite">Appwrite</option>
-              <option value="local">Local API</option>
-            </select>
+  <!-- Main Container -->
+  <main>
+    <div class="hero">
+      <h1>Script Protection Engine</h1>
+      <p>Transform JavaScript and Luau with register-based bytecode virtualization, control-flow flattening, and anti-tamper runtime guards.</p>
+    </div>
+
+    <div class="layout-grid">
+      
+      <!-- Left Column: Source Input & Protection Options -->
+      <div class="column-stack">
+        
+        <!-- Input Card -->
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Source</h2>
+              <p class="card-desc">Provide script source code or drop local files</p>
+            </div>
           </div>
-          <div>
-            <label for="appwriteEndpoint">Appwrite endpoint</label>
-            <input id="appwriteEndpoint" type="text" placeholder="https://<region>.cloud.appwrite.io/v1" />
+          <div class="card-body">
+            
+            <div class="editor-box">
+              <div class="editor-header">
+                <div class="editor-actions">
+                  <button type="button" id="btnSampleJs" class="sm">JS Sample</button>
+                  <button type="button" id="btnSampleLuau" class="sm">Luau Sample</button>
+                  <button type="button" id="btnSampleJava" class="sm">Java Sample</button>
+                  <button type="button" id="btnPaste" class="sm">Paste</button>
+                  <button type="button" id="btnClearSource" class="sm">Clear</button>
+                </div>
+                <div>
+                  <span id="sourceStats" class="mono-pill">0 lines · 0 B</span>
+                </div>
+              </div>
+              <textarea id="source" placeholder="Paste source code here, or click a sample button above..."></textarea>
+            </div>
+
+            <!-- Drag & Drop Zone -->
+            <div id="dropZone" class="drop-box">
+              <div class="drop-main">Drop script file to import</div>
+              <div class="drop-sub">Accepts .js, .ts, .lua, .luau, .java, .cjs, .mjs</div>
+            </div>
+
+            <div style="margin-top: 14px;">
+              <input id="fileInput" type="file" accept=".js,.mjs,.cjs,.ts,.tsx,.jsx,.lua,.luau,.java" style="font-size: 12px; color: var(--text-muted);" />
+            </div>
+
+            <div class="row two" style="margin-top: 14px;">
+              <div>
+                <label for="inputName">Input Name</label>
+                <input id="inputName" type="text" value="input.js" />
+              </div>
+              <div>
+                <label for="outputName">Output Name</label>
+                <input id="outputName" type="text" value="output.obf.js" />
+              </div>
+            </div>
+
+            <!-- Dev Panel (Shift x 5) -->
+            <div class="dev-panel" id="devPanel">
+              <div class="row two">
+                <div>
+                  <label for="backendMode">Backend mode</label>
+                  <select id="backendMode">
+                    <option value="auto">Auto</option>
+                    <option value="appwrite">Appwrite</option>
+                    <option value="local">Local API</option>
+                  </select>
+                </div>
+                <div>
+                  <label for="appwriteEndpoint">Appwrite endpoint</label>
+                  <input id="appwriteEndpoint" type="text" placeholder="https://<region>.cloud.appwrite.io/v1" />
+                </div>
+              </div>
+              <div class="row two">
+                <div>
+                  <label for="appwriteProjectId">Appwrite project ID</label>
+                  <input id="appwriteProjectId" type="text" placeholder="Project ID" />
+                </div>
+                <div>
+                  <label for="appwriteFunctionId">Appwrite function ID</label>
+                  <input id="appwriteFunctionId" type="text" placeholder="Function ID" />
+                </div>
+              </div>
+              <div class="row">
+                <div>
+                  <label for="appwriteApiKey">Appwrite API key</label>
+                  <input id="appwriteApiKey" type="text" placeholder="Optional for public execute permission" />
+                </div>
+              </div>
+              <p style="font-size: 11px; color: var(--text-muted); margin: 0;">Developer backend panel. Press Shift 5 times to toggle.</p>
+            </div>
+
           </div>
-        </div>
-        <div class="row two">
-          <div>
-            <label for="appwriteProjectId">Appwrite project ID</label>
-            <input id="appwriteProjectId" type="text" placeholder="Project ID" />
-          </div>
-          <div>
-            <label for="appwriteFunctionId">Appwrite function ID</label>
-            <input id="appwriteFunctionId" type="text" placeholder="Function ID" />
-          </div>
-        </div>
-        <div class="row">
-          <div>
-            <label for="appwriteApiKey">Appwrite API key</label>
-            <input id="appwriteApiKey" type="text" placeholder="Optional for public execute permission" />
-          </div>
-        </div>
-        <p class="muted">Developer-only panel. Press <code>Shift</code> five times to toggle.</p>
-      </div>
         </section>
 
-        <section class="panel">
-      <h2>Options</h2>
-      <p class="panel-subtitle">Start with a preset, then open the language-specific sections only if you want finer control.</p>
-      <div class="row two">
-        <div>
-          <label for="preset">Preset</label>
-          <select id="preset">
-            <option value="high">High</option>
-            <option value="balanced">Balanced</option>
-            <option value="low">Low</option>
-            <option value="custom">Custom</option>
-          </select>
-        </div>
-        <div>
-          <label for="seed">Seed</label>
-          <input id="seed" type="text" value="js-obf" />
-        </div>
-      </div>
-      <div class="row two">
-        <div>
-          <label for="lang">Language</label>
-          <select id="lang">
-            <option value="js">JavaScript</option>
-            <option value="luau">Luau</option>
-          </select>
-        </div>
-        <div>
-          <label for="include">VM Include (comma)</label>
-          <input id="include" type="text" placeholder="fn1, fn2" />
-        </div>
-      </div>
-      <div class="divider"></div>
-      <div class="row two">
-        <div>
-          <label class="checkbox"><input id="optRename" type="checkbox" checked /> Rename identifiers</label>
-          <label class="checkbox"><input id="optStrings" type="checkbox" checked /> Encrypt strings</label>
-          <label class="checkbox"><input id="optCff" type="checkbox" checked /> Control-flow flattening</label>
-          <label class="checkbox"><input id="optDead" type="checkbox" checked /> Dead-code injection</label>
-          <label class="checkbox"><input id="optVm" type="checkbox" /> VM virtualization</label>
-        </div>
-        <div>
-          <label class="checkbox"><input id="optAntiHook" type="checkbox" /> Anti-hook guard</label>
-          <label class="checkbox"><input id="optAntiHookLock" type="checkbox" /> Lock built-ins (anti-hook)</label>
-          <label class="checkbox"><input id="optSourceMap" type="checkbox" /> Emit source map</label>
-          <label class="checkbox"><input id="optCompact" type="checkbox" /> Compact output (JS) / one line (Luau)</label>
-          <label class="checkbox"><input id="optTiming" type="checkbox" /> Print plugin timings</label>
-        </div>
-      </div>
-
-      <details id="groupJsOptions" class="lang-group" open>
-        <summary>JavaScript Options</summary>
-        <div class="lang-group-body row two">
-          <div>
-            <label for="ecma">ECMA Target</label>
-            <input id="ecma" type="number" min="5" max="2024" value="2020" />
-            <label class="checkbox"><input id="optMinify" type="checkbox" checked /> Minify output (Terser)</label>
-            <label class="checkbox"><input id="optBeautify" type="checkbox" /> Beautify output (requires minify)</label>
-            <label class="checkbox"><input id="optCffDownlevel" type="checkbox" /> CFF downlevel let/const</label>
+        <!-- Protection Pipeline Settings Card -->
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Configuration</h2>
+              <p class="card-desc">Configure obfuscation profiles, virtualization, and runtime guards</p>
+            </div>
           </div>
-          <div>
-            <label class="chip">String Options (JS)</label>
-            <label class="checkbox"><input id="optStringsObjectKeys" type="checkbox" checked /> Encode object keys</label>
-            <label class="checkbox"><input id="optStringsJsxAttrs" type="checkbox" checked /> Encode JSX attrs</label>
-            <label class="checkbox"><input id="optStringsTemplate" type="checkbox" checked /> Encode template chunks</label>
-          </div>
-        </div>
-      </details>
+          <div class="card-body">
+            
+            <!-- Preset Segmented Control -->
+            <div style="margin-bottom: 14px;">
+              <label>Preset</label>
+              <div class="segment-container">
+                <button type="button" class="segment-item active" data-preset="high">High</button>
+                <button type="button" class="segment-item" data-preset="balanced">Balanced</button>
+                <button type="button" class="segment-item" data-preset="low">Low</button>
+                <button type="button" class="segment-item" data-preset="custom">Custom</button>
+              </div>
+              <select id="preset" style="display: none;">
+                <option value="high" selected>High</option>
+                <option value="balanced">Balanced</option>
+                <option value="low">Low</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
 
-      <details id="groupLuauOptions" class="lang-group">
-        <summary>Luau Options</summary>
-        <div class="lang-group-body row two">
-          <div>
-            <label class="chip">String + CFF (Luau)</label>
-            <label class="checkbox"><input id="optStringsSplit" type="checkbox" /> Split long strings</label>
-            <label for="optLuauStyle">Luau style</label>
-            <select id="optLuauStyle">
-              <option value="default">default</option>
-            </select>
-            <label for="optStringsSplitMin">Split min length</label>
-            <input id="optStringsSplitMin" type="number" min="2" value="12" />
-            <label for="optStringsSplitMax">Split max parts</label>
-            <input id="optStringsSplitMax" type="number" min="2" max="6" value="3" />
-            <label for="optStringsSegmentSize">Segment size</label>
-            <input id="optStringsSegmentSize" type="number" min="1" value="120" />
-            <label class="checkbox"><input id="optStringsValueFallback" type="checkbox" checked /> Encode value-fallback literals</label>
-            <label for="optCffMode">CFF mode</label>
-            <select id="optCffMode">
-              <option value="classic">classic</option>
-              <option value="vm">vm</option>
-            </select>
-            <label class="checkbox"><input id="optCffOpaque" type="checkbox" checked /> Opaque predicates</label>
+            <!-- Target Language Control -->
+            <div style="margin-bottom: 14px;">
+              <label>Target Language</label>
+              <div class="segment-container">
+                <button type="button" class="segment-item active" data-lang="js">JavaScript</button>
+                <button type="button" class="segment-item" data-lang="luau">Luau</button>
+                <button type="button" class="segment-item" data-lang="java">Java (Source)</button>
+              </div>
+              <select id="lang" style="display: none;">
+                <option value="js" selected>JavaScript</option>
+                <option value="luau">Luau</option>
+                <option value="java">Java (source)</option>
+              </select>
+            </div>
 
-            <label class="chip">Rename + Extras (Luau)</label>
-            <label class="checkbox"><input id="optRenameGlobals" type="checkbox" /> Rename globals</label>
-            <label class="checkbox"><input id="optRenameMembers" type="checkbox" /> Rename members</label>
-            <label class="checkbox"><input id="optRenameHomoglyphs" type="checkbox" /> Homoglyph alphabet</label>
-            <label class="checkbox"><input id="optMaskGlobals" type="checkbox" checked /> Mask globals via _ENV</label>
-            <label class="checkbox"><input id="optWrap" type="checkbox" /> Wrap in function</label>
-            <label for="optWrapIterations">Wrap iterations</label>
-            <input id="optWrapIterations" type="number" min="1" max="6" value="1" />
-            <label class="checkbox"><input id="optProxifyLocals" type="checkbox" /> Proxify locals</label>
-            <label class="checkbox"><input id="optNumbers" type="checkbox" checked /> Numbers to expressions</label>
-            <label for="optNumbersThreshold">Numbers threshold (0-1)</label>
-            <input id="optNumbersThreshold" type="number" min="0" max="1" step="0.01" value="1" />
-            <label for="optNumbersInner">Numbers inner chance (0-1)</label>
-            <input id="optNumbersInner" type="number" min="0" max="1" step="0.01" value="0.2" />
-            <label for="optNumbersDepth">Numbers max depth</label>
-            <input id="optNumbersDepth" type="number" min="1" max="12" value="6" />
-            <label class="checkbox"><input id="optConstArray" type="checkbox" checked /> Constant array</label>
-            <label for="optConstArrayThreshold">Const-array threshold (0-1)</label>
-            <input id="optConstArrayThreshold" type="number" min="0" max="1" step="0.01" value="1" />
-            <label class="checkbox"><input id="optConstArrayStringsOnly" type="checkbox" /> Const-array strings only</label>
-            <label class="checkbox"><input id="optConstArrayShuffle" type="checkbox" checked /> Const-array shuffle</label>
-            <label class="checkbox"><input id="optConstArrayRotate" type="checkbox" checked /> Const-array rotate</label>
-            <label class="checkbox"><input id="optConstArrayWrapper" type="checkbox" checked /> Const-array wrapper</label>
-            <label for="optConstArrayEncoding">Const-array encoding</label>
-            <select id="optConstArrayEncoding">
-              <option value="base64">base64</option>
-              <option value="none">none</option>
-            </select>
-            <label class="checkbox"><input id="optPadFooter" type="checkbox" checked /> Pad footer noise</label>
-            <label for="optPadFooterBlocks">Pad footer blocks</label>
-            <input id="optPadFooterBlocks" type="number" min="1" max="8" value="2" />
-          </div>
+            <div class="row two" style="margin-top: 10px;">
+              <div>
+                <label for="seed">Entropy Seed</label>
+                <input id="seed" type="text" value="js-obf" />
+              </div>
+              <div data-lang="js luau">
+                <label for="include">Virtualize Functions</label>
+                <input id="include" type="text" placeholder="verifyKey, processPayment" />
+              </div>
+            </div>
 
-          <div>
-            <label class="chip">VM (Luau)</label>
-            <label for="optVmMode">VM mode</label>
-            <select id="optVmMode">
-              <option value="compact">compact</option>
-              <option value="balanced">balanced</option>
-              <option value="max">max</option>
-            </select>
-            <label for="optVmOpcodeEncoding">Opcode encoding</label>
-            <select id="optVmOpcodeEncoding">
-              <option value="mask">mask</option>
-              <option value="pairs">pairs</option>
-            </select>
-            <label class="checkbox"><input id="optVmOpcode" type="checkbox" checked /> Opcode shuffle</label>
-            <label class="checkbox"><input id="optVmBytecode" type="checkbox" checked /> Bytecode decrypt</label>
-            <label class="checkbox"><input id="optVmConsts" type="checkbox" checked /> Consts decrypt</label>
-            <label class="checkbox"><input id="optVmConstsSplit" type="checkbox" checked /> Consts split</label>
-            <label for="optVmConstsSplitSize">Consts split size</label>
-            <input id="optVmConstsSplitSize" type="number" min="4" max="200" value="24" />
-            <label for="optVmConstsEncoding">Consts encoding</label>
-            <select id="optVmConstsEncoding">
-              <option value="table">table</option>
-              <option value="string">string</option>
-            </select>
-            <label class="checkbox"><input id="optVmRuntimeKey" type="checkbox" checked /> Runtime key</label>
-            <label class="checkbox"><input id="optVmRuntimeSplit" type="checkbox" checked /> Runtime split</label>
-            <label class="checkbox"><input id="optVmTopLevel" type="checkbox" /> Top-level VM</label>
-            <label class="checkbox"><input id="optVmBlockDispatch" type="checkbox" checked /> Block dispatch</label>
-            <label class="checkbox"><input id="optVmDownlevel" type="checkbox" /> Downlevel let/const</label>
-            <label class="checkbox"><input id="optVmDecoyRuntime" type="checkbox" /> Decoy runtime</label>
-            <label class="checkbox"><input id="optVmSymbolNoise" type="checkbox" checked /> Symbol-noise bait</label>
-            <label class="checkbox"><input id="optVmInstructionFusion" type="checkbox" checked /> Instruction fusion</label>
-            <label class="checkbox"><input id="optVmSemanticMisdirection" type="checkbox" checked /> Semantic misdirection</label>
-            <label class="checkbox"><input id="optVmDynamicCoupling" type="checkbox" checked /> Dynamic coupling</label>
-            <label class="checkbox"><input id="optVmIsaPolymorph" type="checkbox" /> ISA polymorph</label>
-            <label class="checkbox"><input id="optVmFakeEdges" type="checkbox" /> Fake dispatch edges</label>
-            <label class="checkbox"><input id="optVmDebug" type="checkbox" /> VM debug logs</label>
-            <label for="optVmLayers">VM layers</label>
-            <input id="optVmLayers" type="number" min="1" max="3" value="1" />
-            <label for="optVmFake">Fake opcode ratio (0-1)</label>
-            <input id="optVmFake" type="number" min="0" max="1" step="0.01" value="0.15" />
-            <label for="optVmDecoyProbability">Decoy probability (0-1)</label>
-            <input id="optVmDecoyProbability" type="number" min="0" max="1" step="0.01" value="0.85" />
-            <label for="optVmDecoyStrings">Decoy string count</label>
-            <input id="optVmDecoyStrings" type="number" min="4" max="96" value="12" />
-            <label for="optVmDispatchGraph">Dispatch graph</label>
-            <select id="optVmDispatchGraph">
-              <option value="auto">auto</option>
-              <option value="tree">tree</option>
-              <option value="sparse">sparse</option>
-            </select>
-            <label for="optVmShellStyle">Shell style</label>
-            <select id="optVmShellStyle">
-              <option value="default">default</option>
-              <option value="packed">packed</option>
-            </select>
-            <label for="optVmStackProtocol">Stack protocol</label>
-            <select id="optVmStackProtocol">
-              <option value="auto">auto</option>
-              <option value="direct">direct</option>
-              <option value="api">api</option>
-            </select>
-            <label for="optVmNumericStyle">Numeric style</label>
-            <select id="optVmNumericStyle">
-              <option value="mixed">mixed</option>
-              <option value="chaos">chaos</option>
-              <option value="plain">plain</option>
-            </select>
+            <div class="divider"></div>
+
+            <!-- Core Protection Modules -->
+            <label style="margin-bottom: 8px;">Core Pipeline</label>
+            <div class="row two">
+              <div class="switch-grid">
+                <label class="switch-card">
+                  <span class="switch-title">Rename identifiers</span>
+                  <input id="optRename" type="checkbox" checked class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card">
+                  <span class="switch-title">Encrypt strings</span>
+                  <input id="optStrings" type="checkbox" checked class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card">
+                  <span class="switch-title">Control-flow flattening</span>
+                  <input id="optCff" type="checkbox" checked class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card">
+                  <span class="switch-title">Dead-code injection</span>
+                  <input id="optDead" type="checkbox" checked class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card" data-lang="js luau">
+                  <span class="switch-title">VM Virtualization</span>
+                  <input id="optVm" type="checkbox" class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+              </div>
+
+              <div class="switch-grid">
+                <label class="switch-card" data-lang="js">
+                  <span class="switch-title">Anti-hook guard</span>
+                  <input id="optAntiHook" type="checkbox" class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card" data-lang="js">
+                  <span class="switch-title">Lock built-ins</span>
+                  <input id="optAntiHookLock" type="checkbox" class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card" data-lang="js">
+                  <span class="switch-title">Emit source map</span>
+                  <input id="optSourceMap" type="checkbox" class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card">
+                  <span class="switch-title">Compact output</span>
+                  <input id="optCompact" type="checkbox" class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+                <label class="switch-card">
+                  <span class="switch-title">Plugin timings</span>
+                  <input id="optTiming" type="checkbox" class="sr-only" />
+                  <div class="switch-track"></div>
+                </label>
+              </div>
+            </div>
+
+            <!-- JavaScript Specific Settings -->
+            <!-- Java Specific Security Settings -->
+            <details id="groupJavaOptions" class="accordion-card" data-lang="java" open>
+              <summary>
+                <span>Java Protection Engine</span>
+                <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </summary>
+              <div class="accordion-body">
+                <div class="switch-grid">
+                  <label class="switch-card">
+                    <span class="switch-title">MBA Number Obfuscation</span>
+                    <input id="optJavaNumbers" type="checkbox" checked class="sr-only" />
+                    <div class="switch-track"></div>
+                  </label>
+                  <label class="switch-card">
+                    <span class="switch-title">Runtime Anti-Debug Guard</span>
+                    <input id="optJavaAntiDebug" type="checkbox" checked class="sr-only" />
+                    <div class="switch-track"></div>
+                  </label>
+                  <label class="switch-card">
+                    <span class="switch-title">Control-Flow Opaque Traps</span>
+                    <input id="optJavaCff" type="checkbox" checked class="sr-only" />
+                    <div class="switch-track"></div>
+                  </label>
+                  <label class="switch-card">
+                    <span class="switch-title">Dead Code Injection</span>
+                    <input id="optJavaDead" type="checkbox" checked class="sr-only" />
+                    <div class="switch-track"></div>
+                  </label>
+                  <label class="switch-card">
+                    <span class="switch-title">Proxy Wrap & Split</span>
+                    <input id="optJavaWrap" type="checkbox" checked class="sr-only" />
+                    <div class="switch-track"></div>
+                  </label>
+                  <label class="switch-card">
+                    <span class="switch-title">Rename Private Members</span>
+                    <input id="optJavaRenameMembers" type="checkbox" checked class="sr-only" />
+                    <div class="switch-track"></div>
+                  </label>
+                </div>
+                <div class="row two" style="margin-top: 14px;">
+                  <div>
+                    <label for="optJavaIdStyle">Identifier Style</label>
+                    <select id="optJavaIdStyle">
+                      <option value="hex" selected>Hex (_0x...)</option>
+                      <option value="confusable">Confusable (_Il1l...)</option>
+                      <option value="short">Short (_a...)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="optJavaRelease">Target Java Release</label>
+                    <input id="optJavaRelease" type="text" placeholder="17" value="17" />
+                  </div>
+                </div>
+                <div class="row" style="margin-top: 10px;">
+                  <label for="optJavaClasspath">Compilation Classpath</label>
+                  <input id="optJavaClasspath" type="text" placeholder="Optional external JARs or class directory" />
+                </div>
+              </div>
+            </details>
+
+            <details id="groupJsOptions" class="accordion-card" data-lang="js" open>
+              <summary>
+                <span>JavaScript Settings</span>
+                <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </summary>
+              <div class="accordion-body row two">
+                <div>
+                  <label for="ecma">ECMA Target</label>
+                  <input id="ecma" type="number" min="5" max="2024" value="2020" />
+                  <div class="switch-grid" style="margin-top: 10px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Minify (Terser)</span>
+                      <input id="optMinify" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Beautify output</span>
+                      <input id="optBeautify" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">CFF downlevel let/const</span>
+                      <input id="optCffDownlevel" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <span class="subheading">String Options</span>
+                  <div class="switch-grid">
+                    <label class="switch-card">
+                      <span class="switch-title">Encode object keys</span>
+                      <input id="optStringsObjectKeys" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Encode JSX attrs</span>
+                      <input id="optStringsJsxAttrs" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Encode template chunks</span>
+                      <input id="optStringsTemplate" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <!-- Luau Specific Settings -->
+            <details id="groupLuauOptions" class="accordion-card" data-lang="luau">
+              <summary>
+                <span>Luau & RC VM Settings</span>
+                <svg class="arrow-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </summary>
+              <div class="accordion-body row two">
+                <div>
+                  <span class="subheading">Strings & Control Flow</span>
+                  <div class="switch-grid">
+                    <label class="switch-card">
+                      <span class="switch-title">Split long strings</span>
+                      <input id="optStringsSplit" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                  <div style="margin-top: 8px;">
+                    <label for="optLuauStyle">Luau style</label>
+                    <select id="optLuauStyle">
+                      <option value="default">default</option>
+                    </select>
+                  </div>
+                  <div class="row two" style="margin-top: 8px;">
+                    <div>
+                      <label for="optStringsSplitMin">Split min len</label>
+                      <input id="optStringsSplitMin" type="number" min="2" value="12" />
+                    </div>
+                    <div>
+                      <label for="optStringsSplitMax">Split max parts</label>
+                      <input id="optStringsSplitMax" type="number" min="2" max="6" value="3" />
+                    </div>
+                  </div>
+                  <div style="margin-top: 8px;">
+                    <label for="optStringsSegmentSize">Segment size</label>
+                    <input id="optStringsSegmentSize" type="number" min="1" value="120" />
+                  </div>
+                  <div class="switch-grid" style="margin-top: 8px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Encode value fallback</span>
+                      <input id="optStringsValueFallback" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                  <div style="margin-top: 10px;">
+                    <label for="optCffMode">CFF mode</label>
+                    <select id="optCffMode">
+                      <option value="classic">classic</option>
+                      <option value="vm">vm</option>
+                    </select>
+                  </div>
+                  <div class="switch-grid" style="margin-top: 8px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Opaque predicates</span>
+                      <input id="optCffOpaque" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+
+                  <span class="subheading" style="margin-top: 16px;">Advanced Protections</span>
+                  <div class="switch-grid">
+                    <label class="switch-card">
+                      <span class="switch-title">Rename globals</span>
+                      <input id="optRenameGlobals" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Rename members</span>
+                      <input id="optRenameMembers" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Homoglyph alphabet</span>
+                      <input id="optRenameHomoglyphs" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Mask globals via _ENV</span>
+                      <input id="optMaskGlobals" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Wrap in function</span>
+                      <input id="optWrap" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                  <div style="margin-top: 8px;">
+                    <label for="optWrapIterations">Wrap iterations</label>
+                    <input id="optWrapIterations" type="number" min="1" max="6" value="1" />
+                  </div>
+                  <div class="switch-grid" style="margin-top: 8px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Proxify locals</span>
+                      <input id="optProxifyLocals" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Numbers to expressions</span>
+                      <input id="optNumbers" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                  <div class="row two" style="margin-top: 8px;">
+                    <div>
+                      <label for="optNumbersThreshold">Numbers chance</label>
+                      <input id="optNumbersThreshold" type="number" min="0" max="1" step="0.01" value="1" />
+                    </div>
+                    <div>
+                      <label for="optNumbersInner">Inner chance</label>
+                      <input id="optNumbersInner" type="number" min="0" max="1" step="0.01" value="0.2" />
+                    </div>
+                  </div>
+                  <div style="margin-top: 8px;">
+                    <label for="optNumbersDepth">Max depth</label>
+                    <input id="optNumbersDepth" type="number" min="1" max="12" value="6" />
+                  </div>
+                  <div class="switch-grid" style="margin-top: 8px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Constant array</span>
+                      <input id="optConstArray" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Strings only</span>
+                      <input id="optConstArrayStringsOnly" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Shuffle</span>
+                      <input id="optConstArrayShuffle" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Rotate</span>
+                      <input id="optConstArrayRotate" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Wrapper function</span>
+                      <input id="optConstArrayWrapper" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                  <div class="row two" style="margin-top: 8px;">
+                    <div>
+                      <label for="optConstArrayThreshold">Array threshold</label>
+                      <input id="optConstArrayThreshold" type="number" min="0" max="1" step="0.01" value="1" />
+                    </div>
+                    <div>
+                      <label for="optConstArrayEncoding">Encoding</label>
+                      <select id="optConstArrayEncoding">
+                        <option value="base64">base64</option>
+                        <option value="none">none</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="switch-grid" style="margin-top: 8px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Pad footer noise</span>
+                      <input id="optPadFooter" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+                  <div style="margin-top: 8px;">
+                    <label for="optPadFooterBlocks">Noise blocks</label>
+                    <input id="optPadFooterBlocks" type="number" min="1" max="8" value="2" />
+                  </div>
+                </div>
+
+                <div>
+                  <span class="subheading">Virtual Machine Engine</span>
+                  <div class="row two">
+                    <div>
+                      <label for="optVmMode">VM Mode</label>
+                      <select id="optVmMode">
+                        <option value="compact">compact</option>
+                        <option value="balanced">balanced</option>
+                        <option value="max">max</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label for="optVmOpcodeEncoding">Encoding</label>
+                      <select id="optVmOpcodeEncoding">
+                        <option value="mask">mask</option>
+                        <option value="pairs">pairs</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="switch-grid" style="margin-top: 10px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Opcode shuffle</span>
+                      <input id="optVmOpcode" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Bytecode decrypt</span>
+                      <input id="optVmBytecode" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Consts decrypt</span>
+                      <input id="optVmConsts" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Consts split</span>
+                      <input id="optVmConstsSplit" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+
+                  <div class="row two" style="margin-top: 8px;">
+                    <div>
+                      <label for="optVmConstsSplitSize">Split size</label>
+                      <input id="optVmConstsSplitSize" type="number" min="4" max="200" value="24" />
+                    </div>
+                    <div>
+                      <label for="optVmConstsEncoding">Consts encoding</label>
+                      <select id="optVmConstsEncoding">
+                        <option value="table">table</option>
+                        <option value="string">string</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="switch-grid" style="margin-top: 10px;">
+                    <label class="switch-card">
+                      <span class="switch-title">Runtime key</span>
+                      <input id="optVmRuntimeKey" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Runtime split</span>
+                      <input id="optVmRuntimeSplit" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Top-level VM</span>
+                      <input id="optVmTopLevel" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Block dispatch</span>
+                      <input id="optVmBlockDispatch" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Downlevel let/const</span>
+                      <input id="optVmDownlevel" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Decoy runtime</span>
+                      <input id="optVmDecoyRuntime" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Symbol noise bait</span>
+                      <input id="optVmSymbolNoise" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Instruction fusion</span>
+                      <input id="optVmInstructionFusion" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Semantic misdirection</span>
+                      <input id="optVmSemanticMisdirection" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Dynamic coupling</span>
+                      <input id="optVmDynamicCoupling" type="checkbox" checked class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">ISA polymorph</span>
+                      <input id="optVmIsaPolymorph" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">Fake dispatch edges</span>
+                      <input id="optVmFakeEdges" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                    <label class="switch-card">
+                      <span class="switch-title">VM debug logs</span>
+                      <input id="optVmDebug" type="checkbox" class="sr-only" />
+                      <div class="switch-track"></div>
+                    </label>
+                  </div>
+
+                  <div class="row two" style="margin-top: 10px;">
+                    <div>
+                      <label for="optVmLayers">VM layers</label>
+                      <input id="optVmLayers" type="number" min="1" max="3" value="1" />
+                    </div>
+                    <div>
+                      <label for="optVmFake">Fake opcode ratio</label>
+                      <input id="optVmFake" type="number" min="0" max="1" step="0.01" value="0.15" />
+                    </div>
+                  </div>
+
+                  <div class="row two" style="margin-top: 8px;">
+                    <div>
+                      <label for="optVmDecoyProbability">Decoy probability</label>
+                      <input id="optVmDecoyProbability" type="number" min="0" max="1" step="0.01" value="0.85" />
+                    </div>
+                    <div>
+                      <label for="optVmDecoyStrings">Decoy string count</label>
+                      <input id="optVmDecoyStrings" type="number" min="4" max="96" value="12" />
+                    </div>
+                  </div>
+
+                  <div class="row two" style="margin-top: 8px;">
+                    <div>
+                      <label for="optVmDispatchGraph">Dispatch graph</label>
+                      <select id="optVmDispatchGraph">
+                        <option value="auto">auto</option>
+                        <option value="tree">tree</option>
+                        <option value="sparse">sparse</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label for="optVmShellStyle">Shell style</label>
+                      <select id="optVmShellStyle">
+                        <option value="default">default</option>
+                        <option value="packed">packed</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="row two" style="margin-top: 8px;">
+                    <div>
+                      <label for="optVmStackProtocol">Stack protocol</label>
+                      <select id="optVmStackProtocol">
+                        <option value="auto">auto</option>
+                        <option value="direct">direct</option>
+                        <option value="api">api</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label for="optVmNumericStyle">Numeric style</label>
+                      <select id="optVmNumericStyle">
+                        <option value="mixed">mixed</option>
+                        <option value="chaos">chaos</option>
+                        <option value="plain">plain</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+
           </div>
-        </div>
-      </details>
         </section>
+
       </div>
 
-      <div class="stack">
-        <section class="panel">
-      <h2>Output</h2>
-      <p class="panel-subtitle">Your protected output appears here. You can still download or copy it from the page, and the central overlay will surface the same actions after each run.</p>
-      <div class="row">
-        <label for="output">Obfuscated code</label>
-        <textarea id="output" placeholder="Output appears here" readonly></textarea>
-      </div>
-      <div class="actions" style="margin-top: 12px;">
-        <button id="runBtn" class="primary">Obfuscate</button>
-        <button id="downloadBtn" class="secondary" disabled>Download Result</button>
-        <button id="downloadMapBtn" class="ghost" disabled>Download Source Map</button>
-        <button id="copyBtn" class="ghost">Copy Output</button>
-        <button id="clearBtn" class="ghost">Clear</button>
-      </div>
-      <div class="status-shell">
-        <p class="muted" id="status">Idle.</p>
-        <span class="status-pill">Ready to protect</span>
-      </div>
+      <!-- Right Column: Output & Build Logs -->
+      <div class="column-stack">
+        
+        <!-- Output Card -->
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Output</h2>
+              <p class="card-desc">Protected production-ready code</p>
+            </div>
+            <span id="outputStats" class="mono-pill">Ready · 0 B</span>
+          </div>
+          <div class="card-body">
+            
+            <div class="editor-box">
+              <textarea id="output" placeholder="Output script will appear here..." readonly></textarea>
+            </div>
+
+            <div class="actions-row">
+              <button id="runBtn" class="primary" type="button">Run Obfuscation</button>
+              <button id="downloadBtn" type="button" disabled>Download</button>
+              <button id="copyBtn" type="button">Copy Code</button>
+              <button id="downloadMapBtn" type="button" disabled>Source Map</button>
+              <button id="clearBtn" type="button">Clear</button>
+            </div>
+
+            <div class="status-bar">
+              <span id="status">Ready.</span>
+              <span style="display: flex; align-items: center; gap: 6px;">
+                <span class="indicator-dot"></span>
+                <span>Active</span>
+              </span>
+            </div>
+
+          </div>
         </section>
 
-        <section class="panel">
-      <h2>Startup Log</h2>
-      <p class="panel-subtitle">Backend and obfuscation events are still available here when you need them, but they no longer dominate the experience.</p>
-      <pre id="log"></pre>
+        <!-- Build Log Console -->
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">Build Log</h2>
+              <p class="card-desc">Transformation and pipeline events</p>
+            </div>
+            <button type="button" id="btnClearLog" class="sm">Clear</button>
+          </div>
+          <div class="card-body" style="padding: 0;">
+            <div class="console-pane" style="border: none; border-radius: 0;">
+              <div id="log" class="log-view" role="log" aria-live="polite"></div>
+            </div>
+          </div>
         </section>
+
       </div>
+
     </div>
   </main>
 
+  <!-- Modal Overlay Dialog -->
   <div id="overlay" class="overlay" aria-hidden="true">
     <div class="overlay-card" role="dialog" aria-modal="true" aria-labelledby="overlayTitle" aria-describedby="overlayText">
-      <div class="overlay-badge">
-        <div class="spinner" aria-hidden="true"></div>
-        <div class="overlay-check" id="overlayCheck" aria-hidden="true">✓</div>
+      <div class="spinner"></div>
+      <div class="overlay-check" id="overlayCheck" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
       </div>
-      <h2 class="overlay-title" id="overlayTitle">Protecting your script...</h2>
-      <p class="overlay-text" id="overlayText">Please wait while we process your source and prepare the protected output.</p>
+      <h2 class="overlay-title" id="overlayTitle">Processing script...</h2>
+      <p class="overlay-text" id="overlayText">Running bytecode transformation pipeline.</p>
       <div class="overlay-actions">
-        <button id="overlayDownloadBtn" type="button" class="primary" disabled>Download Result</button>
-        <button id="overlayCopyBtn" type="button" class="secondary" disabled>Copy Output</button>
-        <button id="overlayDismissBtn" type="button" class="ghost">Close</button>
+        <button id="overlayDownloadBtn" type="button" class="primary" disabled>Download</button>
+        <button id="overlayCopyBtn" type="button" disabled>Copy Code</button>
+        <button id="overlayDismissBtn" type="button">Close</button>
       </div>
-      <div class="overlay-meta" id="overlayMeta">You can keep this open and grab the result as soon as processing finishes.</div>
+      <div class="overlay-meta" id="overlayMeta">Output will automatically populate in editor.</div>
     </div>
   </div>
+
+  <!-- Floating Toast Notifications -->
+  <div id="toastContainer" class="toast-container" aria-live="polite"></div>
 
   <script>
     const logEl = document.getElementById("log");
@@ -978,6 +1672,7 @@
     const appwriteFunctionIdEl = document.getElementById("appwriteFunctionId");
     const appwriteApiKeyEl = document.getElementById("appwriteApiKey");
     const themeToggle = document.getElementById("themeToggle");
+    const themeToggleText = document.getElementById("themeToggleText");
     const overlayEl = document.getElementById("overlay");
     const overlayTitleEl = document.getElementById("overlayTitle");
     const overlayTextEl = document.getElementById("overlayText");
@@ -1074,6 +1769,18 @@
     const groupJsOptions = document.getElementById("groupJsOptions");
     const groupLuauOptions = document.getElementById("groupLuauOptions");
 
+    const sourceStats = document.getElementById("sourceStats");
+    const outputStats = document.getElementById("outputStats");
+    const btnSampleJs = document.getElementById("btnSampleJs");
+    const btnSampleLuau = document.getElementById("btnSampleLuau");
+    const btnPaste = document.getElementById("btnPaste");
+    const btnClearSource = document.getElementById("btnClearSource");
+    const btnClearLog = document.getElementById("btnClearLog");
+    const toastContainer = document.getElementById("toastContainer");
+
+    const presetPills = document.querySelectorAll(".segment-item[data-preset]");
+    const langPills = document.querySelectorAll(".segment-item[data-lang]");
+
     let lastResult = null;
     let shiftTapCount = 0;
     let shiftTapTimer = null;
@@ -1081,13 +1788,52 @@
     const DEV_STORAGE_KEY = "js-obf-dev-config";
     const THEME_STORAGE_KEY = "js-obf-theme";
 
+    // ── Toast Notifications ─────────────────────────────────────
+    function showToast(message) {
+      const toast = document.createElement("div");
+      toast.className = "toast";
+      toast.textContent = message;
+      toastContainer.appendChild(toast);
+      setTimeout(() => {
+        toast.classList.add("fade-out");
+        setTimeout(() => toast.remove(), 200);
+      }, 2200);
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return "0 B";
+      if (bytes < 1024) return `${bytes} B`;
+      return `${(bytes / 1024).toFixed(1)} KB`;
+    }
+
+    function updateStats() {
+      const src = sourceEl.value || "";
+      const srcLines = src ? src.split(/\r?\n/).length : 0;
+      const srcBytes = new Blob([src]).size;
+      sourceStats.textContent = `${srcLines} lines · ${formatBytes(srcBytes)}`;
+
+      const out = outputEl.value || "";
+      if (!out) {
+        outputStats.textContent = "Ready · 0 B";
+      } else {
+        const outLines = out.split(/\r?\n/).length;
+        const outBytes = new Blob([out]).size;
+        let ratioText = "";
+        if (srcBytes > 0) {
+          const ratio = Math.round((outBytes / srcBytes) * 100);
+          ratioText = ` (${ratio}%)`;
+        }
+        outputStats.textContent = `${outLines} lines · ${formatBytes(outBytes)}${ratioText}`;
+      }
+    }
+
     function loadDevConfig() {
       try {
         const raw = localStorage.getItem(DEV_STORAGE_KEY);
         if (!raw) {
           return {
             panelEnabled: false,
-            backendMode: "auto",
+            backendMode: "local",
             endpoint: "",
             projectId: "",
             functionId: "",
@@ -1097,7 +1843,7 @@
         const parsed = JSON.parse(raw);
         return {
           panelEnabled: Boolean(parsed.panelEnabled),
-          backendMode: parsed.backendMode || "auto",
+          backendMode: parsed.backendMode || "local",
           endpoint: parsed.endpoint || "",
           projectId: parsed.projectId || "",
           functionId: parsed.functionId || "",
@@ -1106,7 +1852,7 @@
       } catch {
         return {
           panelEnabled: false,
-          backendMode: "auto",
+          backendMode: "local",
           endpoint: "",
           projectId: "",
           functionId: "",
@@ -1142,12 +1888,15 @@
       devPanel.classList.toggle("enabled", enabled);
       saveDevConfig();
       log(enabled ? "Developer backend panel enabled." : "Developer backend panel hidden.");
+      showToast(enabled ? "Developer panel enabled" : "Developer panel hidden");
     }
 
     function applyTheme(theme) {
       const activeTheme = theme === "light" ? "light" : "dark";
       document.body.dataset.theme = activeTheme;
-      themeToggle.textContent = activeTheme === "dark" ? "Switch to Light" : "Switch to Dark";
+      if (themeToggleText) {
+        themeToggleText.textContent = activeTheme === "dark" ? "Light" : "Dark";
+      }
       localStorage.setItem(THEME_STORAGE_KEY, activeTheme);
     }
 
@@ -1162,13 +1911,11 @@
     function openOverlay() {
       overlayEl.classList.add("open");
       overlayEl.setAttribute("aria-hidden", "false");
-      document.body.classList.add("overlay-active");
     }
 
     function closeOverlay() {
       overlayEl.classList.remove("open", "success", "error");
       overlayEl.setAttribute("aria-hidden", "true");
-      document.body.classList.remove("overlay-active");
     }
 
     function setOverlayState(state, details = {}) {
@@ -1182,32 +1929,32 @@
 
       overlayTitleEl.textContent = details.title || (
         safeState === "success"
-          ? "Your protected build is ready."
+          ? "Protection Complete"
           : safeState === "error"
-            ? "We couldn't finish this run."
-            : "Protecting your script..."
+            ? "Process Failed"
+            : "Processing Script..."
       );
 
       overlayTextEl.textContent = details.text || (
         safeState === "success"
-          ? "You can download the result immediately or copy it to your clipboard."
+          ? "The source has been armored and virtualized successfully."
           : safeState === "error"
-            ? "Review the status log, adjust options if needed, and try again."
-            : "Please wait while we process your source and prepare the protected output."
+            ? "Please review execution logs for syntax or runtime diagnostics."
+            : "Compiling AST, encrypting strings, and generating bytecode..."
       );
 
       overlayMetaEl.textContent = details.meta || (
         safeState === "success"
-          ? "The same output is also available in the result panel below."
+          ? "The output is now available in the editor panel."
           : safeState === "error"
-            ? "The workspace stays intact so you can retry without losing your input."
-            : "This dialog will switch to success actions as soon as the run completes."
+            ? "Input preserved. You may adjust options and retry."
+            : "Processing in progress..."
       );
 
       const hasCode = Boolean(lastResult && lastResult.code);
       overlayDownloadBtn.disabled = !hasCode;
       overlayCopyBtn.disabled = !hasCode;
-      overlayDismissBtn.textContent = safeState === "processing" ? "Keep Waiting" : "Close";
+      overlayDismissBtn.textContent = safeState === "processing" ? "Wait" : "Close";
     }
 
     const presetDefaults = {
@@ -1250,8 +1997,66 @@
       return new Date().toLocaleTimeString();
     }
 
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function renderInlineMarkdown(value) {
+      return escapeHtml(value).replace(/`([^`]+)`/g, "<code>$1</code>");
+    }
+
+    function isCodeFrameLine(line) {
+      return /^\s*(?:&gt;|>)?\s*\d+\s+\|/.test(line)
+        || /^\s*\|/.test(line)
+        || /^\s*\|?\s*\^/.test(line);
+    }
+
+    function renderLogMarkdown(message) {
+      const lines = String(message || "").split(/\r?\n/);
+      const html = [];
+      let codeLines = [];
+      const flushCode = () => {
+        if (!codeLines.length) {
+          return;
+        }
+        html.push(`<pre class="log-code-frame">${escapeHtml(codeLines.join("\n"))}</pre>`);
+        codeLines = [];
+      };
+
+      lines.forEach((line) => {
+        if (isCodeFrameLine(line)) {
+          codeLines.push(line);
+          return;
+        }
+        flushCode();
+        if (!line.trim()) {
+          return;
+        }
+        const labelMatch = /^([A-Za-z ][A-Za-z ]*):\s*(.*)$/.exec(line);
+        if (labelMatch) {
+          html.push(`<p><strong>${escapeHtml(labelMatch[1])}:</strong> ${renderInlineMarkdown(labelMatch[2])}</p>`);
+          return;
+        }
+        const stepMatch = /^(\d+)\.\s+(.*)$/.exec(line);
+        if (stepMatch) {
+          html.push(`<p><strong>${stepMatch[1]}.</strong> ${renderInlineMarkdown(stepMatch[2])}</p>`);
+          return;
+        }
+        html.push(`<p>${renderInlineMarkdown(line)}</p>`);
+      });
+      flushCode();
+      return html.join("");
+    }
+
     function log(message) {
-      logEl.textContent += `[${now()}] ${message}\n`;
+      const entry = document.createElement("div");
+      entry.className = "log-entry";
+      entry.innerHTML = `<div class="log-time">[${escapeHtml(now())}]</div><div class="log-md">${renderLogMarkdown(message)}</div>`;
+      logEl.appendChild(entry);
       logEl.scrollTop = logEl.scrollHeight;
     }
 
@@ -1260,10 +2065,49 @@
       if (lower.endsWith(".lua") || lower.endsWith(".luau")) {
         return "luau";
       }
+      if (lower.endsWith(".java")) {
+        return "java";
+      }
       return "js";
     }
 
+    function looksLikeLuauSource(source) {
+      const text = String(source || "");
+      if (!text.trim()) {
+        return false;
+      }
+      return /^\s*local\s+(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*/m.test(text)
+        || /\bgame\s*:\s*GetService\s*\(/.test(text)
+        || /[A-Za-z_][A-Za-z0-9_.)\]]*\s*:\s*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(text)
+        || /^\s*--[^\n\r]*/m.test(text)
+        || /^\s*end\s*$/m.test(text);
+    }
+
+    function updateLanguageUI(lang) {
+      langEl.value = lang;
+      langPills.forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.lang === lang);
+      });
+      updateOutputNameFromLang();
+      updateOptionStates();
+    }
+
+    function applySourceLanguageHint(source, shouldLog = false) {
+      if (!looksLikeLuauSource(source) || langEl.value === "luau") {
+        return false;
+      }
+      updateLanguageUI("luau");
+      if (shouldLog) {
+        log("Syntax matched Luau format; switched target to Luau.");
+        showToast("Switched language to Luau");
+      }
+      return true;
+    }
+
     function buildOutputName(fileName, lang) {
+      if (lang === "java") {
+        return fileName;
+      }
       const base = fileName.replace(/\.[^.]+$/, "");
       if (lang === "luau") {
         const ext = fileName.endsWith(".luau") ? ".luau" : ".lua";
@@ -1355,6 +2199,11 @@
     }
 
     function applyPreset(name) {
+      presetEl.value = name;
+      presetPills.forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.preset === name);
+      });
+
       const defaults = presetDefaults[name];
       if (!defaults) {
         return;
@@ -1403,6 +2252,15 @@
     }
 
     function updateOptionStates() {
+      const currentLang = langEl.value;
+      document.querySelectorAll("[data-lang]").forEach((el) => {
+        const allowed = (el.getAttribute("data-lang") || "").split(" ");
+        if (allowed.includes(currentLang)) {
+          el.style.display = "";
+        } else {
+          el.style.display = "none";
+        }
+      });
       const stringsEnabled = optStrings.checked;
       [
         optStringsObjectKeys,
@@ -1460,6 +2318,8 @@
 
       const isLuau = langEl.value === "luau";
       if (groupJsOptions && groupLuauOptions) {
+        groupJsOptions.style.display = isLuau ? "none" : "";
+        groupLuauOptions.style.display = isLuau ? "" : "none";
         groupJsOptions.open = !isLuau;
         groupLuauOptions.open = isLuau;
       }
@@ -1545,19 +2405,21 @@
     function markCustomPreset() {
       if (presetEl.value !== "custom") {
         presetEl.value = "custom";
+        presetPills.forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.preset === "custom");
+        });
       }
     }
 
     function updateNamesFromFile(fileName) {
       inputNameEl.value = fileName;
       const lang = getLangFromFilename(fileName);
-      langEl.value = lang;
+      updateLanguageUI(lang);
       outputNameEl.value = buildOutputName(fileName, lang);
-      updateOptionStates();
     }
 
     function updateOutputNameFromLang() {
-      const fileName = inputNameEl.value.trim() || (langEl.value === "luau" ? "input.lua" : "input.js");
+      const fileName = inputNameEl.value.trim() || (langEl.value === "luau" ? "input.lua" : (langEl.value === "java" ? "Hello.java" : "input.js"));
       outputNameEl.value = buildOutputName(fileName, langEl.value);
     }
 
@@ -1566,15 +2428,24 @@
       reader.onload = () => {
         sourceEl.value = reader.result || "";
         updateNamesFromFile(file.name);
-        log(`Loaded file: ${file.name}`);
+        applySourceLanguageHint(sourceEl.value, true);
+        updateStats();
+        log(`Loaded: ${file.name}`);
+        showToast(`Loaded ${file.name}`);
       };
       reader.onerror = () => {
         log(`Failed to read file: ${file.name}`);
+        showToast("Failed to read file");
       };
       reader.readAsText(file);
     }
 
     function collectOptions() {
+      if (langEl.value === "java") {
+        const g = id => document.getElementById(id), c = id => Boolean(g("optJava" + id)?.checked);
+        const o = { numbers: c("Numbers"), antiDebug: c("AntiDebug"), cff: c("Cff"), dead: c("Dead"), wrap: c("Wrap"), renameMembers: c("RenameMembers") };
+        return { lang: "java", preset: presetEl.value == "custom" ? void 0 : presetEl.value, rename: optRename.checked, strings: optStrings.checked, compact: optCompact.checked, minify: optMinify.checked, beautify: optBeautify.checked, seed: g("seed")?.value || void 0, javaOptions: { ...o, release: g("optJavaRelease")?.value, classpath: g("optJavaClasspath")?.value, idStyle: g("optJavaIdStyle")?.value || "hex" }, ...o };
+      }
       const includeText = document.getElementById("include").value.trim();
       const seed = document.getElementById("seed").value.trim();
       const ecmaValue = document.getElementById("ecma").value.trim();
@@ -1699,9 +2570,11 @@
       const source = sourceEl.value;
       if (!source.trim()) {
         log("No source provided.");
-        setStatus("Add source code or upload a file first.");
+        setStatus("Source buffer empty.");
+        showToast("Please provide source code");
         return;
       }
+      applySourceLanguageHint(source, true);
 
       const payload = {
         source,
@@ -1715,8 +2588,10 @@
       overlayCopyBtn.disabled = true;
       openOverlay();
       setOverlayState("processing");
-      setStatus("Running obfuscation...");
-      log("Obfuscation started.");
+      setStatus("Compiling and virtualizing...");
+      log("Obfuscation pipeline started.");
+
+      const startTime = performance.now();
 
       try {
         const backendMode = backendModeEl.value;
@@ -1733,11 +2608,11 @@
           try {
             result = await callAppwrite(payload);
           } catch (error) {
-            log(`Appwrite failed, falling back to local API: ${error.message}`);
+            log(`Appwrite fallback to local: ${error.message}`);
             result = await callLocalApi(payload);
           }
         } else {
-          log("Using local API backend (auto).");
+          log("Using local API backend.");
           result = await callLocalApi(payload);
         }
 
@@ -1749,15 +2624,23 @@
         overlayDownloadBtn.disabled = !result.code;
         overlayCopyBtn.disabled = !result.code;
 
-        setStatus("Obfuscation complete.");
-        setOverlayState("success");
-        log("Obfuscation finished successfully.");
+        const duration = Math.round(performance.now() - startTime);
+        setStatus(`Done in ${duration}ms.`);
+        setOverlayState("success", {
+          title: "Protection Complete",
+          text: `Completed in ${duration}ms. Output: ${formatBytes(new Blob([result.code || ""]).size)}.`,
+          meta: "Download or copy the output below."
+        });
+        updateStats();
+        log(`Build finished successfully in ${duration}ms.`);
+        showToast(`Obfuscation finished in ${duration}ms`);
       } catch (error) {
         log(`Error: ${error.message}`);
-        setStatus("Obfuscation failed. See log.");
+        setStatus("Execution failed.");
         setOverlayState("error", {
-          text: error.message || "The request failed before a protected result could be produced."
+          text: error.message || "Failed to process target script."
         });
+        showToast(error.message);
       } finally {
         runBtn.disabled = false;
       }
@@ -1775,35 +2658,173 @@
       URL.revokeObjectURL(url);
     }
 
+    // ── Code Samples ──────────────────────────────────────────
+    const SAMPLE_JS = `// JavaScript Production Module
+function computeAssetHash(records, salt = 0x5f3759df) {
+  const secretToken = "env_token_live_99812_x";
+  let checksum = salt;
+  const verified = [];
+
+  for (let i = 0; i < records.length; i++) {
+    const item = records[i];
+    const weight = item.active ? 2.5 : 1.0;
+    const factor = (item.value * 31) ^ (checksum & 0xff);
+
+    if (factor > 500) {
+      checksum = (checksum << 3) ^ factor;
+      verified.push({ id: item.id, status: "VERIFIED", hash: (factor * weight).toString(16) });
+    } else {
+      checksum = (checksum >> 1) + item.value;
+      verified.push({ id: item.id, status: "PENDING" });
+    }
+  }
+
+  return {
+    success: true,
+    totalRecords: verified.length,
+    checksum: checksum >>> 0,
+    entries: verified,
+    tokenDigest: secretToken.slice(0, 6)
+  };
+}
+
+const dataset = [
+  { id: "node_1", value: 128, active: true },
+  { id: "node_2", value: 45, active: false },
+  { id: "node_3", value: 920, active: true }
+];
+
+console.log("Result:", computeAssetHash(dataset));`;
+
+    const SAMPLE_LUAU = `-- Luau Production Module
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local SystemConfig = {
+    Version = "2.5.0-RC",
+    Threshold = 180.0,
+    Seed = 0x89ABCDEF,
+    Units = { "Guardian", "Interceptor", "Bastion" }
+}
+
+local function evaluateUnit(name, distance, multiplier)
+    local baseScore = 200
+    local inRange = distance <= SystemConfig.Threshold
+    
+    if inRange then
+        local modifier = (distance * 1.25) + (multiplier * 15)
+        local score = baseScore + math.floor(modifier)
+        print(string.format("[%s] Status: ACTIVE, Score: %d", name, score))
+        return score
+    else
+        warn(string.format("[%s] Status: OUT_OF_RANGE", name))
+        return 0
+    end
+end
+
+for index, unit in ipairs(SystemConfig.Units) do
+    local dist = 40 + (index * 30)
+    evaluateUnit(unit, dist, 2.0)
+end`;
+
+    btnSampleJs.addEventListener("click", () => {
+      sourceEl.value = SAMPLE_JS;
+      updateLanguageUI("js");
+      inputNameEl.value = "sample.js";
+      outputNameEl.value = "sample.obf.js";
+      updateStats();
+      log("Loaded JavaScript sample.");
+      showToast("Loaded JavaScript sample");
+    });
+
+    btnSampleLuau.addEventListener("click", () => {
+      sourceEl.value = SAMPLE_LUAU;
+      updateLanguageUI("luau");
+      inputNameEl.value = "sample.luau";
+      outputNameEl.value = "sample.obf.luau";
+      updateStats();
+      log("Loaded Luau sample.");
+      showToast("Loaded Luau sample");
+    });
+
+    btnPaste.addEventListener("click", async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          sourceEl.value = text;
+          applySourceLanguageHint(text, true);
+          updateStats();
+          log("Pasted from clipboard.");
+          showToast("Pasted from clipboard");
+        }
+      } catch {
+        showToast("Clipboard permission denied");
+      }
+    });
+
+    btnClearSource.addEventListener("click", () => {
+      sourceEl.value = "";
+      updateStats();
+      log("Cleared input.");
+      showToast("Source cleared");
+    });
+
+    btnClearLog.addEventListener("click", () => {
+      logEl.innerHTML = "";
+      log("Log cleared.");
+    });
+
+    presetPills.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        applyPreset(btn.dataset.preset);
+      });
+    });
+
+    langPills.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        updateLanguageUI(btn.dataset.lang);
+      });
+    });
+
     runBtn.addEventListener("click", runObfuscation);
 
+    sourceEl.addEventListener("input", () => {
+      applySourceLanguageHint(sourceEl.value, false);
+      updateStats();
+    });
+
     downloadBtn.addEventListener("click", () => {
-      if (!lastResult || !lastResult.code) {
-        return;
-      }
-      const name = outputNameEl.value.trim() || "output.obf.js";
+      if (!lastResult || !lastResult.code) return;
+      const name = outputNameEl.value.trim() || (langEl.value === "luau" ? "output.obf.luau" : "output.obf.js");
       downloadFile(lastResult.code, name, "text/javascript");
       log(`Downloaded: ${name}`);
+      showToast(`Downloaded ${name}`);
     });
 
     downloadMapBtn.addEventListener("click", () => {
-      if (!lastResult || !lastResult.map) {
-        return;
-      }
+      if (!lastResult || !lastResult.map) return;
       const name = `${outputNameEl.value.trim() || "output.obf.js"}.map`;
       downloadFile(JSON.stringify(lastResult.map, null, 2), name, "application/json");
       log(`Downloaded: ${name}`);
+      showToast(`Downloaded ${name}`);
     });
 
     copyBtn.addEventListener("click", async () => {
       if (!outputEl.value) {
+        showToast("No output available");
         return;
       }
       try {
         await navigator.clipboard.writeText(outputEl.value);
-        log("Output copied to clipboard.");
+        copyBtn.textContent = "Copied";
+        showToast("Copied to clipboard");
+        setTimeout(() => {
+          copyBtn.textContent = "Copy Code";
+        }, 1800);
+        log("Output copied.");
       } catch {
         log("Clipboard copy failed.");
+        showToast("Copy failed");
       }
     });
 
@@ -1816,8 +2837,10 @@
       overlayDownloadBtn.disabled = true;
       overlayCopyBtn.disabled = true;
       closeOverlay();
+      updateStats();
       setStatus("Cleared.");
-      log("Cleared input/output.");
+      log("Cleared workspace.");
+      showToast("Workspace cleared");
     });
 
     themeToggle.addEventListener("click", () => {
@@ -1829,23 +2852,25 @@
     });
 
     overlayDownloadBtn.addEventListener("click", () => {
-      if (!lastResult || !lastResult.code) {
-        return;
-      }
-      const name = outputNameEl.value.trim() || "output.obf.js";
+      if (!lastResult || !lastResult.code) return;
+      const name = outputNameEl.value.trim() || (langEl.value === "luau" ? "output.obf.luau" : "output.obf.js");
       downloadFile(lastResult.code, name, "text/javascript");
-      log(`Downloaded from overlay: ${name}`);
+      log(`Downloaded: ${name}`);
+      showToast(`Downloaded ${name}`);
     });
 
     overlayCopyBtn.addEventListener("click", async () => {
-      if (!outputEl.value) {
-        return;
-      }
+      if (!outputEl.value) return;
       try {
         await navigator.clipboard.writeText(outputEl.value);
-        log("Output copied to clipboard from overlay.");
+        overlayCopyBtn.textContent = "Copied";
+        showToast("Copied to clipboard");
+        setTimeout(() => {
+          overlayCopyBtn.textContent = "Copy Code";
+        }, 1800);
+        log("Copied from overlay.");
       } catch {
-        log("Overlay clipboard copy failed.");
+        log("Overlay copy failed.");
       }
     });
 
@@ -1881,8 +2906,7 @@
 
     langEl.addEventListener("change", () => {
       markCustomPreset();
-      updateOutputNameFromLang();
-      updateOptionStates();
+      updateLanguageUI(langEl.value);
     });
 
     optAntiHook.addEventListener("change", () => {
@@ -1942,7 +2966,8 @@
     applyPreset(presetEl.value);
     updateOptionStates();
     closeOverlay();
-    log("Ready.");
+    updateStats();
+    log("System initialized.");
   </script>
 </body>
 </html>

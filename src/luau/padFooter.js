@@ -1,4 +1,4 @@
-const { collectIdentifierNames, makeNameFactory } = require("./names");
+import {collectIdentifierNames, makeNameFactory} from "./names.js";
 
 function buildBlock(nameFor, rng) {
   const a = nameFor();
@@ -77,15 +77,15 @@ function padFooterLuau(ast, ctx) {
   const snippets = [];
   for (let i = 0; i < blocks; i += 1) {
     const snippet = ctx.rng.bool(0.5)
-      ? buildBlock(nameFor, ctx.rng)
-      : buildBlockAlt(nameFor, ctx.rng);
+        ? buildBlock(nameFor, ctx.rng)
+        : buildBlockAlt(nameFor, ctx.rng);
     snippets.push(snippet);
   }
   const source = snippets.join("\n");
   const useCustom = !ctx.options || ctx.options.luauParser !== "luaparse";
   const paddingAst = useCustom
-    ? ctx.parseCustom(source)
-    : ctx.parseLuaparse(source);
+      ? ctx.parseCustom(source)
+      : ctx.parseLuaparse(source);
   if (paddingAst && Array.isArray(paddingAst.body)) {
     const style = useCustom ? "custom" : "luaparse";
     const lastIndex = ast.body.length - 1;
@@ -93,8 +93,8 @@ function padFooterLuau(ast, ctx) {
     if (lastIndex >= 0 && ast.body[lastIndex]?.type === "ReturnStatement") {
       const returnStmt = ast.body[lastIndex];
       const wrapped = style === "custom"
-        ? { type: "DoStatement", body: { type: "Block", body: [returnStmt] } }
-        : { type: "DoStatement", body: [returnStmt] };
+          ? {type: "DoStatement", body: {type: "Block", body: [returnStmt]}}
+          : {type: "DoStatement", body: [returnStmt]};
       ast.body[lastIndex] = wrapped;
       insertIndex = ast.body.length;
     }
@@ -102,6 +102,10 @@ function padFooterLuau(ast, ctx) {
   }
 }
 
-module.exports = {
+export {
+  padFooterLuau,
+};
+
+export default {
   padFooterLuau,
 };

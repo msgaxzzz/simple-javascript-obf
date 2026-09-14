@@ -4,17 +4,39 @@ package-lock.json
 Deobf
 
 .codex
+.codex-temp/
 .worktrees/
+.idea/
 
 .env
-.env.*
-!.env.example
 
 # Temporary cache directories and deploy artifacts
 .deploy_tmp*/
 .deploy-obf*.tar.gz
+third_party/luau/build-wasm/
+build/
+dist/
+
+# Scratch, build, and debug files
+jadx_output/
+build_mobile_test/
+debug_*.txt
+temp_*.luau
+sample_*.luau
+MobileRelay.*
+
+# Root/example compiled classes & scratch outputs
+/*.class
+examples/*.class
+examples/*.obf.*
+examples/*.single.java
+examples/*.wrap.java
+examples/obfuscated/
+!src/java/classes/**/*.class
 
 # Accidental local scratch files
 /1.lua
 /2.lua
 /Protected_*.lua.txt
+/-
+

@@ -146,6 +146,32 @@ function validateNode(node, errors, path) {
       ensureNode(node.name, errors, `${path}.name`);
       ensureNode(node.annotation, errors, `${path}.annotation`);
       return;
+    case "DeclareGlobalStatement":
+      ensureNode(node.name, errors, `${path}.name`);
+      ensureOptionalNode(node.annotation, errors, `${path}.annotation`);
+      return;
+    case "DeclareClassStatement":
+      ensureNode(node.name, errors, `${path}.name`);
+      ensureOptionalNode(node.superName, errors, `${path}.superName`);
+      ensureArrayOfNodes(node.properties, errors, `${path}.properties`);
+      return;
+    case "DeclareClassProperty":
+      ensureNode(node.name, errors, `${path}.name`);
+      ensureOptionalNode(node.annotation, errors, `${path}.annotation`);
+      return;
+    case "ClassStatement":
+      ensureNode(node.name, errors, `${path}.name`);
+      ensureOptionalNode(node.superName, errors, `${path}.superName`);
+      ensureArrayOfNodes(node.members, errors, `${path}.members`);
+      return;
+    case "ClassProperty":
+      ensureNode(node.name, errors, `${path}.name`);
+      ensureOptionalNode(node.annotation, errors, `${path}.annotation`);
+      return;
+    case "ClassMethod":
+      ensureNode(node.name, errors, `${path}.name`);
+      ensureNode(node.func, errors, `${path}.func`);
+      return;
     case "FunctionName":
       ensureNode(node.base, errors, `${path}.base`);
       ensureArrayOfNodes(node.members, errors, `${path}.members`);
@@ -156,6 +182,9 @@ function validateNode(node, errors, path) {
       if (node.arguments !== null && node.arguments !== undefined) {
         ensureArrayOfNodes(node.arguments, errors, `${path}.arguments`);
       }
+      return;
+    case "AttributeList":
+      ensureArrayOfNodes(node.attributes, errors, `${path}.attributes`);
       return;
     case "Identifier":
       ensureString(node.name, errors, `${path}.name`);
@@ -194,6 +223,10 @@ function validateNode(node, errors, path) {
     case "TypeAssertion":
       ensureNode(node.expression, errors, `${path}.expression`);
       ensureNode(node.annotation, errors, `${path}.annotation`);
+      return;
+    case "TypeInstantiation":
+      ensureNode(node.expression, errors, `${path}.expression`);
+      ensureArrayOfNodes(node.typeArguments, errors, `${path}.typeArguments`);
       return;
     case "GroupExpression":
       ensureNode(node.expression, errors, `${path}.expression`);
@@ -483,6 +516,9 @@ function validate(ast, options = {}) {
   return errors;
 }
 
-module.exports = {
-  validate,
-};
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    validate,
+  };
+}
+export { validate };

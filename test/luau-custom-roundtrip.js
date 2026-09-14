@@ -123,7 +123,7 @@ roundTrip(
 shouldThrow("interp-double-open", () => parse("local s = `bad {{`"));
 shouldThrow("interp-call-sugar", () => parse("f `hi`"));
 shouldThrow("attr-nonliteral-arg", () => parse("@native(1 + 2) function f() end"));
-shouldThrow("table-access-before-indexer", () => parse("type T = { read [number]: string }"));
+roundTrip("table-indexer-read", "type T = { read [number]: string }");
 shouldThrow("return-not-laststat", () => parse("do return 1; local x = 2 end"));
 shouldThrow("break-not-laststat", () => parse("while true do break; local x = 1 end"));
 shouldThrow("continue-not-laststat", () => parse("while true do continue; local x = 1 end"));

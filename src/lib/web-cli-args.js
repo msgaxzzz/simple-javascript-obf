@@ -7,6 +7,51 @@ function buildCliArgs(options = {}) {
   if (options.lang) {
     args.push("--lang", String(options.lang));
   }
+  const javaOptions = options.javaOptions || {};
+  if (options.javaRelease != null && options.javaRelease !== "") {
+    args.push("--java-release", String(options.javaRelease));
+  } else if (javaOptions.release != null && javaOptions.release !== "") {
+    args.push("--java-release", String(javaOptions.release));
+  }
+  if (options.javaClasspath) {
+    args.push("--java-classpath", String(options.javaClasspath));
+  } else if (javaOptions.classpath) {
+    args.push("--java-classpath", String(javaOptions.classpath));
+  }
+  if (options.javaNumbers === true || javaOptions.numbers === true) {
+    args.push("--java-numbers");
+  } else if (options.javaNumbers === false || javaOptions.numbers === false) {
+    args.push("--no-java-numbers");
+  }
+  if (options.javaAntiDebug === true || javaOptions.antiDebug === true) {
+    args.push("--java-anti-debug");
+  } else if (options.javaAntiDebug === false || javaOptions.antiDebug === false) {
+    args.push("--no-java-anti-debug");
+  }
+  if (options.javaCff === true || javaOptions.cff === true) {
+    args.push("--java-cff");
+  } else if (options.javaCff === false || javaOptions.cff === false) {
+    args.push("--no-java-cff");
+  }
+  if (options.javaDead === true || javaOptions.dead === true) {
+    args.push("--java-dead");
+  } else if (options.javaDead === false || javaOptions.dead === false) {
+    args.push("--no-java-dead");
+  }
+  if (options.javaWrap === true || javaOptions.wrap === true) {
+    args.push("--java-wrap");
+  } else if (options.javaWrap === false || javaOptions.wrap === false) {
+    args.push("--no-java-wrap");
+  }
+  if (options.javaRenameMembers === true || javaOptions.renameMembers === true) {
+    args.push("--java-rename-members");
+  } else if (options.javaRenameMembers === false || javaOptions.renameMembers === false) {
+    args.push("--no-java-rename-members");
+  }
+  const idStyle = options.javaIdStyle || javaOptions.idStyle;
+  if (idStyle) {
+    args.push("--java-id-style", String(idStyle));
+  }
   if (options.luauStyle) {
     args.push("--luau-style", String(options.luauStyle));
   }

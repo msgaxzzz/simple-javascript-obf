@@ -8,8 +8,17 @@ export interface ObfuscateResult {
 
 const indexImpl = require("./index-impl") as {
   obfuscate: (source: string, userOptions?: Record<string, unknown>) => Promise<ObfuscateResult>;
+  obfuscateJava: (source: string, userOptions?: Record<string, unknown>) => Promise<ObfuscateResult>;
   parseSource: (code: string, filename?: string) => File;
 };
 
 export const obfuscate = indexImpl.obfuscate;
+export const obfuscateJava = indexImpl.obfuscateJava;
 export const parseSource = indexImpl.parseSource;
+
+export default {
+  obfuscate,
+  obfuscateJava,
+  parseSource,
+};
+

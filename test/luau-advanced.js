@@ -46,6 +46,55 @@ function runLuau(code) {
   }
 }
 
+function luauLongStringLiteral(value) {
+  const text = String(value);
+  let equals = "";
+  while (text.includes(`]${equals}]`)) {
+    equals += "=";
+  }
+  return `[${equals}[${text}]${equals}]`;
+}
+
+function runLuauWithRobloxLikeGlobals(code) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "js-obf-luau-advanced-"));
+  const runner = path.join(dir, "runner.luau");
+  try {
+    fs.writeFileSync(runner, [
+      `local source = ${luauLongStringLiteral(code)}`,
+      "local fn, err = loadstring(source)",
+      "assert(fn, err)",
+      "local env = {",
+      "  _G = {},",
+      "  string = string,",
+      "  table = table,",
+      "  math = math,",
+      "  os = os,",
+      "  debug = debug,",
+      "  type = type,",
+      "  getfenv = getfenv,",
+      "  getmetatable = getmetatable,",
+      "  setmetatable = setmetatable,",
+      "  pcall = pcall,",
+      "  error = error,",
+      "  print = print,",
+      "  tonumber = tonumber,",
+      "  tostring = tostring,",
+      "  select = select,",
+      "}",
+      "setfenv(fn, env)",
+      "local result = fn()",
+      "if result ~= nil then print(result) end",
+    ].join("\n"), "utf8");
+    const result = spawnSync("luau", [runner], { cwd: dir, encoding: "utf8" });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout || `luau exited with code ${result.status}`);
+    }
+    return result.stdout.trim();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function runNumbersExpressions() {
   const baseOptions = {
     lang: "luau",
@@ -181,12 +230,40 @@ async function runAntiHookLockReadonlyEnvCompatibility() {
   );
 }
 
+async function runAntiHookRobloxLikeGlobalsCompatibility() {
+  const { code } = await obfuscateLuau("return string.char(111, 107)", {
+    lang: "luau",
+    luauParser: "custom",
+    preset: "low",
+    strings: false,
+    rename: false,
+    cff: false,
+    dead: false,
+    antiHook: { enabled: true, lock: false },
+    vm: { enabled: false },
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    renameOptions: { maskGlobals: false },
+    seed: "anti-hook-roblox-like-globals",
+  });
+
+  parseCustom(code);
+  assert.strictEqual(
+    runLuauWithRobloxLikeGlobals(code),
+    "ok",
+    "anti-hook should not assume Roblox standard libraries live on _G"
+  );
+}
+
 (async () => {
   await runNumbersExpressions();
   await runConstArrayBase64();
   await runBlockDispatchCustom();
   await runSignatureHiding();
   await runAntiHookLockReadonlyEnvCompatibility();
+  await runAntiHookRobloxLikeGlobalsCompatibility();
   console.log("luau-advanced: ok");
 })().catch((err) => {
   console.error(err);

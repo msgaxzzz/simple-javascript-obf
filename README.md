@@ -15,11 +15,15 @@ A modular JavaScript and Luau obfuscation CLI with control-flow flattening (CFF)
 ## Install
 ```
 npm install
+# or with Bun
+bun install
 ```
 
 ## Usage
 ```
 node bin/js-obf input.js -o output.js --preset high --vm --seed my-seed
+# or with Bun
+bun bin/js-obf input.js -o output.js --preset high --vm --seed my-seed
 ```
 
 Supports stdin (use `-` as input):

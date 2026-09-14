@@ -15,6 +15,14 @@ function runVmDefaultOptionRegression() {
   assert.strictEqual(options.vm.dynamicCoupling, true, "Luau VM should keep dynamic coupling enabled by default");
 }
 
+function runLuauDefaultCompactRegression() {
+  const options = normalizeOptions({
+    lang: "luau",
+  });
+
+  assert.strictEqual(options.compact, false, "Luau output should only be one-line when compact is enabled");
+}
+
 async function runRawOptionsRegression() {
   const source = [
     "local secret = \"raw api sentinel\"",
@@ -66,6 +74,33 @@ async function runCompactFalseRegression() {
   assert.ok(code.split("\n").length > 3, "compact=false should preserve multi-line Luau output");
 }
 
+async function runDefaultMultilineRegression() {
+  const source = [
+    "local function demo()",
+    "  local a = 1",
+    "  return a",
+    "end",
+    "print(demo())",
+  ].join("\n");
+
+  const { code } = await obfuscateLuau(source, {
+    lang: "luau",
+    strings: false,
+    rename: false,
+    cff: false,
+    dead: false,
+    vm: false,
+    constArray: false,
+    numbers: false,
+    proxifyLocals: false,
+    padFooter: false,
+    seed: "luau-default-multiline",
+  });
+
+  parseCustom(code);
+  assert.ok(code.split("\n").length > 3, "default Luau output should stay multi-line");
+}
+
 async function runLuauSourceMapRegression() {
   const source = [
     "local function demo()",
@@ -104,8 +139,10 @@ async function runLuauSourceMapRegression() {
 
 (async () => {
   runVmDefaultOptionRegression();
+  runLuauDefaultCompactRegression();
   await runRawOptionsRegression();
   await runCompactFalseRegression();
+  await runDefaultMultilineRegression();
   await runLuauSourceMapRegression();
   console.log("luau-api: ok");
 })().catch((err) => {

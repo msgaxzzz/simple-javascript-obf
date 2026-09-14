@@ -13,9 +13,11 @@ const tscPath = path.join(repoRoot, "node_modules", "typescript", "bin", "tsc");
 
 assert.ok(pkg.types, "package.json should advertise a root types entry");
 
-const buildResult = spawnSync("npm", ["run", "build:ts"], {
+const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
+const buildResult = spawnSync(npmCmd, ["run", "build:ts"], {
   cwd: repoRoot,
   encoding: "utf8",
+  shell: true,
 });
 
 if (buildResult.status !== 0) {
@@ -25,7 +27,7 @@ if (buildResult.status !== 0) {
 assert.ok(fs.existsSync(parserDecl), "expected build/src/luau/custom/parser.d.ts");
 assert.ok(fs.existsSync(tokenizerDecl), "expected build/src/luau/custom/tokenizer.d.ts");
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "luau-custom-dts-"));
+const tmpDir = fs.mkdtempSync(path.join(repoRoot, ".luau-custom-dts-"));
 
 function toImportSpecifier(targetPath) {
   let relative = path.relative(tmpDir, targetPath).replace(/\\/g, "/");

@@ -124,6 +124,12 @@ function toOfficialNode(node) {
     case "FunctionDeclaration":
       out.type = node.isLocal ? "StatLocalFunction" : "StatFunction";
       return out;
+    case "ClassStatement":
+      out.type = "StatClass";
+      return out;
+    case "TypeInstantiation":
+      out.type = "ExprInstantiate";
+      return out;
     case "DeclareFunctionStatement":
       out.type = "StatDeclareFunction";
       return out;
@@ -184,6 +190,12 @@ function toLegacyNode(node) {
     case "StatFunction":
       out.type = "FunctionDeclaration";
       out.isLocal = false;
+      return out;
+    case "StatClass":
+      out.type = "ClassStatement";
+      return out;
+    case "ExprInstantiate":
+      out.type = "TypeInstantiation";
       return out;
     case "StatDeclareFunction":
       out.type = "DeclareFunctionStatement";

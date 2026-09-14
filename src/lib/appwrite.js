@@ -5,6 +5,8 @@ const APPWRITE_ENDPOINT = process.env.APPWRITE_ENDPOINT || "";
 const APPWRITE_PROJECT_ID = process.env.APPWRITE_PROJECT_ID || "";
 const APPWRITE_OBF_FUNCTION_ID = process.env.APPWRITE_OBF_FUNCTION_ID || "";
 const APPWRITE_API_KEY = process.env.APPWRITE_API_KEY || "";
+const WEB_OBF_BACKEND = (process.env.WEB_OBF_BACKEND || "").toLowerCase();
+const APPWRITE_REMOTE_OBFUSCATION = (process.env.APPWRITE_REMOTE_OBFUSCATION || "").toLowerCase();
 
 const client = new Client();
 if (APPWRITE_ENDPOINT) {
@@ -35,8 +37,15 @@ function pingAppwrite() {
   return client.ping();
 }
 
+function isTruthy(value) {
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
 function isRemoteObfuscationEnabled() {
-  return Boolean(APPWRITE_OBF_FUNCTION_ID);
+  return Boolean(APPWRITE_OBF_FUNCTION_ID) && (
+    WEB_OBF_BACKEND === "appwrite" ||
+    isTruthy(APPWRITE_REMOTE_OBFUSCATION)
+  );
 }
 
 async function obfuscateViaAppwrite(payload) {

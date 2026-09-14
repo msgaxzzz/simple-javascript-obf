@@ -21,6 +21,51 @@ function collectIdentifierNames(ast) {
   return used;
 }
 
+function traverseAll(root, visitor) {
+  const visit = (value, parent, key) => {
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        value[index] = visit(value[index], value, index);
+      }
+      return value;
+    }
+
+    let current = value;
+    let skipped = false;
+    if (current.type) {
+      const context = {
+        replace(next) {
+          current = next;
+          if (parent && key !== null && key !== undefined) {
+            parent[key] = next;
+          }
+        },
+        skip() {
+          skipped = true;
+        },
+      };
+      visitor(current, parent, key, context);
+    }
+
+    if (skipped || !current || typeof current !== "object") {
+      return current;
+    }
+
+    for (const childKey of Object.keys(current)) {
+      if (childKey === "loc" || childKey === "range") {
+        continue;
+      }
+      current[childKey] = visit(current[childKey], current, childKey);
+    }
+    return current;
+  };
+
+  return visit(root, null, null);
+}
+
 function isBinaryRaw(raw) {
   return typeof raw === "string" && /\\(?:[0-9]{1,3}|x[0-9a-fA-F]{2})/.test(raw);
 }
@@ -437,8 +482,8 @@ function stringEncode(ast, options, rng, ctx) {
     return node;
   }
 
-  traverse(ast, (node, parent, key, index, traversal) => {
-    if (node.type !== "StringLiteral") {
+  traverseAll(ast, (node, parent, key, traversal) => {
+    if (!node || node.type !== "StringLiteral") {
       return;
     }
     const raw = typeof node.raw === "string" ? node.raw : null;

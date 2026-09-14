@@ -18,6 +18,7 @@ async function run() {
     lang: "luau",
     filename: "luau-hard-project.lua",
     sourceMap: true,
+    timing: true,
     preset: "high",
     strings: true,
     cff: true,
@@ -26,11 +27,19 @@ async function run() {
     wrap: true,
     numbers: true,
     constArray: true,
+    constArrayOptions: {
+      encoding: "base85",
+    },
     padFooter: true,
     proxifyLocals: false,
     vm: {
       enabled: true,
-      shellStyle: "packed",
+      all: true,
+      mode: "max",
+      bytecodeEncoding: "base85",
+      hybridRegisters: true,
+      stackSpoof: true,
+      asyncShadowContext: true,
     },
     renameOptions: {
       renameGlobals: false,

@@ -3,7 +3,7 @@ const assert = require("assert");
 const {
   getCachedSSAReadNamesFromRoot,
   getCachedSSAUsedNamesFromRoot,
-} = require("../src/luau/ssa-utils");
+} = require("../src/luau/ssa-utils").default;
 
 const ssaRoot = {
   functions: [

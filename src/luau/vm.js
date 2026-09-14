@@ -5,7 +5,7 @@ const {
   getOpcodeArity,
   compactInstructionList,
   buildOpcodeMap,
-} = require("./vm/opcodes");
+} = require("./vm/opcodes").default || require("./vm/opcodes");
 const {
   VM_NAME_KEYWORDS,
   VM_NAME_RESERVED,
@@ -13,8 +13,12 @@ const {
   makeVmCharExpr,
   createSharedVmRuntime,
   buildSharedVmRuntimePreludeSource,
+  encodeBase85,
+  buildBase85DecoderSource,
 } = require("./vm/runtime");
 const { VmCompiler } = require("./vm/compiler");
+const { RcCompiler } = require("./vm/rcCompiler");
+const { buildRcRuntime } = require("./vm/rcRuntime");
 const { renameLuau } = require("./rename-impl");
 
 const DEFAULT_MIN_STATEMENTS = 1;
@@ -563,17 +567,36 @@ function buildSymbolNoiseToken(rng) {
 }
 
 const VM_JUMP_OPS = new Set(["JMP", "JMP_IF_FALSE", "JMP_IF_TRUE", "NOISE_BRANCH"]);
+const VM_JUMP_OPS_B = new Set([
+  "JMP_IF_LOCAL_LT",
+  "JMP_IF_LOCAL_GT",
+  "JMP_IF_LOCAL_LE",
+  "JMP_IF_LOCAL_GE",
+  "JMP_IF_LOCAL_EQ",
+  "JMP_IF_LOCAL_NE",
+]);
 
 function remapInstructionJumpTargets(instructions, indexMap) {
   for (const inst of instructions) {
-    if (!inst || !VM_JUMP_OPS.has(inst[0])) {
+    if (!inst) {
       continue;
     }
-    const target = Number(inst[1]) || 0;
-    if (target > 0 && target < indexMap.length && indexMap[target]) {
-      inst[1] = indexMap[target];
+    if (VM_JUMP_OPS.has(inst[0])) {
+      const target = Number(inst[1]) || 0;
+      if (target > 0 && target < indexMap.length && indexMap[target]) {
+        inst[1] = indexMap[target];
+      }
+    } else if (VM_JUMP_OPS_B.has(inst[0])) {
+      const target = Number(inst[2]) || 0;
+      if (target > 0 && target < indexMap.length && indexMap[target]) {
+        inst[2] = indexMap[target];
+      }
     }
   }
+}
+
+function packRegisterPairLocal(leftIdx, rightIdx) {
+  return (((leftIdx || 0) & 0xffff) * 0x10000) + (((rightIdx || 0) & 0xffff));
 }
 
 function applyInstructionFusion(program, rng, vmOptions = {}) {
@@ -581,15 +604,22 @@ function applyInstructionFusion(program, rng, vmOptions = {}) {
     return;
   }
   const original = program.instructions;
-  if (original.length < 3) {
+  if (original.length < 2) {
     return;
   }
   const jumpTargets = new Set();
   for (const inst of original) {
-    if (inst && VM_JUMP_OPS.has(inst[0])) {
-      const target = Number(inst[1]) || 0;
-      if (target > 0) {
-        jumpTargets.add(target);
+    if (inst) {
+      if (VM_JUMP_OPS.has(inst[0])) {
+        const target = Number(inst[1]) || 0;
+        if (target > 0) {
+          jumpTargets.add(target);
+        }
+      } else if (VM_JUMP_OPS_B.has(inst[0])) {
+        const target = Number(inst[2]) || 0;
+        if (target > 0) {
+          jumpTargets.add(target);
+        }
       }
     }
   }
@@ -600,35 +630,120 @@ function applyInstructionFusion(program, rng, vmOptions = {}) {
     const instA = original[i];
     const instB = original[i + 1];
     const instC = original[i + 2];
+    const instD = original[i + 3];
     const idxA = i + 1;
     const idxB = i + 2;
     const idxC = i + 3;
+    const idxD = i + 4;
     let fusedInst = null;
+    let step = 1;
+
+    // 4-instruction fusion
     if (
-      instA &&
-      instB &&
-      instC &&
-      !jumpTargets.has(idxB) &&
-      !jumpTargets.has(idxC)
+      instA && instB && instC && instD &&
+      !jumpTargets.has(idxB) && !jumpTargets.has(idxC) && !jumpTargets.has(idxD)
     ) {
+      const opA = instA[0];
+      const opB = instB[0];
+      const opC = instC[0];
+      const opD = instD[0];
+      if (opA === "PUSH_LOCAL" && opB === "PUSH_CONST" && opC === "ADD" && opD === "SET_LOCAL" && instA[1] === instD[1]) {
+        fusedInst = ["ADD_REG_CONST", instA[1] || 0, instB[1] || 0];
+        step = 4;
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opC === "ADD" && opD === "SET_LOCAL" && instA[1] === instD[1]) {
+        fusedInst = ["ADD_REG_LOCAL", instA[1] || 0, instB[1] || 0];
+        step = 4;
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_CONST" && opC === "SUB" && opD === "SET_LOCAL" && instA[1] === instD[1]) {
+        fusedInst = ["SUB_REG_CONST", instA[1] || 0, instB[1] || 0];
+        step = 4;
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opC === "SUB" && opD === "SET_LOCAL" && instA[1] === instD[1]) {
+        fusedInst = ["SUB_REG_LOCAL", instA[1] || 0, instB[1] || 0];
+        step = 4;
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opD === "JMP_IF_TRUE") {
+        const pair = packRegisterPairLocal(instA[1], instB[1]);
+        if (opC === "EQ") {
+          fusedInst = ["JMP_IF_LOCAL_EQ", pair, instD[1] || 0];
+          step = 4;
+        } else if (opC === "NE") {
+          fusedInst = ["JMP_IF_LOCAL_NE", pair, instD[1] || 0];
+          step = 4;
+        } else if (opC === "LT") {
+          fusedInst = ["JMP_IF_LOCAL_LT", pair, instD[1] || 0];
+          step = 4;
+        } else if (opC === "LE") {
+          fusedInst = ["JMP_IF_LOCAL_LE", pair, instD[1] || 0];
+          step = 4;
+        } else if (opC === "GT") {
+          fusedInst = ["JMP_IF_LOCAL_GT", pair, instD[1] || 0];
+          step = 4;
+        } else if (opC === "GE") {
+          fusedInst = ["JMP_IF_LOCAL_GE", pair, instD[1] || 0];
+          step = 4;
+        }
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opD === "JMP_IF_FALSE") {
+        const pair = packRegisterPairLocal(instA[1], instB[1]);
+        if (opC === "EQ") {
+          fusedInst = ["JMP_IF_LOCAL_NE", pair, instD[1] || 0];
+          step = 4;
+        } else if (opC === "NE") {
+          fusedInst = ["JMP_IF_LOCAL_EQ", pair, instD[1] || 0];
+          step = 4;
+        }
+      }
+    }
+
+    // 3-instruction fusion
+    if (!fusedInst && instA && instB && instC && !jumpTargets.has(idxB) && !jumpTargets.has(idxC)) {
       const opA = instA[0];
       const opB = instB[0];
       const opC = instC[0];
       if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opC === "ADD") {
         fusedInst = ["PUSH_LOCAL_ADD_LOCAL", instA[1] || 0, instB[1] || 0];
+        step = 3;
       } else if (opA === "PUSH_LOCAL" && opB === "PUSH_LOCAL" && opC === "SUB") {
         fusedInst = ["PUSH_LOCAL_SUB_LOCAL", instA[1] || 0, instB[1] || 0];
+        step = 3;
       } else if (opA === "PUSH_CONST" && opB === "PUSH_CONST" && opC === "ADD") {
         fusedInst = ["PUSH_CONST_ADD_CONST", instA[1] || 0, instB[1] || 0];
+        step = 3;
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_CONST" && opC === "ADD") {
+        fusedInst = ["PUSH_LOCAL_ADD_CONST", instA[1] || 0, instB[1] || 0];
+        step = 3;
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_CONST" && opC === "SUB") {
+        fusedInst = ["PUSH_LOCAL_SUB_CONST", instA[1] || 0, instB[1] || 0];
+        step = 3;
+      } else if (opA === "PUSH_LOCAL" && opB === "PUSH_CONST" && opC === "MUL") {
+        fusedInst = ["PUSH_LOCAL_MUL_CONST", instA[1] || 0, instB[1] || 0];
+        step = 3;
       }
     }
+
+    // 2-instruction fusion
+    if (!fusedInst && instA && instB && !jumpTargets.has(idxB)) {
+      const opA = instA[0];
+      const opB = instB[0];
+      if (opA === "PUSH_CONST" && opB === "SET_LOCAL") {
+        fusedInst = ["LOAD_CONST_LOCAL", instB[1] || 0, instA[1] || 0];
+        step = 2;
+      } else if (opA === "PUSH_CONST" && opB === "SET_GLOBAL") {
+        fusedInst = ["LOAD_CONST_GLOBAL", instB[1] || 0, instA[1] || 0];
+        step = 2;
+      } else if (opA === "PUSH_LOCAL" && opB === "SET_GLOBAL") {
+        fusedInst = ["MOVE_LOCAL_GLOBAL", instB[1] || 0, instA[1] || 0];
+        step = 2;
+      } else if (opA === "PUSH_LOCAL" && opB === "SET_LOCAL") {
+        fusedInst = ["MOV_REG_REG", instB[1] || 0, instA[1] || 0];
+        step = 2;
+      }
+    }
+
     if (fusedInst) {
       const mapped = fused.length + 1;
-      indexMap[idxA] = mapped;
-      indexMap[idxB] = mapped;
-      indexMap[idxC] = mapped;
+      for (let s = 0; s < step; s += 1) {
+        indexMap[i + 1 + s] = mapped;
+      }
       fused.push(fusedInst);
-      i += 3;
+      i += step;
       changed = true;
       continue;
     }
@@ -642,6 +757,80 @@ function applyInstructionFusion(program, rng, vmOptions = {}) {
   }
   remapInstructionJumpTargets(fused, indexMap);
   program.instructions = fused;
+}
+
+function applyRegisterRandomization(program, rng, vmOptions = {}) {
+  if (!program || vmOptions.registerRandomization === false) {
+    return;
+  }
+  const count = program.localCount || 0;
+  if (count <= 0) {
+    return;
+  }
+  const decoyCount = rng && typeof rng.int === "function" ? rng.int(2, 5) : 3;
+  const totalSlots = count + decoyCount;
+  const slots = Array.from({ length: totalSlots }, (_, idx) => idx + 1);
+  if (rng && typeof rng.shuffle === "function") {
+    rng.shuffle(slots);
+  }
+
+  const regMap = new Map();
+  for (let idx = 1; idx <= count; idx += 1) {
+    regMap.set(idx, slots[idx - 1]);
+  }
+  program.registerMap = regMap;
+  program.totalLocalSlots = totalSlots;
+
+  for (const inst of program.instructions) {
+    if (!inst) {
+      continue;
+    }
+    const op = inst[0];
+    switch (op) {
+      case "PUSH_LOCAL":
+      case "SET_LOCAL":
+      case "LOAD_CONST_LOCAL":
+      case "PUSH_LOCAL_ADD_CONST":
+      case "PUSH_LOCAL_SUB_CONST":
+      case "PUSH_LOCAL_MUL_CONST":
+      case "ADD_REG_CONST":
+      case "SUB_REG_CONST":
+        if (regMap.has(inst[1])) {
+          inst[1] = regMap.get(inst[1]);
+        }
+        break;
+      case "PUSH_LOCAL_ADD_LOCAL":
+      case "PUSH_LOCAL_SUB_LOCAL":
+      case "ADD_REG_LOCAL":
+      case "SUB_REG_LOCAL":
+      case "MOV_REG_REG":
+        if (regMap.has(inst[1])) {
+          inst[1] = regMap.get(inst[1]);
+        }
+        if (regMap.has(inst[2])) {
+          inst[2] = regMap.get(inst[2]);
+        }
+        break;
+      case "MOVE_LOCAL_GLOBAL":
+        if (regMap.has(inst[2])) {
+          inst[2] = regMap.get(inst[2]);
+        }
+        break;
+      case "JMP_IF_LOCAL_LT":
+      case "JMP_IF_LOCAL_GT":
+      case "JMP_IF_LOCAL_LE":
+      case "JMP_IF_LOCAL_GE":
+      case "JMP_IF_LOCAL_EQ":
+      case "JMP_IF_LOCAL_NE": {
+        const left = Math.floor((inst[1] || 0) / 65536);
+        const right = (inst[1] || 0) % 65536;
+        const newLeft = regMap.has(left) ? regMap.get(left) : left;
+        const newRight = regMap.has(right) ? regMap.get(right) : right;
+        inst[1] = (newLeft * 65536) + newRight;
+        break;
+      }
+    }
+  }
 }
 
 function injectFakeInstructions(program, rng, probability) {
@@ -693,7 +882,7 @@ function hasNestedFunction(fnNode) {
     if (node === fnNode) {
       return;
     }
-    if (node.type === "FunctionDeclaration" || node.type === "FunctionExpression") {
+    if (isFunctionNode(node)) {
       found = true;
     }
   });
@@ -743,10 +932,6 @@ function isMetatableConstructor(fnNode, style) {
 function shouldVirtualizeFunction(fnNode, options) {
   const include = options.vm && Array.isArray(options.vm.include) ? options.vm.include : [];
   const all = options.vm && options.vm.all;
-  const style = options && options.luauParser === "luaparse" ? "luaparse" : "custom";
-  if (isMetatableConstructor(fnNode, style)) {
-    return false;
-  }
   if (all || include.length === 0) {
     return true;
   }
@@ -767,8 +952,14 @@ function getFunctionName(fnNode) {
     }
     return parts.join(".");
   }
+  if (fnNode.name && fnNode.name.type === "Identifier") {
+    return fnNode.name.name;
+  }
   if (fnNode.identifier && fnNode.identifier.type === "Identifier") {
     return fnNode.identifier.name;
+  }
+  if (typeof fnNode.name === "string") {
+    return fnNode.name;
   }
   return null;
 }
@@ -827,7 +1018,7 @@ function walkAny(node, visitor, parent = null, key = null) {
 }
 
 function isFunctionNode(node) {
-  return Boolean(node && (node.type === "FunctionDeclaration" || node.type === "FunctionExpression"));
+  return Boolean(node && (node.type === "FunctionDeclaration" || node.type === "LocalFunctionDeclaration" || node.type === "FunctionExpression"));
 }
 
 function getFunctionBodyStatementsByStyle(fnNode, style) {
@@ -1310,11 +1501,26 @@ function buildVmSource(
   // This is the main bytecode-to-Luau lowering step. It stitches together
   // const decoding, opcode decoding, helper runtimes, and the final dispatch loop.
   const constCount = constInfo ? constInfo.count : program.consts.length;
-  const blockDispatch = Boolean(vmOptions.blockDispatch);
-  const useBytecodeStream = !blockDispatch && vmOptions.bytecodeEncrypt !== false;
+  const forceBytecode = vmOptions.bytecodeEncoding === "base85" || vmOptions.base85 === true || vmOptions.machineCore === true;
+  const blockDispatch = forceBytecode ? false : Boolean(vmOptions.blockDispatch);
+  const useBytecodeStream = forceBytecode || (!blockDispatch && vmOptions.bytecodeEncrypt !== false);
   const initValues = Array.isArray(program.localInitValues) ? program.localInitValues : paramNames;
-  const localsInit = (initValues || []).map((name) => (name ? name : "nil"));
-  const localsTable = `{ ${localsInit.join(", ")} }`;
+  const regMap = program.registerMap;
+  let localsTable;
+  if (regMap) {
+    const entries = [];
+    (initValues || []).forEach((name, index) => {
+      const logicalSlot = index + 1;
+      const physicalSlot = regMap.get(logicalSlot) || logicalSlot;
+      if (name && name !== "nil") {
+        entries.push(`[${physicalSlot}] = ${name}`);
+      }
+    });
+    localsTable = `{ ${entries.join(", ")} }`;
+  } else {
+    const localsInit = (initValues || []).map((name) => (name ? name : "nil"));
+    localsTable = `{ ${localsInit.join(", ")} }`;
+  }
   const seedPieces = seedState ? seedState.pieces : [];
   const keyMaskPieces = keySchedule ? keySchedule.maskPieces : null;
   const keyEncoded = keySchedule ? keySchedule.encoded : null;
@@ -1509,6 +1715,30 @@ function buildVmSource(
         return finish([pushLine, `stack[top] = ${getConstExpr(aExpr)}`]);
       case "PUSH_LOCAL":
         return finish([pushLine, `stack[top] = locals[${aExpr}]`]);
+      case "LOAD_CONST_LOCAL":
+        return finish([
+          `locals[${aExpr}] = ${getConstExpr(bExpr)}`,
+          `${helperNames.syncLocal}(${aExpr}, locals[${aExpr}])`,
+        ]);
+      case "LOAD_CONST_GLOBAL":
+        return finish([
+          `env[${getConstExpr(aExpr)}] = ${getConstExpr(bExpr)}`,
+        ]);
+      case "MOVE_LOCAL_GLOBAL":
+        return finish([
+          `env[${getConstExpr(aExpr)}] = locals[${bExpr}]`,
+        ]);
+      case "MOV_REG_REG":
+        return finish([
+          `locals[${aExpr}] = locals[${bExpr}]`,
+          `${helperNames.syncLocal}(${aExpr}, locals[${aExpr}])`,
+        ]);
+      case "PUSH_LOCAL_ADD_CONST":
+        return finish([pushLine, `stack[top] = locals[${aExpr}] + ${getConstExpr(bExpr)}`]);
+      case "PUSH_LOCAL_SUB_CONST":
+        return finish([pushLine, `stack[top] = locals[${aExpr}] - ${getConstExpr(bExpr)}`]);
+      case "PUSH_LOCAL_MUL_CONST":
+        return finish([pushLine, `stack[top] = locals[${aExpr}] * ${getConstExpr(bExpr)}`]);
       case "PUSH_LOCAL_ADD_LOCAL":
         return finish([pushLine, `stack[top] = locals[${aExpr}] + locals[${bExpr}]`]);
       case "PUSH_LOCAL_SUB_LOCAL":
@@ -1583,8 +1813,36 @@ function buildVmSource(
           `local retc = ${bExpr}`,
           "local base = top - argc",
           "local fn = stack[base]",
-          "if retc == 0 then",
-          "  fn(unpack(stack, base + 1, top))",
+          "if retc == 1 then",
+          "  local r",
+          "  if argc == 0 then",
+          "    r = fn()",
+          "  elseif argc == 1 then",
+          "    r = fn(stack[base + 1])",
+          "  elseif argc == 2 then",
+          "    r = fn(stack[base + 1], stack[base + 2])",
+          "  elseif argc == 3 then",
+          "    r = fn(stack[base + 1], stack[base + 2], stack[base + 3])",
+          "  else",
+          "    r = fn(unpack(stack, base + 1, top))",
+          "  end",
+          "  for i = top, base + 1, -1 do",
+          "    stack[i] = nil",
+          "  end",
+          "  stack[base] = r",
+          "  top = base",
+          "elseif retc == 0 then",
+          "  if argc == 0 then",
+          "    fn()",
+          "  elseif argc == 1 then",
+          "    fn(stack[base + 1])",
+          "  elseif argc == 2 then",
+          "    fn(stack[base + 1], stack[base + 2])",
+          "  elseif argc == 3 then",
+          "    fn(stack[base + 1], stack[base + 2], stack[base + 3])",
+          "  else",
+          "    fn(unpack(stack, base + 1, top))",
+          "  end",
           "  for i = top, base, -1 do",
           "    stack[i] = nil",
           "  end",
@@ -1595,14 +1853,9 @@ function buildVmSource(
           "    stack[i] = nil",
           "  end",
           "  top = base - 1",
-          "  if retc == 1 then",
+          "  for i = 1, retc do",
           "    top = top + 1",
-          "    stack[top] = res[1]",
-          "  else",
-          "    for i = 1, retc do",
-          "      top = top + 1",
-          "      stack[top] = res[i]",
-          "    end",
+          "    stack[top] = res[i]",
           "  end",
           "end",
         ]);
@@ -1814,6 +2067,24 @@ end)()`);
           "end",
           mode === "block" ? `pc = ${nextExpr}` : `return ${nextExpr}, false, nil`,
         ];
+      case "JMP_IF_LOCAL_EQ":
+        return [
+          `local left = ${runtimeTools.floor}(${aExpr} / 65536)`,
+          `local right = ${aExpr} % 65536`,
+          `if locals[left] == locals[right] then`,
+          mode === "block" ? `  pc = ${bExpr}` : `  return ${bExpr}, false, nil`,
+          "end",
+          mode === "block" ? `pc = ${nextExpr}` : `return ${nextExpr}, false, nil`,
+        ];
+      case "JMP_IF_LOCAL_NE":
+        return [
+          `local left = ${runtimeTools.floor}(${aExpr} / 65536)`,
+          `local right = ${aExpr} % 65536`,
+          `if locals[left] ~= locals[right] then`,
+          mode === "block" ? `  pc = ${bExpr}` : `  return ${bExpr}, false, nil`,
+          "end",
+          mode === "block" ? `pc = ${nextExpr}` : `return ${nextExpr}, false, nil`,
+        ];
       case "JMP_IF_FALSE":
         if (mode === "block") {
           return [
@@ -1924,7 +2195,7 @@ end)()`);
     }
   };
 
-  const lines = [
+  let lines = [
     `do`,
   ];
   if (!sharedRuntime) {
@@ -1932,6 +2203,14 @@ end)()`);
       `local ${runtimeTools.bundle} = { string.char, string.byte, table.concat, table.pack, table.unpack, select, type, math.floor, getfenv }`,
       `local ${runtimeTools.char}, ${runtimeTools.byte}, ${runtimeTools.concat}, ${runtimeTools.pack}, ${runtimeTools.unpack}, ${runtimeTools.select}, ${runtimeTools.type}, ${runtimeTools.floor}, ${runtimeTools.getfenv} = ${runtimeTools.bundle}[1], ${runtimeTools.bundle}[2], ${runtimeTools.bundle}[3], ${runtimeTools.bundle}[4], ${runtimeTools.bundle}[5], ${runtimeTools.bundle}[6], ${runtimeTools.bundle}[7], ${runtimeTools.bundle}[8], ${runtimeTools.bundle}[9]`,
     );
+  }
+  const useBase85 = useBytecodeStream && (vmOptions.bytecodeEncoding === "base85" || vmOptions.base85 === true || vmOptions.machineCore === true);
+  let b85DecodeName = null;
+  if (useBase85) {
+    b85DecodeName = makeName();
+    const b85MapName = makeName();
+    const b85DecoderLines = buildBase85DecoderSource(b85DecodeName, b85MapName, runtimeTools);
+    lines.push(...b85DecoderLines);
   }
   const upperPoolLines = [];
   const lowerPoolLines = [];
@@ -2502,14 +2781,15 @@ end)()`);
   lines.push(`local ${syncSetterTable} = {}`);
   if (initValues && initValues.length) {
     initValues.forEach((name, index) => {
-      if (!name) {
+      if (!name || name === "nil") {
         return;
       }
+      const slot = regMap ? (regMap.get(index + 1) || (index + 1)) : (index + 1);
       const setterName = makeVmHelperAliasName();
       lines.push(`local function ${setterName}(nextValue)`);
       lines.push(`  ${name} = nextValue`);
       lines.push(`end`);
-      lines.push(`${syncSetterTable}[${index + 1}] = ${setterName}`);
+      lines.push(`${syncSetterTable}[${slot}] = ${setterName}`);
     });
   }
   lines.push(`local function ${helperNames.syncLocal}(idx, value)`);
@@ -2542,7 +2822,15 @@ end)()`);
 
   if (useBytecodeStream) {
     const stream = encodeBytecodeStream(program.instructions, rng, seedState, bcInfo);
-    const partStrings = stream.parts.map((part) => bytesToLuaString(part));
+    let partStrings;
+    if (useBase85 && b85DecodeName) {
+      partStrings = stream.parts.map((part) => {
+        const { encoded, length } = encodeBase85(part);
+        return `${b85DecodeName}(${luaString(encoded)}, ${length})`;
+      });
+    } else {
+      partStrings = stream.parts.map((part) => bytesToLuaString(part));
+    }
     const logicalPartLengths = stream.order.map((storageIndex) => stream.parts[storageIndex - 1].length);
     appendPoolAssignments("bc_parts", "bc_parts", partStrings);
     appendPoolAssignments("bc_order", "bc_order", stream.order.map(String));
@@ -2554,6 +2842,20 @@ end)()`);
     lines.push(`local bc_twist = ${stream.twist}`);
     lines.push(`local bc_byte = ${runtimeTools.byte}`);
     lines.push(`local bc_inst_count = ${program.instructions.length}`);
+    // Cache decoded instructions after the first access.  VM loops revisit the
+    // same program counters frequently; caching removes repeated byte-stream
+    // walks and keeps the hot path to a single table lookup.  The cache stores
+    // only runtime-decoded values, so the emitted source still contains no
+    // plaintext instruction table.
+    // Derive the cache identifier from an existing random helper name rather
+    // than drawing another RNG value.  This keeps the surrounding layout and
+    // packed-shell randomization stable for reproducible seeds.
+    let instructionCacheName = `${helperNames.getInst}_cache`;
+    while (nameUsed.has(instructionCacheName)) {
+      instructionCacheName += "_";
+    }
+    nameUsed.add(instructionCacheName);
+    lines.push(`local ${instructionCacheName} = {}`);
     const streamIndexName = makeName();
     const streamIndexReadyName = makeName();
     const streamEnsureIndexName = makeName();
@@ -2606,6 +2908,10 @@ end)()`);
     lines.push(`  ${streamIndexReadyName} = true`);
     lines.push(`end`);
     lines.push(`local function ${helperNames.getInst}(pc)`);
+    lines.push(`  local cached = ${instructionCacheName}[pc]`);
+    lines.push(`  if cached then`);
+    lines.push(`    return cached[1], cached[2], cached[3]`);
+    lines.push(`  end`);
     lines.push(`  ${streamEnsureIndexName}()`);
     lines.push(`  local base = ${streamIndexName}[pc]`);
     lines.push(`  if base == nil then`);
@@ -2624,7 +2930,9 @@ end)()`);
     lines.push(`  if width > 2 then`);
     lines.push(`    b = ${helperNames.u32}(base + 9)`);
     lines.push(`  end`);
-    lines.push(`  return op, a, b`);
+    lines.push(`  local decoded = { op, a, b }`);
+    lines.push(`  ${instructionCacheName}[pc] = decoded`);
+    lines.push(`  return decoded[1], decoded[2], decoded[3]`);
     lines.push(`end`);
   }
 
@@ -3522,6 +3830,32 @@ end)()`);
   if (upperPoolLines.length) {
     lines.splice(upperPoolInsertIndex, 0, ...upperPoolLines);
   }
+  if (vmOptions.stackSpoof) {
+    const vmInnerName = makeName();
+    const coName = makeName();
+    const resName = makeName();
+    const errName = makeName();
+    const traceName = makeName();
+    const fakeTrace = [
+      "stack traceback:",
+      "\\t[C]: in function 'Dispatch'",
+      "\\tReplicatedStorage.Controllers.NetworkController:142: in function 'Fire'",
+      "\\tReplicatedStorage.Packages.Signal:45: in function 'Fire'",
+    ].join("\\n");
+    lines = [
+      `local function ${vmInnerName}()`,
+      ...lines.map((line) => `  ${line}`),
+      `end`,
+      `local ${coName} = coroutine.create(${vmInnerName})`,
+      `local ${resName} = (${runtimeTools.pack} or table.pack)(coroutine.resume(${coName}))`,
+      `if not ${resName}[1] then`,
+      `  local ${errName} = tostring(${resName}[2] or "Execution error")`,
+      `  local ${traceName} = string.format("Script error: %s\\n${fakeTrace}", ${errName})`,
+      `  error(${traceName}, 0)`,
+      `end`,
+      `return (${runtimeTools.unpack} or table.unpack or unpack)(${resName}, 2, ${resName}.n or #${resName})`,
+    ];
+  }
   const vmSource = lines.join("\n");
   const coreAliases = {
     bc: makeVmHelperAliasName(),
@@ -3837,7 +4171,7 @@ function collectVmCandidateFunctions(ast, style) {
     if (!node || node.__obf_vm || node.__obf_skip_vm) {
       return;
     }
-    if (node.type !== "FunctionDeclaration" && node.type !== "FunctionExpression") {
+    if (!isFunctionNode(node)) {
       return;
     }
     const fnName = getFunctionName(node);
@@ -3905,6 +4239,41 @@ function buildAutoVmIncludeSet(ast, style, options) {
 
 function virtualizeLuau(ast, ctx) {
   const style = ctx.options && ctx.options.luauParser === "luaparse" ? "luaparse" : "custom";
+  const isRcMode = ctx.options.vm?.kind === "rc" || ctx.options.rcVm === true || (ctx.options.vm?.enabled && ctx.options.vm?.kind !== "stack");
+
+  if (isRcMode && ctx.options.vm?.enabled !== false) {
+    try {
+      const rcCompiler = new RcCompiler({ style, options: ctx.options });
+      const rcProgram = rcCompiler.compileChunk(ast);
+      const isPacked = ctx.options.vm?.packed !== false;
+      const isShuffle = ctx.options.vm?.opcodeShuffle !== false;
+      const rcSource = buildRcRuntime(rcProgram, ctx.rng, {
+        packed: isPacked,
+        shuffle: isShuffle,
+      });
+      const parseFn = style === "custom"
+        ? (ctx.parseCustom || require("./ast").parseLuau)
+        : (ctx.parseLuaparse || require("./ast").parseLuau);
+      const vmAst = parseFn(rcSource);
+      markVmNodes(vmAst);
+      ast.body = Array.isArray(vmAst.body) ? vmAst.body : [vmAst];
+      ast.__obf_vm_chunk = true;
+      tracePass(ctx, {
+        kind: "virtualize-rc-chunk",
+        instructions: rcProgram.instructions.length,
+        constants: rcProgram.constants.length,
+        protos: rcProgram.protos.length,
+      });
+      return;
+    } catch (err) {
+      const debug = Boolean(ctx.options.vm?.debug) || process.env.JS_OBF_VM_DEBUG === "1";
+      if (debug) {
+        const message = err && err.message ? err.message : String(err);
+        console.warn(`[js-obf] luau-rc-vm skipped: ${message}`);
+      }
+    }
+  }
+
   liftNestedVmCallbacks(ast, ctx, style);
   const layers = Math.max(1, ctx.options.vm?.layers || 1);
   let sharedRuntime = null;
@@ -3947,7 +4316,7 @@ function virtualizeLuau(ast, ctx) {
     let layerNeedsSharedPrelude = false;
     const includeList = Array.isArray(ctx.options.vm?.include) ? ctx.options.vm.include : [];
     const broadVirtualization = Boolean(ctx.options.vm?.all) || includeList.length === 0;
-    const autoSelectEnabled = broadVirtualization && ctx.options.vm?.autoSelect !== false;
+    const autoSelectEnabled = !ctx.options.vm?.all && Boolean(ctx.options.vm?.autoSelect);
     const autoIncludeSet = autoSelectEnabled
       ? buildAutoVmIncludeSet(ast, style, ctx.options)
       : null;
@@ -3959,7 +4328,7 @@ function virtualizeLuau(ast, ctx) {
       if (node && node.__obf_skip_vm) {
         return;
       }
-      if (!node || (node.type !== "FunctionDeclaration" && node.type !== "FunctionExpression")) {
+      if (!node || !isFunctionNode(node)) {
         return;
       }
       const fnName = getFunctionName(node);
@@ -4033,12 +4402,14 @@ function virtualizeLuau(ast, ctx) {
       }
 
       applyInstructionFusion(program, ctx.rng, ctx.options.vm || {});
+      applyRegisterRandomization(program, ctx.rng, ctx.options.vm || {});
       injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
       program.instructions = compactInstructionList(program.instructions);
       // Virtualization always compiles to a plain instruction list first, then
       // applies encoding/splitting so the VM backend works from one IR shape.
 
-      const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
+      const forceBytecode = ctx.options.vm?.bytecodeEncoding === "base85" || ctx.options.vm?.base85 === true || ctx.options.vm?.machineCore === true;
+      const blockDispatch = forceBytecode ? false : Boolean(ctx.options.vm?.blockDispatch);
       const isaProfile = blockDispatch
         ? applyPolymorphicBlockISA(program, ctx.rng, ctx.options.vm || {})
         : {
@@ -4197,10 +4568,12 @@ function virtualizeLuau(ast, ctx) {
     }
 
     applyInstructionFusion(program, ctx.rng, ctx.options.vm || {});
+    applyRegisterRandomization(program, ctx.rng, ctx.options.vm || {});
     injectFakeInstructions(program, ctx.rng, ctx.options.vm?.fakeOpcodes ?? 0);
     program.instructions = compactInstructionList(program.instructions);
 
-    const blockDispatch = Boolean(ctx.options.vm?.blockDispatch);
+    const forceBytecode = ctx.options.vm?.bytecodeEncoding === "base85" || ctx.options.vm?.base85 === true || ctx.options.vm?.machineCore === true;
+    const blockDispatch = forceBytecode ? false : Boolean(ctx.options.vm?.blockDispatch);
     const isaProfile = blockDispatch
       ? applyPolymorphicBlockISA(program, ctx.rng, ctx.options.vm || {})
       : {

@@ -9,5 +9,6 @@ assert(html.includes('id="overlay"'), "expected processing overlay");
 assert(html.includes('id="overlayDownloadBtn"'), "expected overlay download action");
 assert(html.includes('id="overlayCopyBtn"'), "expected overlay copy action");
 assert(html.includes("function setOverlayState"), "expected overlay state controller");
+assert(html.includes('backendMode: "local"'), "expected local backend as the default web UI mode");
 
 console.log("web-ui: ok");

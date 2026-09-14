@@ -3,14 +3,38 @@ const optionsImpl = require("./options-impl") as {
   PRESETS: Record<string, Record<string, unknown>>;
 };
 
+export interface IdentifierProfile {
+  style?: "random" | "legacy";
+  alphabet?: string;
+  firstAlphabet?: string;
+  prefix?: string;
+  minLength?: number;
+  maxLength?: number;
+  homoglyphs?: boolean;
+}
+
 export interface NormalizedVmOptions {
   enabled: boolean;
+  kind?: "rc" | "stack";
+  packed?: boolean;
+  bytecodeEncoding?: "base85" | "reference16" | "escape";
+  base85Alphabet?: string;
+  referenceAlphabet?: string;
+  runtimeRename?: boolean;
+  runtimeObfuscation?: boolean;
+  runtimeNames?: IdentifierProfile;
+  compatibilityFallback?: "stack";
   [key: string]: unknown;
 }
 
 export interface NormalizedOptions {
   preset: string;
-  lang: string;
+  lang: "js" | "luau" | "java";
+  javaOptions: {
+    classpath?: string;
+    release?: string | number;
+    timeoutMs?: number;
+  };
   luauParser: string;
   filename: string;
   sourceMap: boolean;
@@ -24,7 +48,7 @@ export interface NormalizedOptions {
   cff: boolean;
   dead: boolean;
   vm: NormalizedVmOptions;
-  renameOptions: {
+  renameOptions: IdentifierProfile & {
     reserved: string[];
     [key: string]: unknown;
   };

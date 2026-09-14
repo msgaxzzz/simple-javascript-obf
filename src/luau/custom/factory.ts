@@ -350,7 +350,104 @@ function makeTypeParameter(name, value) {
   return { type: "TypeParameter", name, value };
 }
 
-module.exports = {
+function makeTypeInstantiation(expression, typeArguments = []) {
+  return { type: "TypeInstantiation", expression, typeArguments };
+}
+
+function makeClassProperty(name, annotation = null, isPublic = true) {
+  return { type: "ClassProperty", name, annotation, isPublic };
+}
+
+function makeClassMethod(name, func, isPublic = true) {
+  return { type: "ClassMethod", name, func, isPublic };
+}
+
+function makeClassStatement(name, superName = null, members = [], exported = false, attributes = []) {
+  return { type: "ClassStatement", name, superName, members, exported, attributes };
+}
+
+function makeAttributeList(attributes = []) {
+  return { type: "AttributeList", attributes };
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    attachLoc,
+  makeChunk,
+  makeBlock,
+  makeLocalStatement,
+  makeAssignmentStatement,
+  makeCompoundAssignmentStatement,
+  makeCallStatement,
+  makeFunctionDeclaration,
+  makeFunctionExpression,
+  makeIfStatement,
+  makeIfExpression,
+  makeWhileStatement,
+  makeRepeatStatement,
+  makeForNumericStatement,
+  makeForGenericStatement,
+  makeDoStatement,
+  makeReturnStatement,
+  makeBreakStatement,
+  makeContinueStatement,
+  makeLabelStatement,
+  makeGotoStatement,
+  makeTypeAliasStatement,
+  makeExportTypeStatement,
+  makeTypeFunctionStatement,
+  makeExportTypeFunctionStatement,
+  makeDeclareFunctionStatement,
+  makeDeclareVariableStatement,
+  makeClassStatement,
+  makeClassProperty,
+  makeClassMethod,
+  makeFunctionName,
+  makeAttribute,
+  makeAttributeList,
+  makeIdentifier,
+  makeNumericLiteral,
+  makeStringLiteral,
+  makeInterpolatedString,
+  makeInterpolatedStringText,
+  makeBooleanLiteral,
+  makeNilLiteral,
+  makeVarargLiteral,
+  makeUnaryExpression,
+  makeBinaryExpression,
+  makeTypeAssertion,
+  makeTypeInstantiation,
+  makeGroupExpression,
+  makeMemberExpression,
+  makeIndexExpression,
+  makeCallExpression,
+  makeMethodCallExpression,
+  makeTableConstructor,
+  makeTableField,
+  makeTableFieldIndex,
+  makeTableFieldName,
+  makeTableFieldList,
+  makeUnionType,
+  makeIntersectionType,
+  makeOptionalType,
+  makeTypePack,
+  makeVariadicType,
+  makeTypeLiteral,
+  makeTypeofType,
+  makeTypeReference,
+  makeTableType,
+  makeTableTypeField,
+  makeTableTypeFieldIndex,
+  makeTableTypeFieldName,
+  makeTableTypeFieldList,
+  makeFunctionType,
+  makeParenthesizedType,
+  makeTupleType,
+  makeTypeParameter,
+  };
+}
+
+export {
   attachLoc,
   makeChunk,
   makeBlock,
@@ -378,8 +475,12 @@ module.exports = {
   makeExportTypeFunctionStatement,
   makeDeclareFunctionStatement,
   makeDeclareVariableStatement,
+  makeClassStatement,
+  makeClassProperty,
+  makeClassMethod,
   makeFunctionName,
   makeAttribute,
+  makeAttributeList,
   makeIdentifier,
   makeNumericLiteral,
   makeStringLiteral,
@@ -391,6 +492,7 @@ module.exports = {
   makeUnaryExpression,
   makeBinaryExpression,
   makeTypeAssertion,
+  makeTypeInstantiation,
   makeGroupExpression,
   makeMemberExpression,
   makeIndexExpression,

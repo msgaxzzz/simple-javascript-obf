@@ -110,6 +110,9 @@ function traverse(root, visitor) {
   return visit(root, null, null, null);
 }
 
-module.exports = {
-  traverse,
-};
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    traverse,
+  };
+}
+export { traverse };

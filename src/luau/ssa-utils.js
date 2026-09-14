@@ -145,7 +145,7 @@ function findSSAForNode(ssaRoot, node) {
   return null;
 }
 
-module.exports = {
+export default {
   addSSAUsedNames,
   addSSAUsedNamesFromRoot,
   getCachedSSAUsedNamesFromRoot,

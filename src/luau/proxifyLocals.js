@@ -1,6 +1,6 @@
 const { walk } = require("./ast");
 const { collectIdentifierNames, makeNameFactory } = require("./names");
-const { getCachedSSAUsedNamesFromRoot } = require("./ssa-utils");
+const { getCachedSSAUsedNamesFromRoot } = require("./ssa-utils").default;
 
 const RESERVED = new Set([
   "_ENV",

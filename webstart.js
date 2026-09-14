@@ -103,19 +103,21 @@ async function runCliObfuscate(source, filename, options) {
   const inputPath = path.join(tempDir, safeName);
   const ext = path.extname(safeName);
   const inferredLang =
-    ext === ".lua" || ext === ".luau" ? "luau" : "js";
+    ext === ".lua" || ext === ".luau" ? "luau" : (ext === ".java" ? "java" : "js");
   const lang = options.lang || inferredLang;
   const outputExt = lang === "luau"
     ? (ext === ".lua" || ext === ".luau" ? ext : ".lua")
-    : ".js";
+    : (lang === "java" ? ".java" : ".js");
   const outputPath = path.join(
     tempDir,
-    `${path.basename(safeName, path.extname(safeName))}.obf${outputExt}`
+    lang === "java"
+      ? safeName
+      : `${path.basename(safeName, path.extname(safeName))}.obf${outputExt}`
   );
 
   fs.writeFileSync(inputPath, source, "utf8");
 
-  const args = ["bin/js-obf", inputPath, "-o", outputPath, ...buildCliArgs(options)];
+  const args = ["bin/js-obf", inputPath, "-o", outputPath, ...buildCliArgs({ ...options, lang })];
 
   try {
     const { stdout, stderr, code } = await new Promise((resolve, reject) => {
@@ -208,14 +210,14 @@ server.listen(PORT, () => {
   console.log(`JS Obfuscator web UI running at http://localhost:${PORT}`);
   if (isRemoteObfuscationEnabled()) {
     console.log("Obfuscation backend: Appwrite Function");
+    pingAppwrite()
+      .then(() => {
+        console.log("Appwrite ping successful.");
+      })
+      .catch((error) => {
+        console.warn(`Appwrite ping failed: ${error.message}`);
+      })
   } else {
     console.log("Obfuscation backend: Local CLI");
   }
-  pingAppwrite()
-    .then(() => {
-      console.log("Appwrite ping successful.");
-    })
-    .catch((error) => {
-      console.warn(`Appwrite ping failed: ${error.message}`);
-    });
 });

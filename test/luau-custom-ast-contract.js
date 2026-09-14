@@ -33,6 +33,7 @@ assert.ok(ast.loc && typeof ast.loc.start.line === "number", "parsed nodes shoul
 execFileSync(npmCommand, ["run", "build:ts"], {
   cwd: repoRoot,
   stdio: "pipe",
+  shell: true,
 });
 
 const builtCustom = require(path.join(buildCustomPath, "index.js"));

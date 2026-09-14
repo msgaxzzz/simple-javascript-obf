@@ -253,41 +253,116 @@ function buildWhileStatement(condition, body, style) {
 
 function buildOpaquePredicate(stateName, rng) {
   const subject = identifier(stateName);
-  const template = rng.int(0, 3);
+  const template = rng.int(0, 6);
   if (template === 0) {
-    const seed = rng.int(2, 13);
+    // x * (x + 1) is always even -> % 2 == 0
     return binaryExpression(
       "==",
       binaryExpression(
         "%",
-        binaryExpression("*", subject, numericLiteral(seed)),
-        numericLiteral(seed)
+        binaryExpression(
+          "*",
+          subject,
+          binaryExpression("+", cloneNode(subject), numericLiteral(1))
+        ),
+        numericLiteral(2)
       ),
       numericLiteral(0)
     );
   }
   if (template === 1) {
+    // (x^3 - x) = (x-1)x(x+1) is always divisible by 6 -> % 6 == 0
     return binaryExpression(
       "==",
-      binaryExpression("-", subject, subject),
+      binaryExpression(
+        "%",
+        binaryExpression(
+          "-",
+          binaryExpression(
+            "*",
+            binaryExpression("*", subject, cloneNode(subject)),
+            cloneNode(subject)
+          ),
+          cloneNode(subject)
+        ),
+        numericLiteral(6)
+      ),
       numericLiteral(0)
     );
   }
   if (template === 2) {
-    const seed = rng.int(3, 19);
+    // (x^2 + 1) mod 4 is never 0 -> % 4 ~= 0
+    return binaryExpression(
+      "~=",
+      binaryExpression(
+        "%",
+        binaryExpression(
+          "+",
+          binaryExpression("*", subject, cloneNode(subject)),
+          numericLiteral(1)
+        ),
+        numericLiteral(4)
+      ),
+      numericLiteral(0)
+    );
+  }
+  if (template === 3) {
+    // x^2 mod 4 is always 0 or 1, never 2 -> % 4 ~= 2
+    return binaryExpression(
+      "~=",
+      binaryExpression(
+        "%",
+        binaryExpression("*", subject, cloneNode(subject)),
+        numericLiteral(4)
+      ),
+      numericLiteral(2)
+    );
+  }
+  if (template === 4) {
+    // x^2 mod 4 is always 0 or 1, never 3 -> % 4 ~= 3
+    return binaryExpression(
+      "~=",
+      binaryExpression(
+        "%",
+        binaryExpression("*", subject, cloneNode(subject)),
+        numericLiteral(4)
+      ),
+      numericLiteral(3)
+    );
+  }
+  if (template === 5) {
+    // x(x+1)(x+2) is always divisible by 3 -> % 3 == 0
     return binaryExpression(
       "==",
       binaryExpression(
-        "-",
-        binaryExpression("+", subject, numericLiteral(seed)),
-        subject
+        "%",
+        binaryExpression(
+          "*",
+          binaryExpression(
+            "*",
+            subject,
+            binaryExpression("+", cloneNode(subject), numericLiteral(1))
+          ),
+          binaryExpression("+", cloneNode(subject), numericLiteral(2))
+        ),
+        numericLiteral(3)
       ),
-      numericLiteral(seed)
+      numericLiteral(0)
     );
   }
+  // (x + k)(x + k + 1) is always even -> % 2 == 0
+  const seed = rng.int(3, 19);
   return binaryExpression(
     "==",
-    binaryExpression("%", subject, numericLiteral(1)),
+    binaryExpression(
+      "%",
+      binaryExpression(
+        "*",
+        binaryExpression("+", subject, numericLiteral(seed)),
+        binaryExpression("+", cloneNode(subject), numericLiteral(seed + 1))
+      ),
+      numericLiteral(2)
+    ),
     numericLiteral(0)
   );
 }

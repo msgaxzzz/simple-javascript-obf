@@ -1,5 +1,3 @@
-const { traverse } = require("./ast");
-
 function stringLiteral(value, ctx) {
   const bytes = Array.from(Buffer.from(String(value), "utf8"));
   const raw = bytes.length
@@ -41,6 +39,68 @@ function encodeMemberExpression(node, ctx) {
   };
 }
 
+function cloneNode(value) {
+  if (Array.isArray(value)) {
+    return value.map(cloneNode);
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const key of Object.keys(value)) {
+      out[key] = cloneNode(value[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+function isStableMethodBase(expr) {
+  if (!expr || typeof expr !== "object") {
+    return false;
+  }
+  switch (expr.type) {
+    case "Identifier":
+      return true;
+    case "GroupExpression":
+      return isStableMethodBase(expr.expression);
+    case "MemberExpression":
+      return isStableMethodBase(expr.base);
+    case "IndexExpression":
+      return isStableMethodBase(expr.base) && Boolean(
+        expr.index &&
+          (
+            expr.index.type === "Identifier" ||
+            expr.index.type === "StringLiteral" ||
+            expr.index.type === "NumericLiteral" ||
+            expr.index.type === "BooleanLiteral"
+          )
+      );
+    default:
+      return false;
+  }
+}
+
+function encodeMethodCallExpression(node, ctx) {
+  if (!node || node.type !== "MethodCallExpression") {
+    return node;
+  }
+  const name = node.method && node.method.name;
+  if (typeof name !== "string" || !isStableMethodBase(node.base)) {
+    return node;
+  }
+  return {
+    type: "CallExpression",
+    base: {
+      type: "IndexExpression",
+      base: node.base,
+      index: stringLiteral(name, ctx),
+    },
+    arguments: [
+      cloneNode(node.base),
+      ...(Array.isArray(node.arguments) ? node.arguments : []),
+    ],
+  };
+}
+
 function encodeTableField(field, ctx) {
   if (!field || typeof field !== "object") {
     return field;
@@ -53,12 +113,15 @@ function encodeTableField(field, ctx) {
     };
   }
   if (field.kind === "name") {
-    return {
-      type: "TableField",
-      kind: "index",
-      key: stringLiteral(field.name.name, ctx),
-      value: field.value,
-    };
+    const rawName = field.name?.name || field.key?.name || (typeof field.name === "string" ? field.name : (typeof field.key === "string" ? field.key : null));
+    if (rawName) {
+      return {
+        type: "TableField",
+        kind: "index",
+        key: stringLiteral(rawName, ctx),
+        value: field.value,
+      };
+    }
   }
   return field;
 }
@@ -68,35 +131,48 @@ function encodeMembers(ast, ctx) {
     return;
   }
 
-  traverse(ast, (node, parent, key, index, context) => {
-    if (!node || !parent || key === null || key === undefined || !context) {
-      return;
+  function encodeAny(value, parent = null, key = null) {
+    if (!value || typeof value !== "object") {
+      return value;
     }
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i += 1) {
+        value[i] = encodeAny(value[i], value, i);
+      }
+      return value;
+    }
+
+    let node = value;
     if (node.type === "MemberExpression") {
-      if (parent.type === "FunctionDeclaration" && key === "identifier") {
-        return;
+      if (!(parent && parent.type === "FunctionDeclaration" && key === "identifier")) {
+        node = encodeMemberExpression(node, ctx);
       }
-      const replacement = encodeMemberExpression(node, ctx);
-      if (replacement !== node) {
-        context.replace(replacement);
-      }
-      return;
-    }
-    if (node.type === "TableKeyString" || node.kind === "name") {
-      const replacement = encodeTableField(node, ctx);
-      if (replacement !== node) {
-        context.replace(replacement);
-      }
-      return;
-    }
-    if (node.type === "InterpolatedString" && Array.isArray(node.parts)) {
+    } else if (node.type === "MethodCallExpression") {
+      node = encodeMethodCallExpression(node, ctx);
+    } else if (node.type === "TableKeyString" || node.kind === "name") {
+      node = encodeTableField(node, ctx);
+    } else if (node.type === "InterpolatedString" && Array.isArray(node.parts)) {
       node.parts.forEach((part) => {
         if (part && part.type === "InterpolatedStringText" && typeof part.raw === "string" && part.raw.length) {
           part.raw = escapeInterpolatedRaw(part.raw);
         }
       });
     }
-  });
+
+    for (const childKey of Object.keys(node)) {
+      if (childKey === "loc" || childKey === "range") {
+        continue;
+      }
+      node[childKey] = encodeAny(node[childKey], node, childKey);
+    }
+
+    if (parent && key !== null && key !== undefined && !Array.isArray(parent)) {
+      parent[key] = node;
+    }
+    return node;
+  }
+
+  encodeAny(ast);
 }
 
 module.exports = {

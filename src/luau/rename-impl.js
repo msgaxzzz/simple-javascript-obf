@@ -1,5 +1,5 @@
 const { walk } = require("./ast");
-const { getCachedSSAReadNamesFromRoot } = require("./ssa-utils");
+const { getCachedSSAReadNamesFromRoot } = require("./ssa-utils").default;
 
 const LUA_KEYWORDS = new Set([
   "and",
@@ -87,12 +87,40 @@ function encodeBase(value, alphabet, minLen) {
   return out;
 }
 
+function getProgressiveIdentifier(index, firstAlphabet = FIRST_CHARS, restAlphabet = REST_CHARS) {
+  const fLen = firstAlphabet.length;
+  const rLen = restAlphabet.length;
+
+  if (index < fLen) {
+    return firstAlphabet[index];
+  }
+
+  let n = index - fLen;
+  let len = 2;
+  let countForLen = fLen * rLen;
+
+  while (n >= countForLen) {
+    n -= countForLen;
+    len += 1;
+    countForLen *= rLen;
+  }
+
+  let chars = "";
+  for (let i = 0; i < len - 1; i += 1) {
+    chars = restAlphabet[n % rLen] + chars;
+    n = Math.floor(n / rLen);
+  }
+  const firstChar = firstAlphabet[n % fLen];
+  return firstChar + chars;
+}
+
 class LuaNameGenerator {
-  constructor({ rng, reserved = [], alphabets = null } = {}) {
+  constructor({ rng, reserved = [], alphabets = null, progressive = true } = {}) {
     this.rng = rng;
     this.reserved = new Set(reserved);
     this.used = new Set();
     this.index = 0;
+    this.progressive = progressive !== false;
     if (alphabets && alphabets.first && alphabets.rest) {
       this.firstAlphabet = alphabets.first;
       this.restAlphabet = alphabets.rest;
@@ -107,20 +135,21 @@ class LuaNameGenerator {
     while (true) {
       const currentIndex = this.index;
       this.index += 1;
-      const mixed = hash32(currentIndex + this.salt);
-      const first = this.firstAlphabet[mixed % this.firstAlphabet.length];
-      const minLen = 2 + (mixed % 3);
-      const body = encodeBase(hash32(mixed ^ 0x9e3779b9), this.restAlphabet, minLen);
-      const name = `${first}${body}`;
+      let name;
+      if (this.progressive) {
+        name = getProgressiveIdentifier(currentIndex, this.firstAlphabet, this.restAlphabet);
+      } else {
+        const mixed = hash32(currentIndex + this.salt);
+        const first = this.firstAlphabet[mixed % this.firstAlphabet.length];
+        const minLen = 2 + (mixed % 3);
+        const body = encodeBase(hash32(mixed ^ 0x9e3779b9), this.restAlphabet, minLen);
+        name = `${first}${body}`;
+      }
       if (!this.reserved.has(name) && !this.used.has(name)) {
         this.used.add(name);
         return name;
       }
     }
-  }
-
-  reserve(name) {
-    this.reserved.add(name);
   }
 }
 
@@ -243,10 +272,8 @@ function isBuiltinLibBase(expr, scope, ctx) {
   if (expr.type === "Identifier") {
     return BUILTIN_LIBS.has(expr.name) && !resolveName(scope, expr.name);
   }
-  if (isEnvAliasLookup(expr, scope, ctx)) {
-    return true;
-  }
-  return false;
+  return !!isEnvAliasLookup(expr, scope, ctx);
+
 }
 
 function isDynamicKeyMapAccess(expr, scope, ctx) {
@@ -381,6 +408,31 @@ function markExternalShapePath(scope, expr) {
   }
 }
 
+function getRootIdentifierName(expr) {
+  let current = expr;
+  while (current && typeof current === "object") {
+    if (current.type === "Identifier") {
+      return current.name;
+    }
+    if (current.type === "MemberExpression" || current.type === "IndexExpression") {
+      current = current.base;
+      continue;
+    }
+    if (current.type === "GroupExpression") {
+      current = current.expression;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+function markExternalShapeAssignmentTarget(scope, expr) {
+  const rootName = getRootIdentifierName(expr);
+  const ownerScope = rootName ? resolveBindingScope(scope, rootName) : null;
+  markExternalShapePath(ownerScope || scope, expr);
+}
+
 function markExternalShapeBinding(scope, originalName, mappedName) {
   const names = [originalName, mappedName];
   const seen = new Set();
@@ -454,7 +506,7 @@ function resolveExternalShapePath(scope, expr) {
   return false;
 }
 
-function shouldPropagateExternalShapeFromValue(value, scope) {
+function shouldPropagateExternalShapeFromValue(value, scope, ctx = null) {
   if (!value || typeof value !== "object") {
     return false;
   }
@@ -462,16 +514,21 @@ function shouldPropagateExternalShapeFromValue(value, scope) {
     return true;
   }
   if (value.type === "GroupExpression") {
-    return shouldPropagateExternalShapeFromValue(value.expression, scope);
+    return shouldPropagateExternalShapeFromValue(value.expression, scope, ctx);
   }
   if (
     (value.type === "CallExpression" || value.type === "MethodCallExpression") &&
     Array.isArray(value.arguments) &&
     value.arguments.length > 0
   ) {
-    return resolveExternalShapePath(scope, value.arguments[0]);
+    if (resolveExternalShapePath(scope, value.arguments[0])) {
+      return true;
+    }
   }
-  return false;
+  return !!(ctx &&
+      (value.type === "CallExpression" || value.type === "MethodCallExpression") &&
+      !isDefinitelyLocalTable(value, scope, ctx));
+
 }
 
 function isExternalShapeValueSource(value, scope) {
@@ -1783,6 +1840,9 @@ function shouldRenameTableFieldsForTarget(target, scope, ctx) {
   if (!target || typeof target !== "object") {
     return false;
   }
+  if (resolveExternalShapePath(scope, target)) {
+    return false;
+  }
   if (isDynamicKeyMapAccess(target, scope, ctx)) {
     return false;
   }
@@ -1805,6 +1865,9 @@ function shouldRenameLocalTableInitializer(variable, expr, scope, ctx) {
   if (!variable || variable.type !== "Identifier") {
     return false;
   }
+  if (resolveExternalShapePath(scope, variable)) {
+    return false;
+  }
   if (ctx.externalSchemaLocalNames && ctx.externalSchemaLocalNames.has(variable.name)) {
     return false;
   }
@@ -1818,10 +1881,8 @@ function shouldRenameAssignedValueFieldsForTarget(target, value, scope, ctx) {
   if (shouldRenameTableFieldsForTarget(target, scope, ctx)) {
     return true;
   }
-  if (isDynamicKeyMapAccess(target, scope, ctx) && isDefinitelyLocalTable(value, scope, ctx)) {
-    return true;
-  }
-  return false;
+  return !!(isDynamicKeyMapAccess(target, scope, ctx) && isDefinitelyLocalTable(value, scope, ctx));
+
 }
 
 function shouldRenameReturnedTableFields(scope) {
@@ -1835,6 +1896,97 @@ function shouldRenameReturnedTableFields(scope) {
   return false;
 }
 
+function memberNameOfExpression(expr) {
+  if (!expr || typeof expr !== "object") {
+    return null;
+  }
+  if (expr.type === "MemberExpression" && expr.identifier && expr.identifier.type === "Identifier") {
+    return expr.identifier.name;
+  }
+  if (expr.type === "IndexExpression" && expr.index && expr.index.type === "StringLiteral") {
+    return expr.index.value;
+  }
+  return null;
+}
+
+function isRemoteFunctionInvokeCallbackTarget(expr) {
+  const name = memberNameOfExpression(expr);
+  return name === "OnServerInvoke" || name === "OnClientInvoke";
+}
+
+function unwrapIdentifierExpression(expr) {
+  let current = expr;
+  while (current && current.type === "GroupExpression") {
+    current = current.expression;
+  }
+  return current && current.type === "Identifier" ? current.name : null;
+}
+
+function getFunctionBodyStatements(fn) {
+  if (!fn || !fn.body) {
+    return [];
+  }
+  if (Array.isArray(fn.body)) {
+    return fn.body;
+  }
+  if (fn.body.body && Array.isArray(fn.body.body)) {
+    return fn.body.body;
+  }
+  return [];
+}
+
+function getStatementBodyStatements(body) {
+  if (!body) {
+    return [];
+  }
+  if (Array.isArray(body)) {
+    return body;
+  }
+  if (body.body && Array.isArray(body.body)) {
+    return body.body;
+  }
+  return [];
+}
+
+function collectReturnedIdentifierNames(fn) {
+  const names = new Set();
+  const visitStatements = (statements) => {
+    if (!Array.isArray(statements)) {
+      return;
+    }
+    statements.forEach((stmt) => {
+      if (!stmt || typeof stmt !== "object") {
+        return;
+      }
+      switch (stmt.type) {
+        case "ReturnStatement":
+          (stmt.arguments || []).forEach((expr) => {
+            const name = unwrapIdentifierExpression(expr);
+            if (name) {
+              names.add(name);
+            }
+          });
+          return;
+        case "IfStatement":
+          (stmt.clauses || []).forEach((clause) => visitStatements(getStatementBodyStatements(clause.body)));
+          visitStatements(getStatementBodyStatements(stmt.elseBody));
+          return;
+        case "WhileStatement":
+        case "RepeatStatement":
+        case "ForNumericStatement":
+        case "ForGenericStatement":
+        case "DoStatement":
+          visitStatements(getStatementBodyStatements(stmt.body));
+          return;
+        default:
+          return;
+      }
+    });
+  };
+  visitStatements(getFunctionBodyStatements(fn));
+  return names;
+}
+
 function shouldRenameCallArgumentFields(callExpr, arg, scope, ctx) {
   if (!callExpr || !arg || arg.type !== "TableConstructorExpression") {
     return false;
@@ -1842,6 +1994,9 @@ function shouldRenameCallArgumentFields(callExpr, arg, scope, ctx) {
   if (callExpr.type === "CallExpression") {
     const base = callExpr.base;
     const args = Array.isArray(callExpr.arguments) ? callExpr.arguments : [];
+    if (args.length >= 2 && arg === args[1] && resolveExternalShapePath(scope, args[0])) {
+      return false;
+    }
     return Boolean(
       base &&
       base.type === "MemberExpression" &&
@@ -1858,6 +2013,9 @@ function shouldRenameCallArgumentFields(callExpr, arg, scope, ctx) {
   }
   if (callExpr.type === "MethodCallExpression") {
     const args = Array.isArray(callExpr.arguments) ? callExpr.arguments : [];
+    if (args.length >= 1 && arg === args[0] && resolveExternalShapePath(scope, callExpr.base)) {
+      return false;
+    }
     return Boolean(
       callExpr.method &&
       callExpr.method.type === "Identifier" &&
@@ -2008,16 +2166,21 @@ function renameStatement(stmt, scope, ctx) {
         }
         const originalName = variable.name;
         const initExpr = Array.isArray(stmt.init) ? stmt.init[index] : null;
-        const safe = !(ctx.externalSchemaLocalNames && ctx.externalSchemaLocalNames.has(originalName))
+        const isExternalShapeLocal = resolveExternalShapePath(scope, variable);
+        const safe = !isExternalShapeLocal
+          && !(ctx.externalSchemaLocalNames && ctx.externalSchemaLocalNames.has(originalName))
           && !isDynamicMapAliasInitializer(initExpr, scope, ctx)
           && isDefinitelyLocalTable(initExpr, scope, ctx);
         const newName = defineName(scope, originalName, ctx);
         markLocalMemberSafety(scope, originalName, newName, safe);
         variable.name = newName;
+        if (isExternalShapeLocal) {
+          markExternalShapeBinding(scope, originalName, newName);
+        }
         if (isDynamicMapFunctionCall(initExpr, ctx)) {
           markDynamicMapRecordAlias(scope, originalName, newName, ctx);
         }
-        if (shouldPropagateExternalShapeFromValue(initExpr, scope)) {
+        if (shouldPropagateExternalShapeFromValue(initExpr, scope, ctx)) {
           markExternalShapeBinding(scope, originalName, newName);
         }
       });
@@ -2026,9 +2189,19 @@ function renameStatement(stmt, scope, ctx) {
     case "AssignmentStatement":
       stmt.variables.forEach((variable, index) => {
         const value = Array.isArray(stmt.init) ? stmt.init[index] : null;
+        if (
+          isRemoteFunctionInvokeCallbackTarget(variable) &&
+          value &&
+          (value.type === "FunctionExpression" || value.type === "FunctionDeclaration")
+        ) {
+          value.__obf_external_return_shape = true;
+        }
+      });
+      stmt.variables.forEach((variable, index) => {
+        const value = Array.isArray(stmt.init) ? stmt.init[index] : null;
         updateMemberSafetyFromAssignment(variable, value, scope, ctx);
-        if (shouldPropagateExternalShapeFromValue(value, scope)) {
-          markExternalShapePath(scope, variable);
+        if (shouldPropagateExternalShapeFromValue(value, scope, ctx)) {
+          markExternalShapeAssignmentTarget(scope, variable);
         }
       });
       stmt.variables.forEach((variable) => renameExpression(variable, scope, ctx));
@@ -2245,6 +2418,11 @@ function renameFunctionExpression(expr, scope, ctx) {
   const fnScope = createScope(scope);
   if (expr.__obf_rename_return_table_fields) {
     fnScope.shouldRenameReturnTableFields = true;
+  }
+  if (expr.__obf_external_return_shape) {
+    collectReturnedIdentifierNames(expr).forEach((name) => {
+      markExternalShapeBinding(fnScope, name, name);
+    });
   }
   const isRegisterStyleCallback = Boolean(
     expr.__obf_safe_param_indexes &&
