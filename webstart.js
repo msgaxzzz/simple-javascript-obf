@@ -220,4 +220,14 @@ server.listen(PORT, () => {
   } else {
     console.log("Obfuscation backend: Local CLI");
   }
+  if (isRemoteObfuscationEnabled()) {
+    Promise.resolve()
+      .then(() => pingAppwrite())
+      .then(() => {
+        console.log("Appwrite ping successful.");
+      })
+      .catch((error) => {
+        console.warn(`Appwrite ping failed: ${error.message}`);
+      });
+  }
 });
