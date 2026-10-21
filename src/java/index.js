@@ -16,7 +16,47 @@ function resolveTool(toolName) {
   return exe;
 }
 
+let seaJavaDir = null;
+
+function getSeaJavaDir() {
+  if (seaJavaDir) {
+    return seaJavaDir;
+  }
+  let sea;
+  try {
+    sea = require("node:sea");
+  } catch {
+    return null;
+  }
+  if (
+    !sea ||
+    typeof sea.isSea !== "function" ||
+    !sea.isSea() ||
+    typeof sea.getAssetKeys !== "function" ||
+    typeof sea.getAsset !== "function"
+  ) {
+    return null;
+  }
+  const keys = sea.getAssetKeys().filter((key) => key.startsWith("java/"));
+  if (!keys.length) {
+    return null;
+  }
+  const dir = path.join(os.tmpdir(), `obveil-sea-java-${process.pid}`);
+  for (const key of keys) {
+    const relative = key.slice("java/".length).replace(/\//g, path.sep);
+    const target = path.join(dir, relative);
+    fsSync.mkdirSync(path.dirname(target), { recursive: true });
+    fsSync.writeFileSync(target, Buffer.from(sea.getAsset(key)));
+  }
+  seaJavaDir = dir;
+  return dir;
+}
+
 function getSourceJavaDir() {
+  const seaDir = getSeaJavaDir();
+  if (seaDir && fsSync.existsSync(path.join(seaDir, "engine"))) {
+    return seaDir;
+  }
   if (fsSync.existsSync(path.join(__dirname, "engine"))) {
     return __dirname;
   }

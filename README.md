@@ -49,18 +49,36 @@ If an input directory is provided, it will recursively obfuscate all `.js` files
 When string encryption is enabled, the script also prompts whether to skip encoding object literal keys, JSX attribute string values, or template literal static chunks.
 
 ## Standalone executable
-Build a single-file Windows executable with Bun:
+Build single-file executables with Node.js SEA:
 ```
-npm run build:exe
+npm install --include=dev
+npm run build:exe          # host platform
+npm run build:exe:win      # dist\obveil.exe
+npm run build:exe:linux    # dist/obveil (Linux host) or dist/obveil-linux-x64 (cross-build)
+npm run build:exe:macos    # dist/obveil-macos-<arch> (macOS host)
 ```
-This produces `dist/obveil.exe` with a blank (transparent) icon. Run it directly:
+The build uses `@vercel/ncc` for bundling, Node's SEA blob, and `postject` for injection. Windows builds also use `resedit` for a blank (transparent) icon. Node.js 20.19+ / 24 is required.
+
+GitHub Actions builds the common targets on native runners via `.github/workflows/build-exe.yml`:
+
+- Windows x64
+- Linux x64 / arm64
+- macOS x64 / arm64
+
+Linux cross-builds download the matching Node.js Linux tarball and need `chmod +x` after copying to Linux. Linux arm64 can be built with:
+```
+npm run build:exe:linux:arm64
+```
+Run it directly:
 ```
 dist\obveil.exe input.js -o output.js --preset high
-dist\obveil.exe input.lua -o output.lua --preset high --lang luau
+./obveil input.js -o output.js --preset high
+./obveil-macos-arm64 input.js -o output.js --preset high
+./obveil input.lua -o output.lua --preset high --lang luau
 ```
-JavaScript and Luau support are embedded. Java mode still needs a JDK on `PATH`/`JAVA_HOME`; APK mode still needs the Android SDK build tools.
+JavaScript and Luau support are embedded. The Java engine sources/classes are embedded as SEA assets, but Java mode still needs a JDK on `PATH`/`JAVA_HOME`; APK mode still needs the Android SDK build tools.
 
-The executable is a console application, so double-clicking it opens a console window. To build without a console window, add `--windows-hide-console` to the `bun build` command in `scripts/build-exe.js` (CLI output is then only visible when launched from an existing terminal).
+The executable is a console application, so double-clicking it opens a console window. It writes CLI output to the terminal when launched from one.
 
 ## Web UI
 Start the local web console (default port `6589`):

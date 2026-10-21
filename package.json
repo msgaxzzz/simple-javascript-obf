@@ -1,6 +1,6 @@
 {
   "name": "obveil",
-  "version": "1.2.3-A",
+  "version": "1.2.4",
   "description": "Modular JavaScript obfuscator with optional VM and CFF",
   "main": "src/index.js",
   "module": "src/index.ts",
@@ -21,6 +21,10 @@
     "test:java": "node --test test/java-obf.cjs",
     "gen:apk": "node scripts/gen-test-apk.js",
     "build:exe": "node scripts/build-exe.js",
+    "build:exe:win": "node scripts/build-exe.js --platform win32",
+    "build:exe:linux": "node scripts/build-exe.js --platform linux",
+    "build:exe:linux:arm64": "node scripts/build-exe.js --platform linux --arch arm64",
+    "build:exe:macos": "node scripts/build-exe.js --platform darwin",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build:ts": "tsc -p tsconfig.build.json"
   },
@@ -45,6 +49,9 @@
     "typescript": "^5.8.3"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0"
+    "@types/node": "^24.0.0",
+    "@vercel/ncc": "^0.45.0",
+    "postject": "^1.0.0-alpha.6",
+    "resedit": "^3.1.0"
   }
 }

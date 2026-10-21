@@ -1,0 +1,73 @@
+name: Build executables
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - "bin/**"
+      - "src/**"
+      - "scripts/build-exe.js"
+      - "scripts/verify-exe.js"
+      - "package.json"
+      - "assets/blank.ico"
+      - ".github/workflows/build-exe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            exe: dist/obveil.exe
+            artifact: dist/obveil.exe
+          - os: ubuntu-latest
+            name: linux-x64
+            exe: dist/obveil
+            artifact: dist/obveil
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            exe: dist/obveil
+            artifact: dist/obveil
+          - os: macos-15-intel
+            name: macos-x64
+            exe: dist/obveil-macos-x64
+            artifact: dist/obveil-macos-x64
+          - os: macos-15
+            name: macos-arm64
+            exe: dist/obveil-macos-arm64
+            artifact: dist/obveil-macos-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm install --include=dev
+
+      - name: Build executable
+        run: npm run build:exe
+
+      - name: Verify executable
+        run: node scripts/verify-exe.js ${{ matrix.exe }}
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: obveil-${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 14

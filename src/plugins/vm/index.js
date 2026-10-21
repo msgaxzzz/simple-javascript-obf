@@ -427,7 +427,7 @@ function applyVmToFunction(fnPath, ctx, programPath) {
   const envArgsKey = `__vm_args_${ctx.rng.int(1, 1e9)}`;
   const envNewTargetKey = `__vm_new_target_${ctx.rng.int(1, 1e9)}`;
 
-  rewriteClosureRefs(fnPath, ctx, envId, envThisKey, envArgsKey);
+  rewriteClosureRefs(fnPath, ctx, envThisKey, envArgsKey);
 
   const locals = collectLocals(fnPath);
   for (const name of capturedBindings) {

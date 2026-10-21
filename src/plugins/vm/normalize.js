@@ -1,3 +1,11 @@
+const COMMONJS_WRAPPER_NAMES = new Set([
+  "require",
+  "module",
+  "exports",
+  "__dirname",
+  "__filename",
+]);
+
 function hasUnsupported(fnPath) {
   let unsupported = false;
   fnPath.traverse({
@@ -549,54 +557,43 @@ function hoistFunctionDeclarations(fnPath, ctx) {
   return prologue;
 }
 
-function rewriteClosureRefs(fnPath, ctx, envId, envThisKey, envArgsKey) {
+function rewriteClosureRefs(fnPath, ctx, envThisKey, envArgsKey) {
   const { t } = ctx;
-  const rootScope = fnPath.scope;
-
   fnPath.traverse({
     Function(innerPath) {
-      if (innerPath === fnPath) {
+      if (innerPath === fnPath || !innerPath.isArrowFunctionExpression()) {
+        return;
+      }
+      const nearestFunction = innerPath.findParent(
+        (parent) =>
+          parent.isFunction() && !parent.isArrowFunctionExpression()
+      );
+      if (
+        nearestFunction &&
+        nearestFunction !== fnPath &&
+        nearestFunction.findParent((parent) => parent === fnPath)
+      ) {
+        // This arrow belongs to a nested normal function; its this/arguments
+        // refer to that function, not to the virtualized root.
         return;
       }
       innerPath.traverse({
+        Function(path) {
+          if (path !== innerPath && !path.isArrowFunctionExpression()) {
+            path.skip();
+          }
+        },
         Identifier(idPath) {
-          if (!idPath.isReferencedIdentifier()) {
-            return;
-          }
-          const name = idPath.node.name;
-          if (name === "undefined") {
-            return;
-          }
-          const binding = innerPath.scope.getBinding(name);
-          if (binding && binding.scope === rootScope) {
-            idPath.replaceWith(
-              t.memberExpression(envId, t.identifier(name))
-            );
-            return;
-          }
-          if (innerPath.isArrowFunctionExpression() && name === "arguments") {
-            if (!binding) {
-              idPath.replaceWith(
-                t.memberExpression(
-                  envId,
-                  t.stringLiteral(envArgsKey),
-                  true
-                )
-              );
-            }
-            return;
+          if (
+            idPath.isReferencedIdentifier() &&
+            idPath.node.name === "arguments" &&
+            !idPath.scope.getBinding("arguments")
+          ) {
+            idPath.replaceWith(t.identifier(envArgsKey));
           }
         },
         ThisExpression(thisPath) {
-          if (innerPath.isArrowFunctionExpression()) {
-            thisPath.replaceWith(
-              t.memberExpression(
-                envId,
-                t.stringLiteral(envThisKey),
-                true
-              )
-            );
-          }
+          thisPath.replaceWith(t.identifier(envThisKey));
         },
       });
     },
@@ -778,11 +775,6 @@ function collectCapturedBindings(fnPath, locals) {
   const captured = new Set();
   let unsafe = false;
   fnPath.traverse({
-    Function(path) {
-      if (path !== fnPath) {
-        path.skip();
-      }
-    },
     Identifier(path) {
       if (unsafe || isNonBindingName(path)) {
         return;
@@ -796,9 +788,17 @@ function collectCapturedBindings(fnPath, locals) {
       }
       const binding = path.scope.getBinding(name);
       if (!binding) {
+        if (COMMONJS_WRAPPER_NAMES.has(name)) {
+          captured.add(name);
+        }
         return;
       }
-      if (binding.scope === fnPath.scope) {
+      const bindingScopePath = binding.scope.path;
+      if (
+        bindingScopePath === fnPath ||
+        (bindingScopePath.findParent &&
+          bindingScopePath.findParent((parent) => parent === fnPath))
+      ) {
         return;
       }
       const violations = binding.constantViolations || [];

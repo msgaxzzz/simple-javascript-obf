@@ -1,4 +1,8 @@
 const assert = require("assert");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { execFileSync } = require("child_process");
 const vm = require("vm");
 const { obfuscate, parseSource } = require("../src");
 const { base85Decode, base85Encode } = require("../src/plugins/vm/encoding");
@@ -652,6 +656,76 @@ async function testVmCapturedBindingsAndCatch() {
   });
 }
 
+async function runObfuscatedCommonJs(source, expected) {
+  const output = await obfuscate(source, {
+    ...baseOptions,
+    rename: true,
+    seed: "vm-commonjs",
+    vm: {
+      enabled: true,
+      all: true,
+      topLevel: false,
+      mode: "compact",
+      downlevel: true,
+    },
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "obveil-vm-cjs-"));
+  const file = path.join(dir, "output.js");
+  fs.writeFileSync(file, output.code);
+  try {
+    const stdout = execFileSync(process.execPath, [file], {
+      encoding: "utf8",
+      timeout: 30000,
+    }).trim();
+    assert.strictEqual(stdout, expected);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function testVmCommonJsClosures() {
+  await runObfuscatedCommonJs(
+    `function main() {
+      var p = require("path");
+      return p.basename("/a/b/c.txt");
+    }
+    console.log(main());
+    `,
+    "c.txt"
+  );
+
+  await runObfuscatedCommonJs(
+    `const chalk = { cyan: function (s) { return "C:" + s; } };
+    function main() {
+      var f = () => chalk.cyan("hello");
+      return f();
+    }
+    console.log(main());
+    `,
+    "C:hello"
+  );
+
+  await runObfuscatedCommonJs(
+    `function main(a, b) {
+      var f = () => arguments.length + a + b;
+      return f();
+    }
+    console.log(main(1, 2));
+    `,
+    "5"
+  );
+
+  await runObfuscatedCommonJs(
+    `function main() {
+      var f = () => this.value;
+      return f();
+    }
+    console.log(main.call({ value: 7 }));
+    `,
+    "7"
+  );
+}
+
 async function testCffSecurityFeatures() {
   const source = `
     function f(x) {
@@ -764,6 +838,7 @@ async function main() {
   await testVmBase85Layer();
   await testVmWithCff();
   await testVmCapturedBindingsAndCatch();
+  await testVmCommonJsClosures();
   await testCffSecurityFeatures();
   await testNewSyntaxParsing();
   console.log("js obfuscation regression tests passed");

@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-10-21
+
+### Added
+- Custom Base85 layers for VM bytecode and VM runtime source, with per-function decoded bytecode and const-pool caching.
+- Node.js SEA standalone build pipeline (`@vercel/ncc` + `postject` + `resedit`) and GitHub Actions targets for Windows x64, Linux x64/arm64, and macOS x64/arm64.
+- JavaScript regression coverage for VM CommonJS closures, CFF modern constructs, Base85 round-trips, string/template safety, and VM caching.
+- TypeScript CFF demo plus benchmark examples and artifacts.
+
+### Changed
+- JavaScript CFF now uses segmented flattening, runtime-keyed dispatch, dual state variables, randomized switch/if-chain dispatchers, and runtime-guarded opaque predicates.
+- VM bytecode/runtime decoding is cached per function; the demo VM overhead dropped from roughly 89x to roughly 4x (VM+CFF roughly 7x).
+- Standalone executables are built with Node.js instead of Bun; Java engine files are embedded as SEA assets.
+- README and CLI documentation updated for the new CFF, VM, and build options.
+
+### Fixed
+- VM now preserves `require`, `module`, `exports`, `__dirname`, `__filename`, and nested outer bindings in virtualized functions, fixing CommonJS/chalk references (#5).
+- VM catch bindings, user-class construction, arrow `arguments`/`this`, and nested closure environment access.
+- String encoding now skips invalid AST positions such as class keys, import attributes, and TypeScript literal positions, and preserves template-literal ToString semantics.
+- Rename preserves destructured exports and avoids renaming bindings referenced through `with`.
+- Windows standalone executables use a blank transparent icon.
+
 ## [1.2.3-A] - 2026-03-06
 ### Added
 - Appwrite integration pieces for remote obfuscation, including an Appwrite function entrypoint, local helper client wiring, and example environment variables.

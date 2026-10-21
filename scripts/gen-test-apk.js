@@ -45,7 +45,7 @@ async function main() {
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.obveil.demo"
     android:versionCode="123"
-    android:versionName="1.2.3-A">
+    android:versionName="1.2.4">
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:name=".MyApplication"
@@ -414,7 +414,7 @@ public class MainActivity extends Activity {
     console.log("   Size:   ", protStat.size, "bytes");
     console.log("   SHA256: ", protHash);
     console.log("3. Application Verification & Metadata:");
-    console.log("   - Version Name:       1.2.3-A");
+    console.log("   - Version Name:       1.2.4");
     console.log("   - Version Code:       123");
     console.log("   - Package Name:       com.obveil.demo");
     console.log("   - Stored Secret Keys: 7 SK slots (sk-live-..., sk-auth-..., sk-agent-..., sk-enc-..., etc.)");
