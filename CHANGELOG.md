@@ -1,10 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [released]
 
 ## [1.2.4] - 2026-10-21
 
 ### Added
+- Java source obfuscator: AST-level local/private-member/class renaming, string crypto, MBA number obfuscation, anti-debug checks, dead-code injection, class wrapping/splitting, boxed-type obfuscation, CFF, and RC VM virtualization.
+- Android APK protection pipeline: DEX packing/encryption, stub entry application, AXML string updates, ZIP alignment/signing, and NDK/native RC VM building blocks.
+- Luau RC VM: three-address register-context compiler/runtime/opcodes/allocator covering arithmetic/functions, recursive closures/upvalues, loops/tables, bitwise ops, nested closures/iterators, tail calls, multireturn/unpack, `TFORLOOP`, and `pcall` paths.
+- Luau custom AST/analysis pipeline: parser/tokenizer/printer/traverse/scope/CFG/SSA/IR alignment, anti-SSA dataflow confusion, and AST-alignment regression checks.
 - Custom Base85 layers for VM bytecode and VM runtime source, with per-function decoded bytecode and const-pool caching.
 - Node.js SEA standalone build pipeline (`@vercel/ncc` + `postject` + `resedit`) and GitHub Actions targets for Windows x64, Linux x64/arm64, and macOS x64/arm64.
 - JavaScript regression coverage for VM CommonJS closures, CFF modern constructs, Base85 round-trips, string/template safety, and VM caching.
@@ -17,6 +21,10 @@
 - README and CLI documentation updated for the new CFF, VM, and build options.
 
 ### Fixed
+- Java AST handling for scopes, records, patterns, constants, annotations, text blocks, and Unicode-escaped syntax; compile-time `static final String` switch semantics; cross-top-level class calls with string decryption/dead code; override polymorphism under member renaming; class-wrapper private access and `IOException` behavior.
+- Java RC VM long branches/loops and type-safe primitive returns; unified symbol renaming across CFF, member renaming, and class renaming via `SymbolRenamingRegistry`; constant/symbol registries keep static constants and generated names consistent across transforms.
+- Luau RC VM closure/upvalue/iterator/tail-call/multireturn/`TFORLOOP`/`pcall` correctness, plus custom parser/CFG/SSA/IR/scope/traverse/printer/tokenizer compatibility.
+- Luau CFF, strings, const-array, rename, mask-globals, anti-SSA, proxify, wrap, footer, dead-code, member-encoding, source-map, and debug fixes.
 - VM now preserves `require`, `module`, `exports`, `__dirname`, `__filename`, and nested outer bindings in virtualized functions, fixing CommonJS/chalk references (#5).
 - VM catch bindings, user-class construction, arrow `arguments`/`this`, and nested closure environment access.
 - String encoding now skips invalid AST positions such as class keys, import attributes, and TypeScript literal positions, and preserves template-literal ToString semantics.
