@@ -1,4 +1,8 @@
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+const BASE64_LOOKUP = new Int16Array(128).fill(-1);
+for (let i = 0; i < BASE64_ALPHABET.length; i += 1) {
+  BASE64_LOOKUP[BASE64_ALPHABET.charCodeAt(i)] = i;
+}
 
 function splitArray(data, rng, count) {
   const total = data.length;
@@ -32,7 +36,9 @@ function buildHiddenPools(groups, rng) {
         codes.push(value.charCodeAt(i) ^ mask);
       }
       indexPairs.push(offset ^ indexMask, codes.length ^ indexMask);
-      data.push(...codes);
+      for (const code of codes) {
+        data.push(code);
+      }
       offset += codes.length;
     }
     const shardCount = Math.min(Math.max(1, data.length), rng.int(2, 4));
@@ -52,10 +58,10 @@ function shiftBase64(value, key, offset) {
   const size = BASE64_ALPHABET.length;
   let out = "";
   for (let i = 0; i < value.length; i += 1) {
-    const ch = value[i];
-    const idx = BASE64_ALPHABET.indexOf(ch);
+    const code = value.charCodeAt(i);
+    const idx = code < 128 ? BASE64_LOOKUP[code] : -1;
     if (idx < 0) {
-      out += ch;
+      out += value[i];
       continue;
     }
     const shift = key[(i + offset) % key.length];

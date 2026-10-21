@@ -1352,6 +1352,7 @@ function compileStatement(stmt, compiler, state) {
         compiler.mark(catchLabel);
         compiler.emit(OPCODES.ENTER_CATCH);
         if (stmt.handler.param && stmt.handler.param.type === "Identifier") {
+          compiler.emit(OPCODES.PUSH_ERROR);
           const nameIdx = compiler.addConst(stmt.handler.param.name);
           compiler.emit(OPCODES.SET_VAR, nameIdx);
           compiler.emit(OPCODES.POP);

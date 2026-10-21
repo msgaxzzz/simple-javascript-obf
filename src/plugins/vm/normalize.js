@@ -724,6 +724,105 @@ function canVirtualize(fnPath, ctx) {
   return ok;
 }
 
+function isWriteTarget(path) {
+  const parent = path.parentPath;
+  if (!parent) {
+    return false;
+  }
+  if (parent.isAssignmentExpression() && parent.node.left === path.node) {
+    return true;
+  }
+  if (parent.isUpdateExpression()) {
+    return true;
+  }
+  if (parent.isForXStatement() && parent.node.left === path.node) {
+    return true;
+  }
+  return false;
+}
+
+function isNonBindingName(path) {
+  const parent = path.parentPath;
+  if (!parent) {
+    return false;
+  }
+  if (
+    (parent.isObjectProperty() ||
+      parent.isObjectMethod() ||
+      parent.isClassMethod() ||
+      parent.isClassProperty() ||
+      parent.isClassAccessorProperty()) &&
+    path.parentKey === "key" &&
+    !parent.node.computed
+  ) {
+    return true;
+  }
+  if (
+    parent.isMemberExpression() &&
+    path.parentKey === "property" &&
+    !parent.node.computed
+  ) {
+    return true;
+  }
+  if (
+    parent.isLabeledStatement() ||
+    parent.isBreakStatement() ||
+    parent.isContinueStatement()
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function collectCapturedBindings(fnPath, locals) {
+  const captured = new Set();
+  let unsafe = false;
+  fnPath.traverse({
+    Function(path) {
+      if (path !== fnPath) {
+        path.skip();
+      }
+    },
+    Identifier(path) {
+      if (unsafe || isNonBindingName(path)) {
+        return;
+      }
+      if (!path.isReferencedIdentifier() && !isWriteTarget(path)) {
+        return;
+      }
+      const name = path.node.name;
+      if (!name || name === "undefined" || locals.has(name)) {
+        return;
+      }
+      const binding = path.scope.getBinding(name);
+      if (!binding) {
+        return;
+      }
+      if (binding.scope === fnPath.scope) {
+        return;
+      }
+      const violations = binding.constantViolations || [];
+      const writesInside = violations.some((violation) => {
+        if (violation === fnPath) {
+          return true;
+        }
+        return Boolean(
+          violation.isDescendant && violation.isDescendant(fnPath)
+        );
+      });
+      if (writesInside) {
+        // The VM stores captured values in a per-call env object, so writes to
+        // an outer binding would not be reflected back. Skip virtualization.
+        unsafe = true;
+        path.stop();
+        return;
+      }
+      captured.add(name);
+    },
+  });
+  return unsafe ? null : captured;
+}
+
 function collectLocals(fnPath) {
   const locals = new Set();
   for (const param of fnPath.node.params) {
@@ -758,6 +857,7 @@ function collectLocals(fnPath) {
 
 module.exports = {
   canVirtualize,
+  collectCapturedBindings,
   collectLocals,
   normalizeFunction,
   rewriteClosureRefs,

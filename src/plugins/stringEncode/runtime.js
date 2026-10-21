@@ -247,7 +247,11 @@ function ${decodeName}(i) {
   }
 }
 `;
-  return parser.parse(code, { sourceType: "script" }).program.body;
+  const nodes = parser.parse(code, { sourceType: "script" }).program.body;
+  for (const node of nodes) {
+    node.__obfGenerated = true;
+  }
+  return nodes;
 }
 
 module.exports = {

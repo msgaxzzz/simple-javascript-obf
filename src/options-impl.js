@@ -123,6 +123,17 @@ function normalizeOptions(userOptions = {}) {
   const constArrayShards = normalizeCount(constArrayUserOptions.shards, 3, { min: 1, max: 16 });
   const constArrayShardMin = normalizeCount(constArrayUserOptions.shardMinLength, 6, { min: 2, max: 2048 });
   const constArrayOpaque = constArrayUserOptions.opaque !== false;
+  const cffMinStatements = normalizeCount(
+    cffUserOptions.minStatements,
+    3,
+    { min: 1, max: 100 }
+  );
+  const cffDispatcherRaw = typeof cffUserOptions.dispatcher === "string"
+    ? cffUserOptions.dispatcher.toLowerCase()
+    : "auto";
+  const cffDispatcher = cffDispatcherRaw === "switch" || cffDispatcherRaw === "ifchain"
+    ? cffDispatcherRaw
+    : "auto";
   const constArrayEncoding = typeof constArrayUserOptions.encoding === "string"
     ? constArrayUserOptions.encoding.toLowerCase()
     : "base64";
@@ -228,10 +239,14 @@ function normalizeOptions(userOptions = {}) {
       probability: 0.15,
     },
     cffOptions: {
-      minStatements: 3,
+      minStatements: cffMinStatements,
       downlevel: cffUserOptions.downlevel ?? Boolean(userOptions.cffDownlevel),
       mode: effectiveCffMode,
       opaque: cffUserOptions.opaque !== false,
+      program: cffUserOptions.program !== false,
+      dynamicDispatch: cffUserOptions.dynamicDispatch !== false,
+      dualState: cffUserOptions.dualState !== false,
+      dispatcher: cffDispatcher,
     },
     antiHook: {
       enabled: false,

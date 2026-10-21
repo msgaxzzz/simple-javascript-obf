@@ -24,6 +24,7 @@ function rewriteGlobalEntry(ast, ctx) {
           node.computed = true;
         },
       });
+      path.skip();
     },
   });
 }

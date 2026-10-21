@@ -36,34 +36,66 @@ function getIdentifierOnlyName(source) {
   return match ? match[0] : null;
 }
 
-function isLikelyLuauSource(source) {
+function looksLikeTypeScript(text) {
+  return (
+    /^\s*(?:export\s+)?(?:interface|type)\s+[A-Za-z_$][A-Za-z0-9_$]*(?:\s*<[^>]*>)?\s*(?:=|extends|\{)/m.test(text) ||
+    /\b(?:implements|declare|namespace|abstract)\b/.test(text) ||
+    /:\s*(?:string|number|boolean|any|unknown|void|never|object|bigint|symbol|undefined|null)\b/.test(text) ||
+    /\bas\s+(?:const|unknown|any|string|number|boolean|[A-Z][A-Za-z0-9_$]*)/.test(text) ||
+    /^\s*(?:import|export)\s+type\b/m.test(text)
+  );
+}
+
+function isLikelyLuauSource(source, options = {}) {
   const text = String(source || "");
   if (!text.trim()) {
     return false;
   }
 
-  const patterns = [
+  const filename = String((options && options.filename) || "");
+  if (/\.(ts|tsx|mts|cts)$/i.test(filename)) {
+    return false;
+  }
+
+  const strongPatterns = [
     /^\s*local\s+(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*/m,
-    /^\s*(?:export\s+)?type\s+[A-Za-z_][A-Za-z0-9_]*\s*=/m,
     /^\s*if\s+[^\r\n;{}]+\s+then\b/m,
     /^\s*(?:for|while)\s+[^\r\n;{}]+\s+do\b/m,
     /^\s*(?:repeat|until)\b/m,
-    /^\s*end\s*(?:[;,]|\s*--.*)?$/m,
-    /^\s*--[^\r\n]*/m,
     /\b(?:game|workspace|Workspace|script|self)\s*:\s*[A-Za-z_][A-Za-z0-9_]*\s*\(/,
     /\b(?:Instance|Vector3|CFrame|Color3|UDim2)\.new\s*\(/,
     /\btask\.(?:spawn|defer|wait|delay)\s*\(/,
     /[A-Za-z0-9_)]\s*::\s*[A-Za-z_]/,
   ];
-
-  let score = 0;
-  for (const pattern of patterns) {
+  for (const pattern of strongPatterns) {
     if (pattern.test(text)) {
-      score += 1;
+      return true;
     }
   }
 
-  return score >= 1;
+  const weakPatterns = [
+    /^\s*(?:export\s+)?type\s+[A-Za-z_][A-Za-z0-9_]*\s*=/m,
+    /^\s*end\s*(?:[;,]|\s*--.*)?$/m,
+    /^\s*--[^\r\n]*/m,
+  ];
+  let weakMatches = 0;
+  for (const pattern of weakPatterns) {
+    if (pattern.test(text)) {
+      weakMatches += 1;
+    }
+  }
+  if (weakMatches === 0) {
+    return false;
+  }
+
+  // TypeScript type aliases share the `type Name =` shape with Luau. If the
+  // extension is not Luau and the source has TypeScript cues, do not report a
+  // misleading "looks like Luau" error.
+  if (!/\.(lua|luau)$/i.test(filename) && looksLikeTypeScript(text)) {
+    return false;
+  }
+
+  return true;
 }
 
 function makeInputDiagnosticError(message, source, details = {}) {
@@ -90,7 +122,7 @@ function makeInputDiagnosticError(message, source, details = {}) {
 }
 
 function validateInputSource(source, options = {}) {
-  if ((options.lang === "js" || options.lang === "javascript") && isLikelyLuauSource(source)) {
+  if ((options.lang === "js" || options.lang === "javascript") && isLikelyLuauSource(source, options)) {
     throw makeInputDiagnosticError(
       "Selected language is JavaScript, but the source looks like Luau.",
       source,

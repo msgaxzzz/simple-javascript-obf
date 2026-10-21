@@ -35,6 +35,19 @@ public final class SymbolRenamer {
         public boolean canRename(Element e) {
             return !cannotRenameRoots.contains(find(e));
         }
+
+        public Set<Element> getFamily(Element e) {
+            Element root = find(e);
+            Set<Element> family = new HashSet<>();
+            family.add(root);
+            if (e != null) family.add(e);
+            for (Element key : parent.keySet()) {
+                if (find(key).equals(root)) {
+                    family.add(key);
+                }
+            }
+            return family;
+        }
     }
 
     public static OverrideManager buildOverrideManager(Set<Element> localMethods, Elements elements, Types types) {
@@ -92,6 +105,9 @@ public final class SymbolRenamer {
         }
         if (renameMembers) {
             Set<Modifier> mods = element.getModifiers();
+            if (mods.contains(Modifier.NATIVE)) {
+                return false;
+            }
             if (mods.contains(Modifier.PRIVATE) || (!mods.contains(Modifier.PUBLIC) && !mods.contains(Modifier.PROTECTED))) {
                 if (kind.equals("FIELD")) {
                     return !element.getSimpleName().contentEquals("serialVersionUID");
@@ -103,5 +119,23 @@ public final class SymbolRenamer {
             }
         }
         return false;
+    }
+
+    public static boolean canRenameClass(TypeElement element, String hostClassName) {
+        if (element == null || element.getSimpleName().length() == 0) return false;
+        if (element.getEnclosingElement() instanceof TypeElement) {
+            return true;
+        }
+        if (element.getNestingKind() == NestingKind.LOCAL) {
+            return true;
+        }
+        if (element.getModifiers().contains(Modifier.PUBLIC)) {
+            return false;
+        }
+        String simpleName = element.getSimpleName().toString();
+        if (hostClassName != null && simpleName.equals(hostClassName)) {
+            return false;
+        }
+        return true;
     }
 }

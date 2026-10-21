@@ -221,7 +221,14 @@ function buildRcRuntime(program, rng, options = {}) {
   handlers.set(
     opToCode.get(RC_OPCODES.CALL),
     `local a = t[2]; local x = t[3]; local y = t[4]; local g = r[a]; local z = {}
-      for j = 1, x - 1 do z[j] = r[a + j] end
+      for j = 1, x - 1 do
+        local val = r[a + j]
+        if j == x - 1 and type(val) == "table" and val._m then
+          for k = 1, #val do z[#z + 1] = val[k] end
+        else
+          z[#z + 1] = val
+        end
+      end
       if y == 1 then
         g(u(z))
       elseif y > 1 then
@@ -229,8 +236,24 @@ function buildRcRuntime(program, rng, options = {}) {
         for j = 1, y - 1 do r[a + j - 1] = h[j] end
       else
         local h = { g(u(z)) }
-        for j = 1, #h do r[a + j - 1] = h[j] end
+        h._m = true
+        r[a] = h
       end`
+  );
+
+  // TAILCALL
+  handlers.set(
+    opToCode.get(RC_OPCODES.TAILCALL),
+    `local a = t[2]; local x = t[3]; local g = r[a]; local z = {}
+      for j = 1, x - 1 do
+        local val = r[a + j]
+        if j == x - 1 and type(val) == "table" and val._m then
+          for k = 1, #val do z[#z + 1] = val[k] end
+        else
+          z[#z + 1] = val
+        end
+      end
+      return g(u(z))`
   );
 
   // RETURN
@@ -264,11 +287,26 @@ function buildRcRuntime(program, rng, options = {}) {
   );
   handlers.set(
     opToCode.get(RC_OPCODES.TFORLOOP),
-    `local a = t[2]; local gn = r[a]; local re = { gn(r[a + 1], r[a + 2]) }
-      if re[1] ~= nil then
-        r[a + 2] = re[1]
-        for j = 1, t[4] do r[a + 2 + j] = re[j] end
-        p = t[3] + 1
+    `local a = t[2]; local gn = r[a]; local st = r[a + 1]; local vr = r[a + 2]; local nv = t[4]
+      local ok, v1, v2
+      if nv <= 2 then
+        ok, v1, v2 = pcall(gn, st, vr)
+        if not ok then error(v1, 0) end
+        if v1 ~= nil then
+          r[a + 2] = v1
+          r[a + 3] = v1
+          if nv > 1 then r[a + 4] = v2 end
+          p = t[3] + 1
+        end
+      else
+        local re
+        ok, re = pcall(function() return { gn(st, vr) } end)
+        if not ok then error(re, 0) end
+        if re[1] ~= nil then
+          r[a + 2] = re[1]
+          for j = 1, nv do r[a + 2 + j] = re[j] end
+          p = t[3] + 1
+        end
       end`
   );
 
@@ -307,7 +345,15 @@ function buildRcRuntime(program, rng, options = {}) {
   // VARARG
   handlers.set(
     opToCode.get(RC_OPCODES.VARARG),
-    `local a = t[2]; local b = t[3]; for j = 1, b - 1 do r[a + j - 1] = v[j] end`
+    `local a = t[2]; local b = t[3]
+      if b == 0 then
+        local z = {}
+        for j = 1, #v do z[j] = v[j] end
+        z._m = true
+        r[a] = z
+      else
+        for j = 1, b - 1 do r[a + j - 1] = v[j] end
+      end`
   );
 
   // Upvalues

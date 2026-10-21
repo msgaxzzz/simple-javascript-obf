@@ -9,7 +9,6 @@ const {
 const {
   VM_NAME_KEYWORDS,
   VM_NAME_RESERVED,
-  makeVmHelperName,
   makeVmCharExpr,
   createSharedVmRuntime,
   buildSharedVmRuntimePreludeSource,
@@ -291,7 +290,7 @@ function normalizeVmMode(value, allowed, fallback) {
 }
 
 function applyPolymorphicBlockISA(program, rng, vmOptions = {}) {
-  let isaMode = "auto";
+  let isaMode;
   if (typeof vmOptions.isaPolymorph === "boolean") {
     isaMode = vmOptions.isaPolymorph ? "on" : "off";
   } else {
@@ -337,32 +336,6 @@ function encodeU32(value) {
     (v >>> 24) & 0xff,
   ];
 }
-
-function renameVmCoreIdentifiers(vmAst, aliases) {
-  if (!vmAst || !aliases) {
-    return;
-  }
-  const visit = (node) => {
-    if (!node || typeof node !== "object") {
-      return;
-    }
-    if (Array.isArray(node)) {
-      node.forEach((item) => visit(item));
-      return;
-    }
-    if (node.type === "Identifier" && typeof node.name === "string") {
-      const next = aliases[node.name];
-      if (next && next !== node.name) {
-        node.name = next;
-      }
-    }
-    Object.keys(node).forEach((key) => {
-      visit(node[key]);
-    });
-  };
-  visit(vmAst);
-}
-
 function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
   const keyPieces = [rng.int(1, 200), rng.int(1, 200)];
   const seedValue = seedState ? seedState.seed : 0;
@@ -391,16 +364,15 @@ function encodeBytecodeStream(instructions, rng, seedState, splitInfo) {
         bytes.push(...encodeU32(inst[2] || 0));
       }
     }
-    const encoded = bytes.map((byte, idx) => (
-      byte ^ (
-        (
-          key
-          + (((offset + idx + 1) * multiplier) % 256)
-          + (((Math.floor((offset + idx) / blockSpan) + 1) * twist) % 256)
-        ) % 256
-      )
+    encodedParts[i] = bytes.map((byte, idx) => (
+        byte ^ (
+            (
+                key
+                + (((offset + idx + 1) * multiplier) % 256)
+                + (((Math.floor((offset + idx) / blockSpan) + 1) * twist) % 256)
+            ) % 256
+        )
     ));
-    encodedParts[i] = encoded;
     offset += bytes.length;
   }
 
@@ -4236,6 +4208,7 @@ function buildAutoVmIncludeSet(ast, style, options) {
   const selected = ranked.length ? ranked : rankedAll.slice(0, 1);
   return new Set(selected.slice(0, count).map((entry) => entry.node));
 }
+
 
 function virtualizeLuau(ast, ctx) {
   const style = ctx.options && ctx.options.luauParser === "luaparse" ? "luaparse" : "custom";

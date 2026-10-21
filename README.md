@@ -8,7 +8,7 @@ A modular JavaScript and Luau obfuscation CLI with control-flow flattening (CFF)
 - JavaScript output minified via Terser (disable with `--no-minify`)
 - Optional VM virtualization (both JS + Luau, with Luau VM-CFF support)
 - Optional anti-hook runtime guard
-- VM opcode randomization, fake opcode insertion, runtime bytecode keying/splitting, and const pool decoding
+- VM opcode randomization, fake opcode insertion, runtime bytecode keying/splitting, const pool decoding, and a custom Base85 bytecode layer
 - Luau-specific options: member/key encoding, string splitting, global masking, globals/members rename, homoglyph rename mode
 - Modular plugin architecture for easy extension
 
@@ -47,6 +47,20 @@ bash bin/obf.sh
 ```
 If an input directory is provided, it will recursively obfuscate all `.js` files and overwrite them, automatically ignoring `node_modules` (also tolerates common misspellings of that directory name).
 When string encryption is enabled, the script also prompts whether to skip encoding object literal keys, JSX attribute string values, or template literal static chunks.
+
+## Standalone executable
+Build a single-file Windows executable with Bun:
+```
+npm run build:exe
+```
+This produces `dist/obveil.exe` with a blank (transparent) icon. Run it directly:
+```
+dist\obveil.exe input.js -o output.js --preset high
+dist\obveil.exe input.lua -o output.lua --preset high --lang luau
+```
+JavaScript and Luau support are embedded. Java mode still needs a JDK on `PATH`/`JAVA_HOME`; APK mode still needs the Android SDK build tools.
+
+The executable is a console application, so double-clicking it opens a console window. To build without a console window, add `--windows-hide-console` to the `bun build` command in `scripts/build-exe.js` (CLI output is then only visible when launched from an existing terminal).
 
 ## Web UI
 Start the local web console (default port `6589`):
@@ -137,8 +151,16 @@ It also installs the latest official Luau CLI for Linux from `luau-lang/luau` an
 - `--no-pad-footer` Disable footer padding
 - `--pad-footer-blocks <n>` Number of fake blocks (Luau, default 2)
 - `--no-cff` Disable control-flow flattening
-- `--cff-downlevel` Allow CFF to downlevel `let/const` to `var`
+- `--cff-downlevel` Allow CFF to downlevel top-level `let/const` to `var`
 - `--cff-mode <vm|classic>` Luau CFF mode (default `classic`)
+- `--cff-min-statements <n>` Minimum statements per flattened region (default 3)
+- `--cff-program` Flatten Program top-level code (default on)
+- `--no-cff-program` Disable Program top-level flattening
+- `--cff-dynamic-dispatch` Use runtime-keyed dispatch tables (default on)
+- `--no-cff-dynamic-dispatch` Disable runtime-keyed dispatch tables
+- `--cff-dual-state` Use two state variables (default on)
+- `--no-cff-dual-state` Use a single state variable
+- `--cff-dispatcher <auto|switch|ifchain>` Dispatcher shape (default `auto`)
 - `--cff-opaque` Enable opaque predicates (default on)
 - `--no-dead` Disable dead-code injection
 - `--vm` Enable VM virtualization (see limitations)
@@ -193,6 +215,24 @@ VM supports most common syntax while keeping performance and memory overhead rea
 - Destructuring assignment expressions are not supported (only parameter/variable declaration destructuring)
 - Complex or unsupported nodes are skipped for that function
 - VM uses the `Function` constructor to create closures; CSP-restricted environments may not run
+
+### VM bytecode encoding
+When VM bytecode encryption is enabled (default), bytecode goes through multiple layers:
+- ChaCha20 stream encryption
+- A custom base64-like layer with a shuffled alphabet and per-payload XOR/rotation
+- A custom Base85 layer: shuffled 85-character printable alphabet, shuffled 5-digit order, and a per-block XOR key derived from a random key and odd step
+- Payload splitting and part shuffling
+- Decoded bytecode and const pools are cached per virtualized function, so the multi-layer decode cost is paid on the first call
+
+`--no-vm-bytecode` disables the bytecode encoding/decryption layer entirely.
+
+## Control-flow flattening
+CFF flattens function bodies, Program top-level code, and class static blocks:
+- Supported constructs include `if/else`, loops, `switch`, `try/catch/finally`, `with`, labeled statements, `await`, `yield`, generators, and async functions
+- Top-level `let/const`/`class`/`using` declarations act as barriers: surrounding statements are flattened in separate regions, preserving block scope and TDZ
+- State values are random 32-bit handles; the default dispatcher uses a runtime-keyed lookup table, two state variables, and a randomly chosen `switch` or `if-chain` shape
+- Opaque predicates use a runtime guard so they are not constant-folded by Terser; fake cases are generated per flattened region
+- `--no-cff-dynamic-dispatch`, `--no-cff-dual-state`, `--cff-dispatcher`, `--no-cff-opaque`, `--cff-min-statements`, and `--no-cff-program` trade strength for size/performance
 
 ## Luau VM coverage
 Luau VM targets common Luau syntax and will skip functions containing unsupported nodes:

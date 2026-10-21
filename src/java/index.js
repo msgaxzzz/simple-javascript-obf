@@ -60,9 +60,6 @@ async function obfuscateJava(source, userOptions = {}) {
     throw new TypeError("Java source must be a string.");
   }
   const options = normalizeOptions({ ...userOptions, lang: "java" });
-  if (options.vm === true || (options.vm && options.vm.enabled)) {
-    throw new Error("Java source mode does not support VM virtualization.");
-  }
   if (options.sourceMap) {
     throw new Error("Java source mode does not support source maps.");
   }
@@ -118,6 +115,25 @@ async function obfuscateJava(source, userOptions = {}) {
       (javaOptions.wrap !== undefined ? javaOptions.wrap :
       Boolean(userOptions.wrap || userOptions.javaWrap))
     );
+    const vm = Boolean(
+      userOptions.javaVm !== undefined ? userOptions.javaVm :
+      (javaOptions.vm !== undefined ? javaOptions.vm :
+      Boolean(options.vm === true || (options.vm && options.vm.enabled) || userOptions.vm))
+    );
+    const renameClasses = Boolean(
+      userOptions.javaRenameClasses !== undefined ? userOptions.javaRenameClasses :
+      (userOptions.javaClasses !== undefined ? userOptions.javaClasses :
+      (javaOptions.renameClasses !== undefined ? javaOptions.renameClasses :
+      (javaOptions.classes !== undefined ? javaOptions.classes :
+      userOptions.renameClasses || options.renameClasses)))
+    );
+    const typeObf = Boolean(
+      userOptions.javaTypeObf !== undefined ? userOptions.javaTypeObf :
+      (userOptions.javaTypes !== undefined ? userOptions.javaTypes :
+      (javaOptions.typeObf !== undefined ? javaOptions.typeObf :
+      (javaOptions.types !== undefined ? javaOptions.types :
+      userOptions.typeObf || options.typeObf)))
+    );
     const idStyle = javaOptions.idStyle ||
       userOptions.javaIdStyle ||
       (options.renameOptions && options.renameOptions.style === "confusable" ? "confusable" :
@@ -132,6 +148,9 @@ async function obfuscateJava(source, userOptions = {}) {
       antiDebug ? "a" : "",
       dead ? "d" : "",
       wrap ? "w" : "",
+      vm ? "v" : "",
+      renameClasses ? "C" : "",
+      typeObf ? "T" : "",
       idStyle === "confusable" ? "I" : (idStyle === "short" ? "H" : ""),
       options.compact || (options.minify !== false && !options.beautify) ? "c" : "",
     ].join("");

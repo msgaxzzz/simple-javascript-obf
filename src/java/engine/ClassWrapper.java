@@ -38,28 +38,35 @@ public final class ClassWrapper {
         }
         sb.append("}\n");
 
-        sb.append("class ").append(proxyName).append("{");
-        sb.append("@SuppressWarnings(\"unchecked\") static <T extends Throwable> void _0xsneak(Throwable t) throws T { throw (T) t; }");
-        sb.append("static Object _0xroute(int _0xid,Object[] _0xargs){");
-        sb.append("try{return ").append(routerName).append("._0xdispatch(_0xid,_0xargs);}");
-        sb.append("catch(Throwable _0xe){_0xsneak(_0xe);return null;}");
+        sb.append("class ").append(proxyName).append("{\n");
+        sb.append("static Object _0xroute(int _0xid,Object[] _0xargs){\n");
+        sb.append("try{return ").append(routerName).append("._0xdispatch(_0xid,_0xargs);}\n");
+        sb.append("catch(Throwable _0xe){\n");
+        sb.append("if(_0xe instanceof RuntimeException)throw (RuntimeException)_0xe;\n");
+        sb.append("if(_0xe instanceof Error)throw (Error)_0xe;\n");
+        sb.append("throw new RuntimeException(_0xe);\n");
+        sb.append("}\n");
         sb.append("}}\n");
 
-        sb.append("class ").append(routerName).append("{");
-        sb.append("static Object _0xdispatch(int _0xid,Object[] _0xargs) throws Throwable {");
-        sb.append("((java.util.function.Supplier<Boolean>)()->{").append(guardName).append("._0xverify();return Boolean.TRUE;}).get();");
+        sb.append("class ").append(routerName).append("{\n");
+        sb.append("static Object _0xdispatch(int _0xid,Object[] _0xargs) throws Throwable {\n");
+        sb.append(guardName).append("._0xverify();\n");
         if (hasMain) {
-            sb.append("if(_0xid==0){").append(workerName).append(".main((String[])_0xargs[0]);}");
+            sb.append("if(_0xid==0){").append(workerName).append(".main((String[])_0xargs[0]);}\n");
         }
-        sb.append("return null;");
+        sb.append("return null;\n");
         sb.append("}}\n");
 
-        sb.append("class ").append(guardName).append("{");
-        sb.append("static void _0xverify(){");
-        sb.append("((java.lang.Runnable)()->{");
-        sb.append("if(java.lang.Runtime.getRuntime().availableProcessors()<=0)throw new java.lang.Error();");
-        sb.append("try{for(String _0xa:java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments()){String _0xs=_0xa.toLowerCase();if(_0xs.contains(\"jdwp\")||_0xs.contains(\"xdebug\")){java.lang.Thread _0xth=new java.lang.Thread(()->{try{java.lang.Thread.sleep(80);java.lang.Runtime.getRuntime().halt(1);}catch(Throwable _0xe){}});_0xth.setDaemon(true);_0xth.start();}}}catch(Throwable _0xtt){}");
-        sb.append("}).run();");
+        sb.append("class ").append(guardName).append("{\n");
+        sb.append("static void _0xverify(){\n");
+        sb.append("if(java.lang.Runtime.getRuntime().availableProcessors()<=0)throw new java.lang.Error();\n");
+        sb.append("long _0xt=java.lang.System.nanoTime();\n");
+        sb.append("if(_0xt==0)throw new java.lang.Error();\n");
+        sb.append("try{\n");
+        sb.append("Class<?> _0xdbg=Class.forName(\"android.os.Debug\");\n");
+        sb.append("java.lang.reflect.Method _0xm=_0xdbg.getMethod(\"isDebuggerConnected\");\n");
+        sb.append("if(Boolean.TRUE.equals(_0xm.invoke(null))){java.lang.Runtime.getRuntime().halt(1);}\n");
+        sb.append("}catch(Throwable _0xign){}\n");
         sb.append("}}\n");
 
         sb.append("class ").append(stateName).append("{");

@@ -1,5 +1,4 @@
-const customEntry = "./custom/index.js";
-const { parseLuau: parseCustomLuau, generateLuau: generateCustomLuau } = require(customEntry);
+const { parseLuau: parseCustomLuau, generateLuau: generateCustomLuau } = require("./custom/index.js");
 const { normalizeLegacyNodeShape } = require("./custom/compat.js");
 const { traverse } = require("./custom/traverse.js");
 const { buildScope } = require("./custom/scope.js");

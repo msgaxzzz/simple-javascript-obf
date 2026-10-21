@@ -131,7 +131,6 @@ test("external compiled dependencies can be supplied by classpath", async () => 
 
 test("invalid Java and unsupported features fail explicitly", async () => {
   await assert.rejects(() => obfuscateJava("public class Broken { void nope( }"), /Java obfuscation failed:.*line/s);
-  await assert.rejects(() => obfuscateJava(simple, { vm: true }), /does not support VM/);
   await assert.rejects(() => obfuscateJava(simple, { sourceMap: true }), /does not support source maps/);
   await assert.rejects(() => obfuscateJava(simple, { antiHook: true }), /does not support anti-hook/);
   await assert.rejects(() => obfuscateJava(simple, { javaOptions: { release: "bad" } }), /release number/);
@@ -257,7 +256,7 @@ test("Java dead code injection adds opaque blocks and dummy methods while preser
     }
   });
 
-  assert.match(result.code, /private static int _0xdc[0-9a-f]+/);
+  assert.match(result.code, /private static int _0x[0-9a-f]+/);
   assert.equal(await execute(result.code), "Result:42\n");
 });
 
@@ -271,7 +270,7 @@ test("CLI flag --java-dead injects dead code and executes correctly", async () =
       "--java-dead", "--java-release", "17"
     ], { cwd: root, timeout: 30000 });
     const code = await fs.readFile(output, "utf8");
-    assert.match(code, /_0xdc[0-9a-f]+/);
+    assert.match(code, /_0x[0-9a-f]+/);
     assert.equal(await execute(code), "Obveil:42\n");
   });
 });
@@ -411,3 +410,221 @@ test("control flow flattener flattens business statements into switch state mach
   assert.match(result.code, /case 0x[0-9a-f]+:/);
   assert.equal(await execute(result.code, "CffBusinessTest"), "CFF_VAL:58\n");
 });
+
+test("Java RC VM virtualizes method into register-context bytecode and executes correctly", async () => {
+  const source = `public class RcVmTest {
+    public static int compute(int x, int y) {
+      int z = (x * 4) + (y ^ 15);
+      int sum = 0;
+      int i = 1;
+      while (i <= 4) {
+        if (i % 2 == 0) {
+          sum = sum + i * 2;
+        } else {
+          sum = sum + i;
+        }
+        i = i + 1;
+      }
+      return z + sum;
+    }
+    public static void main(String[] args) {
+      System.out.println("VM_RES:" + compute(5, 7));
+    }
+  }`;
+  const result = await obfuscateJava(source, {
+    javaVm: true,
+    javaOptions: { release: 17 }
+  });
+  assert.match(result.code, /new int\[\]\{/);
+  // (5 * 4) + (7 ^ 15) = 20 + 8 = 28; sum = 1 + 4 + 3 + 8 = 16; 28 + 16 = 44
+  assert.equal(await execute(result.code, "RcVmTest"), "VM_RES:44\n");
+});
+
+test("CLI flag --java-vm wires Java RC VM virtualization and executes correctly", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "obv-cli-java-vm-"));
+  const input = path.join(dir, "CliVmApp.java");
+  const output = path.join(dir, "CliVmApp.obf.java");
+  const source = `public class CliVmApp {
+    public static int calc(int a, int b) {
+      return (a + 10) * (b - 2);
+    }
+    public static void main(String[] args) {
+      System.out.println("CLI_VM:" + calc(5, 6));
+    }
+  }`;
+  await fs.writeFile(input, source, "utf8");
+  const bin = path.resolve(__dirname, "../bin/js-obf");
+  await run(process.execPath, [bin, input, "-o", output, "--java-vm"], { timeout: 30000 });
+  const outCode = await fs.readFile(output, "utf8");
+  assert.match(outCode, /new int\[\]\{/);
+  assert.equal(await execute(outCode, "CliVmApp"), "CLI_VM:60\n");
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("Java class name obfuscation renames inner classes, nested interfaces, enums and constructors", async () => {
+  const source = `public class ClassRenamingTest {
+    interface Worker {
+      int compute(int x);
+    }
+    enum Status { ACTIVE, PAUSED }
+    static class TaskRunner implements Worker {
+      private int multiplier;
+      public TaskRunner(int m) {
+        this.multiplier = m;
+      }
+      public int compute(int x) {
+        return x * multiplier;
+      }
+    }
+    public static void main(String[] args) {
+      Worker runner = new TaskRunner(7);
+      Status st = Status.ACTIVE;
+      System.out.println("CLASS_RES:" + runner.compute(6) + ":" + st);
+    }
+  }`;
+
+  const result = await obfuscateJava(source, {
+    renameClasses: true,
+    renameMembers: true,
+    rename: true,
+  });
+
+  // Verify TaskRunner and Worker are renamed in the output
+  assert.doesNotMatch(result.code, /class TaskRunner\b/);
+  assert.doesNotMatch(result.code, /interface Worker\b/);
+  assert.doesNotMatch(result.code, /new TaskRunner\(/);
+
+  // Verify the obfuscated code compiles and executes with exact result
+  assert.equal(await execute(result.code, "ClassRenamingTest"), "CLASS_RES:42:ACTIVE\n");
+});
+
+test("Java type obfuscation swaps local primitive types to boxed reference types and preserves execution", async () => {
+  const source = `public class TypeObfTest {
+    public static void main(String[] args) {
+      int a = 20;
+      boolean flag = true;
+      long counter = 1000L;
+      int sum = 0;
+      for (int i = 0; i < 5; i++) {
+        sum += i;
+      }
+      System.out.println("TYPE_RES:" + (a + sum) + ":" + flag + ":" + counter);
+    }
+  }`;
+
+  const result = await obfuscateJava(source, {
+    typeObf: true,
+    rename: false,
+    strings: false,
+  });
+
+  // Verify primitive types are converted to boxed types in local variable declarations
+  assert.match(result.code, /Integer\s+a\s*=/);
+  assert.match(result.code, /Boolean\s+flag\s*=/);
+  assert.match(result.code, /Long\s+counter\s*=/);
+
+  // Verify execution correctness
+  assert.equal(await execute(result.code, "TypeObfTest"), "TYPE_RES:30:true:1000\n");
+});
+
+test("CLI flags --java-classes and --java-types wire class and type obfuscation and execute correctly", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "obv-cli-class-type-"));
+  const input = path.join(dir, "CliClassTypeApp.java");
+  const output = path.join(dir, "CliClassTypeApp.obf.java");
+  const source = `public class CliClassTypeApp {
+    static class SecretHolder {
+      int secret;
+      SecretHolder(int s) { this.secret = s; }
+      int get() { return secret; }
+    }
+    public static void main(String[] args) {
+      int val = 88;
+      SecretHolder h = new SecretHolder(val);
+      System.out.println("CLI_CLASS_TYPE:" + h.get());
+    }
+  }`;
+  await fs.writeFile(input, source, "utf8");
+  const bin = path.resolve(__dirname, "../bin/js-obf");
+  await run(process.execPath, [bin, input, "-o", output, "--java-classes", "--java-types"], { timeout: 30000 });
+  const outCode = await fs.readFile(output, "utf8");
+
+  assert.doesNotMatch(outCode, /class SecretHolder\b/);
+  assert.match(outCode, /Integer\s+/);
+  assert.equal(await execute(outCode, "CliClassTypeApp"), "CLI_CLASS_TYPE:88\n");
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+test("Java RC VM handles long branches, loops and type-safe primitive returns", async () => {
+  const source = `public class VmBranchTest {
+    static int computeComplex(int x, int limit) {
+      int sum = 0;
+      int i = 0;
+      while (i < limit) {
+        if (i % 2 == 0) {
+          int a = i * 2;
+          int b = a + 1;
+          int c = b * 3;
+          sum = sum + c;
+        } else {
+          int d = i * 3;
+          int e = d - 1;
+          sum = sum + e;
+        }
+        i = i + 1;
+      }
+      return sum + x;
+    }
+
+    public static void main(String[] args) {
+      int res = computeComplex(10, 20);
+      System.out.println("VM_BRANCH_RES:" + res);
+    }
+  }`;
+
+  const result = await obfuscateJava(source, {
+    vm: true,
+    rename: false,
+    strings: false,
+  });
+
+  // Verify VM virtualization occurred
+  assert.match(result.code, /new int\[\]\{/);
+  // Verify execution correctness
+  assert.equal(await execute(result.code, "VmBranchTest"), "VM_BRANCH_RES:870\n");
+});
+
+test("SymbolRenamingRegistry unifies symbol renaming across CFF, member renaming and class renaming", async () => {
+  const source = `public class UnifiedTest {
+    private static int counter = 10;
+    private static int calc(int v) {
+      return v * 3 + counter;
+    }
+    public static void runTest() {
+      int step = 5;
+      int r = calc(step);
+      System.out.println("UNIFIED_OK:" + r);
+    }
+    public static void main(String[] args) {
+      runTest();
+    }
+  }`;
+
+  const result = await obfuscateJava(source, {
+    rename: true,
+    renameMembers: true,
+    cff: true,
+    javaOptions: { release: 17 }
+  });
+
+  // Verify CFF occurred
+  assert.match(result.code, /while\(_0x[0-9a-fA-F]+/);
+  // Verify member rename occurred
+  assert.doesNotMatch(result.code, /\bcounter\b/);
+  assert.doesNotMatch(result.code, /\bcalc\b/);
+  // Verify execution correctness
+  assert.equal(await execute(result.code, "UnifiedTest"), "UNIFIED_OK:25\n");
+});
+
+
+
+

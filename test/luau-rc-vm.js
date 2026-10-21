@@ -143,6 +143,101 @@ async function runRcVmTests() {
     console.log("  [PASS] Test 5: Nested closures & generic iterator loops");
   }
 
+  // Test 6: Deep tail-recursion optimization (TAILCALL)
+  {
+    const source = `
+      local function count(n, acc)
+        if n <= 0 then
+          return acc
+        end
+        return count(n - 1, acc + 1)
+      end
+      print("TEST6:", count(3000, 10))
+    `;
+    // count(3000, 10) = 3010 without stack overflow
+    const res = await obfuscateLuau(source, {
+      vm: { enabled: true, kind: "rc", packed: true },
+    });
+    const check = await checkLuauWasm(res.code);
+    assert.ok(check.ok, "Test 6 syntax check: " + (check.error || "ok"));
+
+    const exec = await executeLuauWasm(res.code);
+    assert.ok(exec.ok, "Test 6 execution: " + (exec.error || "ok"));
+    assert.ok(exec.output && exec.output.includes("TEST6:\t3010"), "Test 6 output: " + exec.output);
+    console.log("  [PASS] Test 6: Deep tail-recursion optimization (TAILCALL)");
+  }
+
+  // Test 7: Multi-returns and unpacked dynamic arguments alignment
+  {
+    const source = `
+      local function getPair(x, y)
+        return x * 2, y * 3
+      end
+
+      local u = table.unpack or unpack
+      local tbl = { 5, 7 }
+      local a, b = getPair(u(tbl))
+
+      local function multiThree()
+        return 100, 200, 300
+      end
+
+      local first, second, third = 50, multiThree()
+      print("TEST7:", a, b, first, second, third)
+    `;
+    // a = 10, b = 21, first = 50, second = 100, third = 200
+    const res = await obfuscateLuau(source, {
+      vm: { enabled: true, kind: "rc", packed: true },
+    });
+    const check = await checkLuauWasm(res.code);
+    assert.ok(check.ok, "Test 7 syntax check: " + (check.error || "ok"));
+
+    const exec = await executeLuauWasm(res.code);
+    assert.ok(exec.ok, "Test 7 execution: " + (exec.error || "ok"));
+    assert.ok(exec.output && exec.output.includes("10\t21\t50\t100\t200"), "Test 7 output: " + exec.output);
+    console.log("  [PASS] Test 7: Multi-returns and dynamic unpacked argument alignment");
+  }
+
+  // Test 8: Enhanced TFORLOOP iterator pipeline and pcall error handling
+  {
+    const source = `
+      local dict = { alpha = 10, beta = 20, gamma = 30 }
+      local sum = 0
+      for k, v in pairs(dict) do
+        sum = sum + v
+      end
+
+      -- Iterator error handling with pcall
+      local function faultyIterator(s, var)
+        if var == nil then
+          return 1, "first"
+        elseif var == 1 then
+          error("custom_iterator_fault")
+        end
+        return nil
+      end
+
+      local ok, err = pcall(function()
+        for id, label in faultyIterator do
+          -- should execute once, then error on next
+        end
+      end)
+
+      print("TEST8:", sum, ok, tostring(err):find("custom_iterator_fault") ~= nil)
+    `;
+    // sum = 60, ok = false, error captured = true
+    const res = await obfuscateLuau(source, {
+      vm: { enabled: true, kind: "rc", packed: true },
+    });
+    const check = await checkLuauWasm(res.code);
+    assert.ok(check.ok, "Test 8 syntax check: " + (check.error || "ok"));
+
+    const exec = await executeLuauWasm(res.code);
+    assert.ok(exec.ok, "Test 8 execution: " + (exec.error || "ok"));
+    assert.ok(exec.output && exec.output.includes("TEST8:\t60\tfalse\ttrue"), "Test 8 output: " + exec.output);
+    console.log("  [PASS] Test 8: Enhanced TFORLOOP pipeline and pcall error handling");
+  }
+
   console.log("\n>>> ALL RC VM TESTS PASSED WITH 100% PRECISION! <<<");
 }
 

@@ -159,9 +159,113 @@ class RcCompiler {
     }
   }
 
+  isMultiReturnExpr(expr) {
+    if (!expr) return false;
+    return (
+      expr.type === "CallExpression" ||
+      expr.type === "MethodCallExpression" ||
+      expr.type === "VarargLiteral"
+    );
+  }
+
+  compileTrailingArg(expr, targetReg) {
+    if (expr.type === "VarargLiteral") {
+      this.emit(RC_OPCODES.VARARG, targetReg, 0, 0);
+    } else {
+      this.compileCallExpression(expr, -1, targetReg);
+    }
+  }
+
+  assignToVariable(v, valReg) {
+    if (v.type === "Identifier") {
+      const res = this.resolveIdentifier(v.name);
+      if (res.type === "local") {
+        if (valReg !== null) {
+          this.emit(RC_OPCODES.MOVE, res.reg, valReg, 0);
+        } else {
+          this.emit(RC_OPCODES.LOADNIL, res.reg, res.reg, 0);
+        }
+      } else if (res.type === "upval") {
+        if (valReg !== null) {
+          this.emit(RC_OPCODES.SETUPVAL, valReg, res.index, 0);
+        } else {
+          const nilReg = this.allocator.allocTemp();
+          this.emit(RC_OPCODES.LOADNIL, nilReg, nilReg, 0);
+          this.emit(RC_OPCODES.SETUPVAL, nilReg, res.index, 0);
+          this.allocator.freeTemp(nilReg);
+        }
+      } else {
+        // Global
+        const kName = this.addConst(v.name);
+        if (valReg !== null) {
+          this.emit(RC_OPCODES.SETGLOBAL, valReg, kName, 0);
+        } else {
+          const nilReg = this.allocator.allocTemp();
+          this.emit(RC_OPCODES.LOADNIL, nilReg, nilReg, 0);
+          this.emit(RC_OPCODES.SETGLOBAL, nilReg, kName, 0);
+          this.allocator.freeTemp(nilReg);
+        }
+      }
+    } else if (v.type === "MemberExpression" || v.type === "IndexExpression") {
+      const baseReg = this.compileExpression(v.base);
+      const propRK =
+        v.type === "MemberExpression"
+          ? toConstIndex(this.addConst(v.identifier ? v.identifier.name : v.name))
+          : this.compileRK(v.index);
+
+      if (valReg !== null) {
+        this.emit(RC_OPCODES.SETTABLE, baseReg, propRK, valReg);
+      } else {
+        const nilReg = this.allocator.allocTemp();
+        this.emit(RC_OPCODES.LOADNIL, nilReg, nilReg, 0);
+        this.emit(RC_OPCODES.SETTABLE, baseReg, propRK, nilReg);
+        this.allocator.freeTemp(nilReg);
+      }
+      this.allocator.freeTemp(baseReg);
+    }
+  }
+
   compileLocalStatement(stmt) {
     const vars = stmt.variables || [];
     const inits = stmt.init || [];
+    const numVars = vars.length;
+    const numInits = inits.length;
+
+    const lastInitIsMulti =
+      numInits > 0 &&
+      numVars > numInits &&
+      this.isMultiReturnExpr(inits[numInits - 1]);
+
+    if (lastInitIsMulti) {
+      const varRegs = [];
+      for (let i = 0; i < numVars; i++) {
+        varRegs.push(this.allocator.defineLocal(vars[i].name));
+      }
+
+      for (let i = 0; i < numInits - 1; i++) {
+        this.compileExpression(inits[i], varRegs[i]);
+      }
+
+      const remainingCount = numVars - (numInits - 1);
+      const multiRegBase = this.allocator.reserveConsecutive(remainingCount);
+      const lastExpr = inits[numInits - 1];
+
+      if (lastExpr.type === "CallExpression" || lastExpr.type === "MethodCallExpression") {
+        this.compileCallExpression(lastExpr, remainingCount, multiRegBase);
+      } else if (lastExpr.type === "VarargLiteral") {
+        this.emit(RC_OPCODES.VARARG, multiRegBase, remainingCount + 1, 0);
+      }
+
+      for (let k = 0; k < remainingCount; k++) {
+        const destVarReg = varRegs[numInits - 1 + k];
+        const srcReg = multiRegBase + k;
+        if (destVarReg !== srcReg) {
+          this.emit(RC_OPCODES.MOVE, destVarReg, srcReg, 0);
+        }
+      }
+      this.allocator.freeConsecutive(multiRegBase, remainingCount);
+      return;
+    }
 
     for (let i = 0; i < vars.length; i++) {
       const v = vars[i];
@@ -177,6 +281,45 @@ class RcCompiler {
   compileAssignmentStatement(stmt) {
     const vars = stmt.variables || [];
     const inits = stmt.init || [];
+    const numVars = vars.length;
+    const numInits = inits.length;
+
+    const lastInitIsMulti =
+      numInits > 0 &&
+      numVars > numInits &&
+      this.isMultiReturnExpr(inits[numInits - 1]);
+
+    if (lastInitIsMulti) {
+      const evaluated = [];
+      for (let i = 0; i < numInits - 1; i++) {
+        evaluated.push(this.compileExpression(inits[i]));
+      }
+
+      const remainingCount = numVars - (numInits - 1);
+      const multiRegBase = this.allocator.reserveConsecutive(remainingCount);
+      const lastExpr = inits[numInits - 1];
+      if (lastExpr.type === "CallExpression" || lastExpr.type === "MethodCallExpression") {
+        this.compileCallExpression(lastExpr, remainingCount, multiRegBase);
+      } else if (lastExpr.type === "VarargLiteral") {
+        this.emit(RC_OPCODES.VARARG, multiRegBase, remainingCount + 1, 0);
+      }
+
+      for (let k = 0; k < remainingCount; k++) {
+        evaluated.push(multiRegBase + k);
+      }
+
+      for (let i = 0; i < numVars; i++) {
+        const v = vars[i];
+        const valReg = i < evaluated.length ? evaluated[i] : null;
+        this.assignToVariable(v, valReg);
+      }
+
+      for (let i = 0; i < numInits - 1; i++) {
+        this.allocator.freeTemp(evaluated[i]);
+      }
+      this.allocator.freeConsecutive(multiRegBase, remainingCount);
+      return;
+    }
 
     const evaluated = [];
     for (let i = 0; i < inits.length; i++) {
@@ -186,52 +329,7 @@ class RcCompiler {
     for (let i = 0; i < vars.length; i++) {
       const v = vars[i];
       const valReg = i < evaluated.length ? evaluated[i] : null;
-
-      if (v.type === "Identifier") {
-        const res = this.resolveIdentifier(v.name);
-        if (res.type === "local") {
-          if (valReg !== null) {
-            this.emit(RC_OPCODES.MOVE, res.reg, valReg, 0);
-          } else {
-            this.emit(RC_OPCODES.LOADNIL, res.reg, res.reg, 0);
-          }
-        } else if (res.type === "upval") {
-          if (valReg !== null) {
-            this.emit(RC_OPCODES.SETUPVAL, valReg, res.index, 0);
-          } else {
-            const nilReg = this.allocator.allocTemp();
-            this.emit(RC_OPCODES.LOADNIL, nilReg, nilReg, 0);
-            this.emit(RC_OPCODES.SETUPVAL, nilReg, res.index, 0);
-            this.allocator.freeTemp(nilReg);
-          }
-        } else {
-          // Global
-          const kName = this.addConst(v.name);
-          if (valReg !== null) {
-            this.emit(RC_OPCODES.SETGLOBAL, valReg, kName, 0);
-          } else {
-            const nilReg = this.allocator.allocTemp();
-            this.emit(RC_OPCODES.LOADNIL, nilReg, nilReg, 0);
-            this.emit(RC_OPCODES.SETGLOBAL, nilReg, kName, 0);
-            this.allocator.freeTemp(nilReg);
-          }
-        }
-      } else if (v.type === "MemberExpression" || v.type === "IndexExpression") {
-        const baseReg = this.compileExpression(v.base);
-        const propRK = v.type === "MemberExpression"
-          ? toConstIndex(this.addConst(v.identifier ? v.identifier.name : v.name))
-          : this.compileRK(v.index);
-
-        if (valReg !== null) {
-          this.emit(RC_OPCODES.SETTABLE, baseReg, propRK, valReg);
-        } else {
-          const nilReg = this.allocator.allocTemp();
-          this.emit(RC_OPCODES.LOADNIL, nilReg, nilReg, 0);
-          this.emit(RC_OPCODES.SETTABLE, baseReg, propRK, nilReg);
-          this.allocator.freeTemp(nilReg);
-        }
-        this.allocator.freeTemp(baseReg);
-      }
+      this.assignToVariable(v, valReg);
     }
 
     for (const reg of evaluated) {
@@ -455,6 +553,47 @@ class RcCompiler {
     const args = stmt.arguments || [];
     if (args.length === 0) {
       this.emit(RC_OPCODES.RETURN, 0, 1, 0);
+      return;
+    }
+
+    if (args.length === 1 && (args[0].type === "CallExpression" || args[0].type === "MethodCallExpression")) {
+      const callExpr = args[0];
+      const isMethod = callExpr.type === "MethodCallExpression";
+      const callArgs = callExpr.arguments || [];
+      const totalSlots = 1 + (isMethod ? 1 : 0) + callArgs.length;
+      const baseReg = this.allocator.reserveConsecutive(totalSlots);
+
+      if (isMethod) {
+        const objReg = this.compileExpression(callExpr.base);
+        const methodName = (callExpr.method && (callExpr.method.name || callExpr.method)) ||
+                           (callExpr.identifier && (callExpr.identifier.name || callExpr.identifier)) ||
+                           callExpr.name;
+        const methodRK = toConstIndex(this.addConst(methodName));
+        this.emit(RC_OPCODES.SELF, baseReg, objReg, methodRK);
+        this.allocator.freeTemp(objReg);
+        for (let i = 0; i < callArgs.length; i++) {
+          const isLast = i === callArgs.length - 1;
+          if (isLast && this.isMultiReturnExpr(callArgs[i])) {
+            this.compileTrailingArg(callArgs[i], baseReg + 2 + i);
+          } else {
+            this.compileExpression(callArgs[i], baseReg + 2 + i);
+          }
+        }
+      } else {
+        this.compileExpression(callExpr.base, baseReg);
+        for (let i = 0; i < callArgs.length; i++) {
+          const isLast = i === callArgs.length - 1;
+          if (isLast && this.isMultiReturnExpr(callArgs[i])) {
+            this.compileTrailingArg(callArgs[i], baseReg + 1 + i);
+          } else {
+            this.compileExpression(callArgs[i], baseReg + 1 + i);
+          }
+        }
+      }
+
+      const numArgs = (isMethod ? 1 : 0) + callArgs.length;
+      this.emit(RC_OPCODES.TAILCALL, baseReg, numArgs + 1, 0);
+      this.allocator.freeConsecutive(baseReg, totalSlots);
       return;
     }
 
@@ -772,30 +911,45 @@ class RcCompiler {
     if (isMethod) {
       // base:method(args)
       const objReg = this.compileExpression(expr.base);
-      const methodRK = toConstIndex(this.addConst(expr.identifier ? expr.identifier.name : expr.name));
+      const methodName = (expr.method && (expr.method.name || expr.method)) ||
+                         (expr.identifier && (expr.identifier.name || expr.identifier)) ||
+                         expr.name;
+      const methodRK = toConstIndex(this.addConst(methodName));
       // SELF baseReg, objReg, methodRK
       // Sets baseReg = objReg[methodRK], baseReg+1 = objReg
       this.emit(RC_OPCODES.SELF, baseReg, objReg, methodRK);
       this.allocator.freeTemp(objReg);
 
       for (let i = 0; i < args.length; i++) {
-        this.compileExpression(args[i], baseReg + 2 + i);
+        const isLast = i === args.length - 1;
+        if (isLast && this.isMultiReturnExpr(args[i])) {
+          this.compileTrailingArg(args[i], baseReg + 2 + i);
+        } else {
+          this.compileExpression(args[i], baseReg + 2 + i);
+        }
       }
     } else {
       this.compileExpression(expr.base, baseReg);
       for (let i = 0; i < args.length; i++) {
-        this.compileExpression(args[i], baseReg + 1 + i);
+        const isLast = i === args.length - 1;
+        if (isLast && this.isMultiReturnExpr(args[i])) {
+          this.compileTrailingArg(args[i], baseReg + 1 + i);
+        } else {
+          this.compileExpression(args[i], baseReg + 1 + i);
+        }
       }
     }
 
     const numArgs = (isMethod ? 1 : 0) + args.length;
     // CALL baseReg, numArgs + 1, nreturns + 1
-    this.emit(RC_OPCODES.CALL, baseReg, numArgs + 1, nreturns + 1);
+    this.emit(RC_OPCODES.CALL, baseReg, numArgs + 1, nreturns === -1 ? 0 : nreturns + 1);
 
     if (dest !== null && nreturns >= 1 && dest !== baseReg) {
       for (let i = 0; i < nreturns; i++) {
         this.emit(RC_OPCODES.MOVE, dest + i, baseReg + i, 0);
       }
+    } else if (dest !== null && nreturns === -1 && dest !== baseReg) {
+      this.emit(RC_OPCODES.MOVE, dest, baseReg, 0);
     }
 
     this.allocator.freeConsecutive(baseReg, totalSlots);

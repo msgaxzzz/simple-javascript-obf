@@ -262,7 +262,7 @@ const ${opcodeB64Name} = (() => {
   const bytecodeHelpers = bytecodeDecodeName
     ? `
 const ${bytecodeRc4Name} = (key) => ${opcodeB64Name}.makeStream(key);
-function ${bytecodeDecodeName}(parts, order, pool) {
+function ${bytecodeDecodeName}(parts, order, pool, base85Alphabet, base85Key, base85Step, base85Order, base85Length) {
   const program = ${miniVmProgramBytecode};
   const out = ${opcodeB64Name}.${miniVmName}(program, pool);
   ${opcodeB64Name}.seed(out);
@@ -270,10 +270,47 @@ function ${bytecodeDecodeName}(parts, order, pool) {
   const next = ${bytecodeRc4Name}(key);
   const total = ${opcodeB64Name}.len();
   const words = new Int32Array(total >>> 2);
+  const ordered = new Array(order.length);
+  for (let i = 0; i < order.length; i += 1) {
+    ordered[order[i]] = parts[i];
+  }
+  const payload85 = ordered.join("");
+  const map85 = new Int16Array(128);
+  map85.fill(-1);
+  for (let i = 0; i < base85Alphabet.length; i += 1) {
+    map85[base85Alphabet.charCodeAt(i) & 127] = i;
+  }
+  const groups85 = Math.ceil(payload85.length / 5);
+  const bytes85 = new Uint8Array(groups85 * 4);
+  let offset85 = 0;
+  for (let group = 0; group < groups85; group += 1) {
+    const digits = [0, 0, 0, 0, 0];
+    for (let i = 0; i < 5; i += 1) {
+      const code = payload85.charCodeAt(group * 5 + i) & 127;
+      const digit = map85[code];
+      digits[base85Order[i]] = digit < 0 ? 0 : digit;
+    }
+    let value =
+      digits[0] +
+      digits[1] * 85 +
+      digits[2] * 7225 +
+      digits[3] * 614125 +
+      digits[4] * 52200625;
+    value = (value ^ ((base85Key + Math.imul(group, base85Step)) >>> 0)) >>> 0;
+    bytes85[offset85++] = (value >>> 24) & 255;
+    bytes85[offset85++] = (value >>> 16) & 255;
+    bytes85[offset85++] = (value >>> 8) & 255;
+    bytes85[offset85++] = value & 255;
+  }
+  let payload = "";
+  const payloadLimit = Math.min(base85Length, bytes85.length);
+  for (let i = 0; i < payloadLimit; i += 1) {
+    payload += String.fromCharCode(bytes85[i]);
+  }
   let acc = 0;
   let accLen = 0;
   let wordIdx = 0;
-  ${opcodeStreamName}(parts, order, (byte) => {
+  ${opcodeStreamName}([payload], [0], (byte) => {
     const plain = next(byte);
     acc |= plain << (accLen * 8);
     accLen += 1;

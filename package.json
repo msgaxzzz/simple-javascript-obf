@@ -14,9 +14,13 @@
   },
   "scripts": {
     "obf": "node bin/js-obf",
-    "test": "node test/obf-smoke.js",
+    "test": "node test/obf-smoke.js && node test/js-obf-regressions.js",
+    "test:smoke": "node test/obf-smoke.js",
+    "test:js": "node test/js-obf-regressions.js",
     "test:bun": "bun test",
     "test:java": "node --test test/java-obf.cjs",
+    "gen:apk": "node scripts/gen-test-apk.js",
+    "build:exe": "node scripts/build-exe.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build:ts": "tsc -p tsconfig.build.json"
   },

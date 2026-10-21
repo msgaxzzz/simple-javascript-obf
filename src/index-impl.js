@@ -6,13 +6,24 @@ const { minify } = require("terser");
 const { buildPipeline } = require("./pipeline");
 const { normalizeOptions } = require("./options");
 const { validateInputSource } = require("./utils/inputDiagnostics");
-const luauEntry = "./luau/index.js";
-const { obfuscateLuau } = require(luauEntry);
+const { obfuscateLuau } = require("./luau/index.js");
 const { obfuscateJava } = require("./java");
+const { packApk } = require("./android");
+
+function resolveSourceType(filename) {
+  const name = String(filename || "").toLowerCase();
+  if (name.endsWith(".mjs") || name.endsWith(".mts")) {
+    return "module";
+  }
+  if (name.endsWith(".cjs") || name.endsWith(".cts")) {
+    return "script";
+  }
+  return "unambiguous";
+}
 
 function parseSource(code, filename) {
   return parser.parse(code, {
-    sourceType: "unambiguous",
+    sourceType: resolveSourceType(filename),
     sourceFilename: filename,
     allowReturnOutsideFunction: true,
     plugins: [
@@ -22,7 +33,17 @@ function parseSource(code, filename) {
       "classPrivateProperties",
       "classPrivateMethods",
       "decorators-legacy",
+      "decoratorAutoAccessors",
       "dynamicImport",
+      "importAttributes",
+      "importAssertions",
+      "explicitResourceManagement",
+      "destructuringPrivate",
+      "regexpUnicodeSets",
+      "sourcePhaseImports",
+      "deferredImportEvaluation",
+      "importReflection",
+      ["optionalChainingAssign", { version: "2023-07" }],
       "objectRestSpread",
       "optionalChaining",
       "nullishCoalescingOperator",
@@ -34,8 +55,7 @@ function parseSource(code, filename) {
       "asyncGenerators",
       "bigInt",
       "optionalCatchBinding",
-      "privateIn",
-      "importAssertions"
+      "privateIn"
     ],
   });
 }
@@ -128,4 +148,5 @@ module.exports = {
   obfuscate,
   obfuscateJava,
   parseSource,
+  packApk,
 };

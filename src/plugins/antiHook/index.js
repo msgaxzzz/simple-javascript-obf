@@ -10,6 +10,7 @@ function antiHook(ast, ctx) {
   ctx.traverse(ast, {
     Program(path) {
       programPathRef = path;
+      path.skip();
     },
   });
 

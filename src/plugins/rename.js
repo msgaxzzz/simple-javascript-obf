@@ -1,19 +1,28 @@
-function collectExportedNames(programPath) {
+function addBindingIdentifiers(t, node, exported) {
+  if (!node) {
+    return;
+  }
+  if (
+    node.type === "VariableDeclaration" ||
+    node.type === "FunctionDeclaration" ||
+    node.type === "ClassDeclaration"
+  ) {
+    const identifiers = t.getBindingIdentifiers(node);
+    for (const name of Object.keys(identifiers)) {
+      exported.add(name);
+    }
+    return;
+  }
+  if (node.id && node.id.name) {
+    exported.add(node.id.name);
+  }
+}
+
+function collectExportedNames(programPath, t) {
   const exported = new Set();
   for (const node of programPath.node.body) {
     if (node.type === "ExportNamedDeclaration") {
-      if (node.declaration) {
-        if (node.declaration.id) {
-          exported.add(node.declaration.id.name);
-        }
-        if (node.declaration.declarations) {
-          for (const decl of node.declaration.declarations) {
-            if (decl.id && decl.id.name) {
-              exported.add(decl.id.name);
-            }
-          }
-        }
-      }
+      addBindingIdentifiers(t, node.declaration, exported);
       if (node.specifiers) {
         for (const spec of node.specifiers) {
           if (spec.local && spec.local.name) {
@@ -23,9 +32,7 @@ function collectExportedNames(programPath) {
       }
     }
     if (node.type === "ExportDefaultDeclaration") {
-      if (node.declaration && node.declaration.id) {
-        exported.add(node.declaration.id.name);
-      }
+      addBindingIdentifiers(t, node.declaration, exported);
     }
   }
   return exported;
@@ -65,14 +72,51 @@ function renameIdentifierInNode(node, oldName, newName) {
   }
 }
 
+function isInsideWith(path) {
+  return Boolean(
+    path && path.findParent && path.findParent((parent) => parent.isWithStatement())
+  );
+}
+
+function bindingTouchesWith(binding) {
+  if (!binding) {
+    return false;
+  }
+  if (isInsideWith(binding.path)) {
+    return true;
+  }
+  if (
+    binding.referencePaths &&
+    binding.referencePaths.some((reference) => isInsideWith(reference))
+  ) {
+    return true;
+  }
+  if (
+    binding.constantViolations &&
+    binding.constantViolations.some((violation) => isInsideWith(violation))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function renameScope(scope, ctx, reserved, usedNames) {
   const names = Object.keys(scope.bindings);
   for (const name of names) {
     if (reserved.has(name)) {
       continue;
     }
+    // The pipeline's generated identifiers are already random and unique.
+    // Renaming them can desynchronize declarations from references when the
+    // nodes were synthesized directly (for example CFF state codecs).
+    if (ctx.nameGen && typeof ctx.nameGen.isGenerated === "function" && ctx.nameGen.isGenerated(name)) {
+      continue;
+    }
     const binding = scope.bindings[name];
     if (!binding || !binding.identifier) {
+      continue;
+    }
+    if (bindingTouchesWith(binding)) {
       continue;
     }
     if (binding.path.isImportSpecifier() || binding.path.isImportDefaultSpecifier()) {
@@ -118,11 +162,17 @@ function renameScope(scope, ctx, reserved, usedNames) {
 }
 
 function renameIdentifiers(ast, ctx) {
-  const { traverse, options } = ctx;
+  const { traverse, options, t } = ctx;
 
   traverse(ast, {
     Program(path) {
-      const exported = collectExportedNames(path);
+      // Earlier plugins synthesize and move nodes directly. Rebuild Babel's
+      // scope/binding/reference information before renaming so references in
+      // generated wrappers are not left dangling.
+      if (path.scope && typeof path.scope.crawl === "function") {
+        path.scope.crawl();
+      }
+      const exported = collectExportedNames(path, t);
       const reserved = new Set(options.renameOptions.reserved);
       for (const name of exported) {
         reserved.add(name);
@@ -159,6 +209,7 @@ function renameIdentifiers(ast, ctx) {
       for (const scope of scopes) {
         renameScope(scope, ctx, reserved, usedNames);
       }
+      path.skip();
     },
   });
 }

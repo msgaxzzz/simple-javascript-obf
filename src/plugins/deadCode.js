@@ -136,12 +136,26 @@ function insertIntoBody(body, nodeOrNodes, index) {
   body.splice(index, 0, nodeOrNodes);
 }
 
+function isGeneratedPath(path) {
+  let current = path;
+  while (current) {
+    if (current.node && current.node.__obfGenerated) {
+      return true;
+    }
+    current = current.parentPath;
+  }
+  return false;
+}
+
 function deadCode(ast, ctx) {
   const { traverse, t, rng, options } = ctx;
   const probability = options.deadCodeOptions.probability;
 
   traverse(ast, {
     BlockStatement(path) {
+      if (isGeneratedPath(path)) {
+        return;
+      }
       const body = path.node.body;
       if (!body || body.length === 0) {
         return;

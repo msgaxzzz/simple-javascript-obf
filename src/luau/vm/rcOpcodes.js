@@ -44,6 +44,7 @@ const RC_OPCODES = {
   GETUPVAL: 40,
   SETUPVAL: 41,
   IDIV: 42,
+  TAILCALL: 43,
 };
 
 const RC_OPCODE_NAMES = Object.keys(RC_OPCODES);

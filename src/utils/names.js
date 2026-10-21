@@ -69,6 +69,10 @@ class NameGenerator {
   reserve(name) {
     this.reserved.add(name);
   }
+
+  isGenerated(name) {
+    return this.used.has(name);
+  }
 }
 
 module.exports = {

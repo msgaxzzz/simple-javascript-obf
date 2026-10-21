@@ -10,6 +10,104 @@ function xorBytes(bytes, maskBytes) {
   return out;
 }
 
+const BASE85_POOL = [];
+for (let code = 33; code <= 126; code += 1) {
+  if (code === 34 || code === 92) {
+    continue;
+  }
+  BASE85_POOL.push(String.fromCharCode(code));
+}
+
+function buildBase85Alphabet(rng) {
+  const chars = BASE85_POOL.slice();
+  rng.shuffle(chars);
+  return chars.slice(0, 85).join("");
+}
+
+function base85EncodeBytes(input, rng) {
+  const alphabet = buildBase85Alphabet(rng);
+  const key = rng.int(0, 0xffffffff) >>> 0;
+  const step = (rng.int(1, 0xffffffff) | 1) >>> 0;
+  const order = [0, 1, 2, 3, 4];
+  rng.shuffle(order);
+  const length = input.length;
+  let encoded = "";
+  for (let offset = 0, group = 0; offset < length; offset += 4, group += 1) {
+    const b0 = input[offset] || 0;
+    const b1 = offset + 1 < length ? input[offset + 1] : 0;
+    const b2 = offset + 2 < length ? input[offset + 2] : 0;
+    const b3 = offset + 3 < length ? input[offset + 3] : 0;
+    const value = ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >>> 0;
+    const blockKey = (key + Math.imul(group, step)) >>> 0;
+    const mixed = (value ^ blockKey) >>> 0;
+    const digits = [0, 0, 0, 0, 0];
+    let remaining = mixed;
+    for (let i = 0; i < 5; i += 1) {
+      digits[i] = remaining % 85;
+      remaining = Math.floor(remaining / 85);
+    }
+    for (let i = 0; i < 5; i += 1) {
+      encoded += alphabet[digits[order[i]]];
+    }
+  }
+  return { encoded, alphabet, key, step, order, length };
+}
+
+function base85Encode(input, rng) {
+  const bytes = new Uint8Array(input.length);
+  for (let i = 0; i < input.length; i += 1) {
+    bytes[i] = input.charCodeAt(i) & 255;
+  }
+  return base85EncodeBytes(bytes, rng);
+}
+
+function base85DecodeBytes(payload, alphabet, key, step, order, length) {
+  const map = new Int16Array(128).fill(-1);
+  for (let i = 0; i < alphabet.length; i += 1) {
+    map[alphabet.charCodeAt(i) & 127] = i;
+  }
+  const groups = Math.ceil(payload.length / 5);
+  const bytes = new Uint8Array(groups * 4);
+  let offset = 0;
+  for (let group = 0; group < groups; group += 1) {
+    const digits = [0, 0, 0, 0, 0];
+    for (let i = 0; i < 5; i += 1) {
+      const code = payload.charCodeAt(group * 5 + i) & 127;
+      const digit = map[code];
+      digits[order[i]] = digit < 0 ? 0 : digit;
+    }
+    let value =
+      digits[0] +
+      digits[1] * 85 +
+      digits[2] * 7225 +
+      digits[3] * 614125 +
+      digits[4] * 52200625;
+    value = (value ^ ((key + Math.imul(group, step)) >>> 0)) >>> 0;
+    bytes[offset++] = (value >>> 24) & 255;
+    bytes[offset++] = (value >>> 16) & 255;
+    bytes[offset++] = (value >>> 8) & 255;
+    bytes[offset++] = value & 255;
+  }
+  const limit = Math.min(length, bytes.length);
+  return bytes.subarray(0, limit);
+}
+
+function base85Decode(payload, alphabet, key, step, order, length) {
+  const bytes = base85DecodeBytes(
+    payload,
+    alphabet,
+    key,
+    step,
+    order,
+    length
+  );
+  let decoded = "";
+  for (let i = 0; i < bytes.length; i += 1) {
+    decoded += String.fromCharCode(bytes[i]);
+  }
+  return decoded;
+}
+
 function encodeBytecode(code, rng) {
   // Increased key length: 32 bytes (256 bits)
   const keyLength = 32;
@@ -28,7 +126,8 @@ function encodeBytecode(code, rng) {
   }
   const encrypted = streamXor(bytes, keyBytes);
   const encoded = encodeBytes(encrypted, rng);
-  const parts = splitPayload(encoded.encoded, rng);
+  const base85 = base85Encode(encoded.encoded, rng);
+  const parts = splitPayload(base85.encoded, rng);
   const order = Array.from({ length: parts.length }, (_, i) => i);
   rng.shuffle(order);
   const shuffled = order.map((idx) => parts[idx]);
@@ -66,6 +165,11 @@ function encodeBytecode(code, rng) {
     nonceMask: nonceInfo.mask,
     nonceOrder: nonceInfo.order,
     nonceOrderMask: nonceInfo.orderMask,
+    base85Alphabet: base85.alphabet,
+    base85Key: base85.key,
+    base85Step: base85.step,
+    base85Order: base85.order,
+    base85Length: base85.length,
   };
 }
 
@@ -271,6 +375,10 @@ function encodeOpcodeTable(opcodeDecode, rng) {
 }
 
 module.exports = {
+  base85Decode,
+  base85DecodeBytes,
+  base85Encode,
+  base85EncodeBytes,
   encodeBytecode,
   encodeConstPool,
   encodeOpcodeTable,

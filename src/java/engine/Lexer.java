@@ -30,6 +30,11 @@ public final class Lexer {
                     if (!block && source.charAt(i) == c) { i++; break; }
                     i++;
                 }
+            } else if (Character.isDigit(c)) {
+                kind = "number";
+                while (i < source.length() && (Character.isLetterOrDigit(source.charAt(i)) || source.charAt(i) == '_' || source.charAt(i) == '.')) {
+                    i++;
+                }
             } else if (Character.isJavaIdentifierStart(source.codePointAt(i))) {
                 kind = "identifier";
                 i += Character.charCount(source.codePointAt(i));
