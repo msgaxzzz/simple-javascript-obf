@@ -71,3 +71,32 @@ jobs:
           path: ${{ matrix.artifact }}
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download executables
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: obveil-*
+
+      - name: Flatten release assets
+        run: |
+          mkdir -p release-assets
+          cp artifacts/obveil-windows-x64/obveil.exe release-assets/obveil-windows-x64.exe
+          cp artifacts/obveil-linux-x64/obveil release-assets/obveil-linux-x64
+          cp artifacts/obveil-linux-arm64/obveil release-assets/obveil-linux-arm64
+          cp artifacts/obveil-macos-x64/obveil-macos-x64 release-assets/obveil-macos-x64
+          cp artifacts/obveil-macos-arm64/obveil-macos-arm64 release-assets/obveil-macos-arm64
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
